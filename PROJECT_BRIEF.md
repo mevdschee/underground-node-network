@@ -10,3 +10,5 @@ Each user’s node is ephemeral, appearing only while they are connected. When a
 
 UNN is designed to feel like a clandestine hacker‑den ecosystem:
 a shifting constellation of personal machines, each offering unique capabilities, all connected through a shared SSH‑based fabric. It is a programmable world, a social computing experiment, and a collaborative underground network—built entirely from text, terminals, and imagination.
+
+We are using a subprotocol over SSH (named unn and a variant unn-room), as it provides a clean separation of concerns. The main SSH session stays a normal terminal. The UNN subsystem becomes the user interface and the unn-room subsystem provides the room functionality. 
