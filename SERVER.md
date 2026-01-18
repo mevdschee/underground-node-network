@@ -1,6 +1,6 @@
 Project Brief: The UNN Entry Point
 
-The UNN Entry Point is the quiet backbone of the Underground Network. It doesn’t host rooms, run doors, or execute code. Instead, it allows people to connect to the network and then lets them list and visit rooms. In case the use the Room client it also connects their room to the network.
+The UNN Entry Point is the quiet backbone of the Underground Network. It doesn’t host rooms, run doors, or execute code. Instead, it allows people to connect to the network and then lets them list and visit rooms. In case they use the Room client it also connects their room to the network.
 
 Entry points can be run by anyone. Entry points can connect to each other to form a larger network, then it does not matter which entry point you connect to, you will always end up in the same network. 
 
