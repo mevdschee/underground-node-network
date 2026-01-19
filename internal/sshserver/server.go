@@ -60,10 +60,22 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to listen on %s: %w", s.address, err)
 	}
 	s.listener = listener
-	log.Printf("SSH server listening on %s", s.address)
+
+	// Get actual address (important when port 0 is used for random port)
+	actualAddr := listener.Addr().String()
+	log.Printf("SSH server listening on %s", actualAddr)
 
 	go s.acceptLoop()
 	return nil
+}
+
+// GetPort returns the actual port the server is listening on
+func (s *Server) GetPort() int {
+	if s.listener == nil {
+		return 0
+	}
+	addr := s.listener.Addr().(*net.TCPAddr)
+	return addr.Port
 }
 
 // Stop stops the SSH server

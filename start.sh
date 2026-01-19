@@ -5,8 +5,8 @@ cd "$(dirname "$0")"
 
 # Build
 echo "Building unn-client..."
-go build -o unn-client ./cmd/unn-client
+go build -o unn-client-bin ./cmd/unn-client
 
-# Start
+# Start with random port (0 = OS assigns)
 echo "Starting UNN client..."
-./unn-client "$@"
+./unn-client-bin -entrypoint localhost:44322 -bind 0.0.0.0 -port 0
