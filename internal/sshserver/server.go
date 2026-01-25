@@ -231,6 +231,10 @@ func (s *Server) sendWelcome(w io.Writer, username string) {
 func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	buf := make([]byte, 1024)
 	var line []byte
+	var history []string
+	historyIndex := -1
+	currentLineBackup := ""
+	escState := 0
 
 	for {
 		n, err := channel.Read(buf)
@@ -241,22 +245,68 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 		for i := 0; i < n; i++ {
 			b := buf[i]
 
+			// Handle ANSI escape sequences for arrow keys
+			if b == 27 {
+				escState = 1
+				continue
+			}
+			if escState == 1 && b == '[' {
+				escState = 2
+				continue
+			}
+			if escState == 2 {
+				escState = 0
+				if b == 'A' { // Arrow Up
+					if len(history) > 0 && historyIndex != 0 {
+						if historyIndex == -1 || historyIndex == len(history) {
+							currentLineBackup = string(line)
+							historyIndex = len(history)
+						}
+						historyIndex--
+						// Clear line: \r (carriage return) + \x1b[K (clear to end of line)
+						fmt.Fprintf(channel, "\r\x1b[K")
+						line = []byte(history[historyIndex])
+						channel.Write(line)
+					}
+					continue
+				} else if b == 'B' { // Arrow Down
+					if historyIndex != -1 && historyIndex < len(history) {
+						historyIndex++
+						fmt.Fprintf(channel, "\r\x1b[K")
+						if historyIndex == len(history) {
+							line = []byte(currentLineBackup)
+						} else {
+							line = []byte(history[historyIndex])
+						}
+						channel.Write(line)
+					}
+					continue
+				}
+				// Other escape sequences ignored for now
+				continue
+			}
+			escState = 0
+
 			// Handle special characters
 			switch b {
 			case '\r', '\n':
+				fmt.Fprintf(channel, "\r\n")
 				if len(line) > 0 {
-					s.handleCommand(channel, username, string(line))
+					cmd := string(line)
+					s.handleCommand(channel, username, cmd)
+					// Add to history if it's different from the last one
+					if len(history) == 0 || history[len(history)-1] != cmd {
+						history = append(history, cmd)
+					}
+					historyIndex = len(history)
 					line = nil
 				}
-				fmt.Fprintf(channel, "\r\n")
 			case 127, 8: // Backspace
 				if len(line) > 0 {
 					line = line[:len(line)-1]
 					fmt.Fprintf(channel, "\b \b")
 				}
 			case 3: // Ctrl+C
-				return
-			case 27: // Escape
 				return
 			default:
 				line = append(line, b)
@@ -280,13 +330,17 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 	command := parts[0]
 
 	switch command {
+	case "exit":
+		channel.Close()
+		return
 	case "help":
 		fmt.Fprintf(channel, "\rCommands:\r\n")
 		fmt.Fprintf(channel, "  /help     - Show this help\r\n")
 		fmt.Fprintf(channel, "  /who      - List visitors in room\r\n")
 		fmt.Fprintf(channel, "  /doors    - List available doors\r\n")
 		fmt.Fprintf(channel, "  /<door>   - Enter a door\r\n")
-		fmt.Fprintf(channel, "  ESC       - Exit room\r\n")
+		fmt.Fprintf(channel, "  /exit     - Exit room\r\n")
+		fmt.Fprintf(channel, "  Ctrl+C    - Exit room\r\n")
 	case "who":
 		visitors := s.GetVisitors()
 		fmt.Fprintf(channel, "\rVisitors in room:\r\n")
