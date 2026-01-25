@@ -591,9 +591,9 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 			}
 
 			fmt.Fprintf(channel, "  ssh -p %d %s@%s\r\n", startPayload.SSHPort, username, ip)
-			if fingerprint != "" {
-				fmt.Fprintf(channel, "  ED25519 key fingerprint is %s.\r\n", fingerprint)
-			}
+		}
+		if fingerprint != "" {
+			fmt.Fprintf(channel, "ED25519 key fingerprint is %s.\r\n", fingerprint)
 		}
 
 	case <-time.After(30 * time.Second):
