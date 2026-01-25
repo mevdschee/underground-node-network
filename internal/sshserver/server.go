@@ -30,16 +30,20 @@ type Server struct {
 	authorizedKeys map[string]bool // Marshaled pubkey -> true
 	mu             sync.RWMutex
 	listener       net.Listener
+	baudRate       int
+	maxLines       int
 }
 
 // NewServer creates a new SSH server
-func NewServer(address, hostKeyPath, roomName string, doorManager *doors.Manager) (*Server, error) {
+func NewServer(address, hostKeyPath, roomName string, doorManager *doors.Manager, baudRate, maxLines int) (*Server, error) {
 	s := &Server{
 		address:        address,
 		doorManager:    doorManager,
 		roomName:       roomName,
 		visitors:       make(map[string]*Visitor),
 		authorizedKeys: make(map[string]bool),
+		baudRate:       baudRate,
+		maxLines:       maxLines,
 	}
 
 	config := &ssh.ServerConfig{
@@ -136,6 +140,15 @@ func (s *Server) acceptLoop() {
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
+	s.mu.Lock()
+	if len(s.visitors) >= s.maxLines {
+		s.mu.Unlock()
+		fmt.Fprintf(conn, "\r\nAll lines busy (limit: %d). Please try again later.\r\n", s.maxLines)
+		conn.Close()
+		return
+	}
+	s.mu.Unlock()
+
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.config)
 	if err != nil {
 		if err != io.EOF {
@@ -191,7 +204,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 		log.Printf("Could not accept session: %v", err)
 		return
 	}
-	channel := NewThrottledChannel(rawChannel, 115200)
+	channel := NewThrottledChannel(rawChannel, s.baudRate)
 	defer channel.Close()
 
 	// Handle session requests

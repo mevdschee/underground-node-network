@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -12,13 +13,22 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+// Default constants for 115200 baud
 const (
-	tickerRate    = 40 * time.Millisecond
-	graphInterval = 150 * time.Millisecond
-	charDelayMin  = 5 * time.Millisecond
-	charDelayMax  = 15 * time.Millisecond
-	blinkRate     = 300 * time.Millisecond
-	rainChars     = "0123456789ABCDEF!@#$%^&*()_+-=[]{}|;':,./<>?"
+	baseBaud    = 115200
+	baseTicker  = 40 * time.Millisecond
+	baseGraph   = 150 * time.Millisecond
+	baseCharMin = 5 * time.Millisecond
+	baseCharMax = 15 * time.Millisecond
+	rainChars   = "0123456789ABCDEF!@#$%^&*()_+-=[]{}|;':,./<>?"
+	baseRainDur = 2 * time.Second
+)
+
+type State int
+
+const (
+	StateRain State = iota
+	StateConsole
 )
 
 // --- Panel Definitions ---
@@ -158,11 +168,11 @@ func drawText(s tcell.Screen, x, y int, text string, style tcell.Style) {
 	}
 }
 
-func typeLine(p *Panel, text string) {
+func typeLine(p *Panel, text string, charMin, charMax time.Duration) {
 	fullText := text
 	for i := 0; i <= len(fullText); i++ {
 		p.SetLine(len(p.lines)-1, fullText[:i]+"_")
-		time.Sleep(charDelayMin + time.Duration(rand.Intn(int(charDelayMax-charDelayMin))))
+		time.Sleep(charMin + time.Duration(rand.Intn(int(charMax-charMin+1))))
 	}
 	p.SetLine(len(p.lines)-1, fullText)
 }
@@ -196,6 +206,17 @@ func applyGlitch(s tcell.Screen, w, h int) {
 }
 
 func main() {
+	baud := flag.Int("baud", baseBaud, "Simulated baud rate")
+	flag.Parse()
+
+	// Calculate scaling factor
+	scale := float64(baseBaud) / float64(*baud)
+	tickerRate := time.Duration(float64(baseTicker) * scale)
+	graphInterval := time.Duration(float64(baseGraph) * scale)
+	charDelayMin := time.Duration(float64(baseCharMin) * scale)
+	charDelayMax := time.Duration(float64(baseCharMax) * scale)
+	rainDuration := time.Duration(float64(baseRainDur) * scale)
+
 	s, err := tcell.NewScreen()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create screen: %v\n", err)
@@ -234,7 +255,10 @@ func main() {
 
 	// Clock Loop
 	go func() {
-		ticker := time.NewTicker(20 * time.Millisecond)
+		ticker := time.NewTicker(tickerRate / 2)
+		if tickerRate < 20*time.Millisecond {
+			ticker = time.NewTicker(10 * time.Millisecond)
+		}
 		defer ticker.Stop()
 		for {
 			select {
@@ -271,7 +295,14 @@ func main() {
 	// Render Loop (The Heartbeat)
 	go func() {
 		ticker := time.NewTicker(tickerRate)
+		if tickerRate > 100*time.Millisecond {
+			ticker = time.NewTicker(100 * time.Millisecond) // Cap render sleeper
+		}
 		defer ticker.Stop()
+
+		currentState := StateRain
+		rainStartTime := time.Now()
+
 		for {
 			select {
 			case <-stopChan:
@@ -282,7 +313,10 @@ func main() {
 
 				// Layer 1: Persistent Background Rain
 				for _, d := range drops {
-					d.y += d.speed
+					// Scale speed logic: at lower baud, rain is slower
+					if rand.Float64() < (1.0 / scale) {
+						d.y += d.speed
+					}
 					if d.y-d.length > sh {
 						d.y = 0
 					}
@@ -304,15 +338,22 @@ func main() {
 					applyGlitch(s, sw, sh)
 				}
 
-				// Layer 2: Sequential Console Panels
-				if clockPanel.visible {
-					drawText(s, 2, 1, " [ UNDERGROUND_NODE_NETWORK OPERATOR CONSOLE ] ", brightStyle.Bold(true)) // Header appears with clock
-					clockPanel.Draw(s)
+				// Sequence Control
+				if currentState == StateRain && time.Since(rainStartTime) > rainDuration {
+					currentState = StateConsole
 				}
-				scanPanel.Draw(s)
-				clientLog.Draw(s)
-				serverLog.Draw(s)
-				graphPanel.Draw(s)
+
+				// Layer 2: Sequential Console Panels
+				if currentState == StateConsole {
+					if clockPanel.visible {
+						drawText(s, 2, 1, " [ UNDERGROUND_NODE_NETWORK OPERATOR CONSOLE ] ", brightStyle.Bold(true)) // Header appears with clock
+						clockPanel.Draw(s)
+					}
+					scanPanel.Draw(s)
+					clientLog.Draw(s)
+					serverLog.Draw(s)
+					graphPanel.Draw(s)
+				}
 
 				s.Show()
 			}
@@ -323,27 +364,27 @@ func main() {
 	go func() {
 		defer close(stopChan)
 
-		// Intro: Just Rain
-		time.Sleep(2 * time.Second)
+		// Wait for rain to settle/transition
+		time.Sleep(rainDuration)
 
 		// 1. Clock and Header reveal
 		clockPanel.mu.Lock()
 		clockPanel.visible = true
 		clockPanel.mu.Unlock()
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond * time.Duration(scale))
 
 		// 2. Identity Scanner reveal
 		scanPanel.mu.Lock()
 		scanPanel.visible = true
 		scanPanel.mu.Unlock()
 		scanPanel.AddLine("STATE: INITIALIZING...")
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(time.Duration(500 * float64(time.Millisecond) * scale))
 		scanPanel.SetLine(0, "STATE: SCANNING...")
 		scanPanel.AddLine("PROBING: ~/.ssh/id_rsa")
-		time.Sleep(800 * time.Millisecond)
+		time.Sleep(time.Duration(800 * float64(time.Millisecond) * scale))
 		scanPanel.AddLine("IDENT: maurits [VERIFIED]")
 		scanPanel.AddLine("IP: 192.168.1.157")
-		time.Sleep(600 * time.Millisecond)
+		time.Sleep(time.Duration(600 * float64(time.Millisecond) * scale))
 		scanPanel.AddLine("PROXY: UNN_CONTROL_SUB")
 		scanPanel.SetLine(0, "STATE: READY")
 
@@ -352,21 +393,21 @@ func main() {
 		clientLog.visible = true
 		clientLog.mu.Unlock()
 		clientLog.AddLine("> BOOTING_UNN_CLIENT...")
-		time.Sleep(400 * time.Millisecond)
+		time.Sleep(time.Duration(400 * float64(time.Millisecond) * scale))
 		clientLog.AddLine("")
-		typeLine(clientLog, "> RESOLVING ENTRY_POINT: localhost:44322")
+		typeLine(clientLog, "> RESOLVING ENTRY_POINT: localhost:44322", charDelayMin, charDelayMax)
 
 		// 4. Server Log reveal
 		serverLog.mu.Lock()
 		serverLog.visible = true
 		serverLog.mu.Unlock()
 		serverLog.AddLine("> LISTENING ON 0.0.0.0:44322")
-		time.Sleep(600 * time.Millisecond)
+		time.Sleep(time.Duration(600 * float64(time.Millisecond) * scale))
 		serverLog.AddLine("> NEW_CONNECTION [ID: 0x8F2B]")
 
 		clientLog.AddLine("")
-		typeLine(clientLog, "> AUTH_HANDSHAKE: SENDING RSA_PUB")
-		time.Sleep(300 * time.Millisecond)
+		typeLine(clientLog, "> AUTH_HANDSHAKE: SENDING RSA_PUB", charDelayMin, charDelayMax)
+		time.Sleep(time.Duration(300 * float64(time.Millisecond) * scale))
 		serverLog.AddLine("> AUTH_VERIFIED: USER 'maurits'")
 
 		// 5. Graph reveal
@@ -376,12 +417,12 @@ func main() {
 		graphPanel.mu.Unlock()
 
 		clientLog.AddLine("")
-		typeLine(clientLog, "> REGISTERING ROOM 'lobby'...")
-		time.Sleep(700 * time.Millisecond)
+		typeLine(clientLog, "> REGISTERING ROOM 'lobby'...", charDelayMin, charDelayMax)
+		time.Sleep(time.Duration(700 * float64(time.Millisecond) * scale))
 		serverLog.AddLine("> ROOM_REG: 'lobby' [ACTIVE]")
 
 		clientLog.AddLine("> STARTING EPHEMERAL SSH SERVER...")
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(time.Duration(500 * float64(time.Millisecond) * scale))
 		clientLog.AddLine("> BINDING TO PORT 2222...")
 
 		clientLog.AddLine("> NODE_STATUS: ONLINE")
