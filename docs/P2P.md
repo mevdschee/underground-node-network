@@ -77,11 +77,13 @@ The entry point coordinates hole‑punching.
 4. Visitor = direct SSH connection
 
 Once traversal succeeds, the visitor runs:
-Code
+```bash
+ssh -p <port> <candidate-ip>
+```
 
-ssh unn-node@<negotiated-address>
-
-Or the UNN entry point automates this behind the scenes.
+ However, the **UNN SSH Wrapper (`unn-ssh`)** automates this process:
+1. **Candidate Probing**: It quickly tests each candidate IP/port to find the one that works.
+2. **Host Key Verification**: It extracts the node's ephemeral public keys from the signaling data and creates a temporary `known_hosts` file, ensuring a secure handshake without manual `StrictHostKeyChecking` prompts.
 5. Doors = SSH subsystems
 
 Just like SFTP is a subsystem, doors can be too.

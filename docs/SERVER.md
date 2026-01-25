@@ -10,7 +10,13 @@ Entry points are responsible for the good behavior of their users that they regi
 
 When a user connects through the UNN Client, the server opens a second, hidden line — a control channel that lets the node operator announce their doors, receive execution requests, and handle approvals.
 
-The server’s role is to maintain the illusion of a vast, distributed underground — a network made not of machines, but of people. Nodes appear and vanish as users come and go. Services flicker online, run their course, and disappear again. The server keeps the whole thing coherent without ever becoming the center of it.
+## Interactive Shell
+
+The entry point provides a text-based interactive environment for visitors:
+- **Room Browsing**: List all currently active rooms on the network.
+- **Hole-Punching Bridge**: Orchestrates the signaling needed for P2P connections.
+- **BBS-like Interaction**: Supports command history, arrow keys (Up/Down for history), and backspace for a modern terminal experience inside SSH.
+- **Security Control**: Allows users to manage their identities via `/register`.
 
 It is the spine of the network, but never the brain. A silent switchboard in the dark. A map that redraws itself every time someone logs in.
 

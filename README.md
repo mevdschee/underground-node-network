@@ -13,9 +13,42 @@ a shifting constellation of personal machines, each offering unique capabilities
 
 ## Connecting
 
-You can connect to the network using the `unn-ssh.sh` wrapper script for a seamless experience:
+The easiest way to explore the network is using the `unn-ssh.sh` wrapper script:
+
+### Teleport to a Room
 ```bash
 ./unn-ssh.sh ssh://localhost:44322/roomname
 ```
-See [docs/SSH_WRAPPER.md](docs/SSH_WRAPPER.md) for more details.
+
+### Interactive Exploration
+If you don't specify a room, you'll enter the entry point's interactive shell:
+```bash
+./unn-ssh.sh ssh://localhost:44322
+```
+From here you can:
+- List active rooms with `/rooms`
+- Register your public key with `/register <pubkey>`
+- Teleport by simply typing a room name
+
+### Persistent Navigation
+The wrapper is persistent—when you exit a room (via `/exit`), you are automatically returned to the entry point shell, allowing you to jump between nodes without restarting.
+
+## Hosting a Node
+
+To become a part of the network and host your own "room":
+
+1. **Register**: Connect to an entry point and register your SSH public key.
+2. **Launch Client**: Run the UNN client to spin up your ephemeral node:
+   ```bash
+   ./start-client.sh
+   ```
+3. **Open Doors**: Your node will appear on the network, and visitors can teleport to you.
+
+## Documentation
+
+- [SSH Wrapper](docs/SSH_WRAPPER.md) - Details on the `unn-ssh` tool.
+- [Client Architecture](docs/CLIENT.md) - How room nodes work.
+- [Server Architecture](docs/SERVER.md) - How entry points function.
+- [Implementation Details](docs/IMPLEMENTATION.md) - Protocols and flow.
+- [P2P & NAT Traversal](docs/P2P.md) - How direct connections are established.
 
