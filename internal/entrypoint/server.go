@@ -587,9 +587,13 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 			}
 
 			if hostKey != "" {
-				hostSpec := fmt.Sprintf("unn-room,[unn-room]:%d,%s,[%s]:%d", startPayload.SSHPort, ip, ip, startPayload.SSHPort)
-				fmt.Fprintf(channel, "  ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/dev/fd/3 -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o HashKnownHosts=no -o HostKeyAlias=unn-room -p %d %s@%s 3<<<'%s %s'\r\n",
-					startPayload.SSHPort, username, ip, hostSpec, hostKey)
+				khLine := fmt.Sprintf("unn-room %s", hostKey)
+				if startPayload.SSHPort != 22 {
+					khLine = fmt.Sprintf("[unn-room]:%d %s", startPayload.SSHPort, hostKey)
+				}
+
+				fmt.Fprintf(channel, "  K=$(mktemp); echo '%s' > $K; ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$K -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o HostKeyAlias=unn-room -p %d %s@%s; rm $K\r\n",
+					khLine, startPayload.SSHPort, username, ip)
 			} else {
 				fmt.Fprintf(channel, "  ssh -p %d %s@%s\r\n", startPayload.SSHPort, username, ip)
 			}
