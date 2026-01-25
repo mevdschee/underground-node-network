@@ -1,12 +1,14 @@
 package doors
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/creack/pty"
 )
@@ -105,5 +107,9 @@ func (m *Manager) Execute(name string, stdin io.Reader, stdout, stderr io.Writer
 	}()
 
 	_, err = io.Copy(stdout, f)
+	if err != nil && (errors.Is(err, syscall.EIO) || strings.Contains(err.Error(), "input/output error")) {
+		// Suppress EIO error on Linux when PTY slave is closed (process exit)
+		return nil
+	}
 	return err
 }
