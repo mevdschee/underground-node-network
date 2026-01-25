@@ -27,22 +27,23 @@ If you don't specify a room, you'll enter the entry point's interactive shell:
 ```
 From here you can:
 - List active rooms with `/rooms`
-- Register your public key with `/register <pubkey>`
-- Teleport by simply typing a room name
+### Manual Exploration
+If you're not using the wrapper, you can connect directly using any SSH client. The entry point provides simplified command suggestions and **precalculated fingerprints** (matching standard OpenSSH format) for easy manual verification.
 
 ### Persistent Navigation
-The wrapper is persistent—when you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell, allowing you to jump between nodes without restarting. It also supports **window resizing** and **Ctrl+C interruption** for doors.
+The wrapper is persistent—when you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell. It also supports **window resizing** and **Ctrl+C interruption** for doors.
 
 ## Hosting a Node
 
 To become a part of the network and host your own "room":
 
-1. **Register**: Connect to an entry point and register your SSH public key.
-2. **Launch Client**: Run the UNN client to spin up your ephemeral node:
+1. **Register**: Connect to an entry point and register your SSH public key. Registration is **strictly enforced**—it ensures your username cannot be spoofed and is required for room hosting.
+2. **Launch Client**: Run the UNN client. It will automatically connect and register your node:
    ```bash
    ./start-client.sh
    ```
-3. **Open Doors**: Your node will appear on the network, and visitors can teleport to you.
+   *Note: If the client cannot connect to the entry point, it will exit immediately with a fatal error.*
+3. **Open Doors**: Your node will appear on the network. Visitors teleporting to you will undergo **P2P Visitor Authentication**, where the entry point verifies their key and pre-authorizes them with your node.
 
 ## Documentation
 

@@ -25,9 +25,14 @@ The client has two types of doors:
 ### User Identity
 When connecting to the entry point, the client uses a **User Key** to authenticate.
 - **Source**: It automatically detects your system key (`~/.ssh/id_ed25519` or `~/.ssh/id_rsa`).
-- **Registration**: Before starting the client, you must register your public key manually with the entry point (via `/register`).
+- **Registration**: Before starting the client, you must register your public key manually with the entry point (via `/register`). Registration is **strictly enforced**—the client will exit with a fatal error if connection or registration fails.
+
+### Visitor Identity (P2P Auth)
+- **Visitor Verification**: The room server no longer allows anonymous connections. Every visitor must be pre-authorized by the entry point.
+- **Handover**: The entry point signals the visitor's authenticated public key to your client, which then pre-authorizes that specific key for the P2P connection.
+- **Strict Verification**: Any attempt to connect directly to the room using an unauthorized key will be rejected immediately.
 
 ### Room Identity
 - **Host Key**: The client generates a temporary, **ephemeral** SSH host key for your room server.
 - **Validity**: This key is valid only as long as the room session exists.
-- **Verification**: Visitors verify this ephemeral key via the secure handshake coordinated by the entry point. 
+- **Verification**: Visitors verify this ephemeral key via the secure handshake coordinated by the entry point (automated by `unn-ssh` or via manual fingerprint check).

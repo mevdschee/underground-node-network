@@ -1,46 +1,31 @@
 Project Brief: The UNN Entry Point
 
-The UNN Entry Point is the quiet backbone of the Underground Network. It doesn't host rooms, run doors, or execute code. Instead, it serves as a rendezvous and signaling hub: it helps peers discover each other and coordinates NAT traversal so they can establish direct P2P connections. Once a connection is negotiated, the entry point is out of the picture—all traffic flows directly between peers over SSH.
+The UNN Entry Point is the quiet backbone of the Underground Network. It serves as a rendezvous and signaling hub: it helps peers discover each other and coordinates NAT traversal so they can establish direct P2P connections.
 
-Entry points can be run by anyone. Entry points can connect to each other to form a larger network, then it does not matter which entry point you connect to, you will always end up in the same network. 
+## Key Functions
 
-Entry points share lists of active rooms with each other. To visit a room, the entry point coordinates hole-punching or reverse tunnel negotiation between the visitor and the node operator. The actual SSH connection is always direct—entry points never proxy room traffic.
+### 1. Rendezvous & Discovery
+Entry points maintain the directory of active rooms and announce them to visitors. They can also sync with other entry points to form a unified network.
 
-Entry points are responsible for the good behavior of their users that they register SSH public keys for.
+### 2. Signaling Hub
+The server coordinates hole-punching by relaying candidates and visitor identities. It never proxies room traffic; it only "introduces" peers so they can connect directly.
 
-When a user connects through the UNN Client, the server opens a second, hidden line — a control channel that lets the node operator announce their doors, receive execution requests, and handle approvals.
+### 3. Identity Verification
+Entry points enforce a **Manual Registration** policy. Once a user registers their public key (via `/register`), their username is claimed and protected.
 
-## Interactive Shell
+## Visitor Handover
 
-The entry point provides a text-based interactive environment for visitors:
-- **Room Browsing**: List all currently active rooms on the network.
-- **Hole-Punching Bridge**: Orchestrates the signaling needed for P2P connections.
-- **BBS-like Interaction**: Supports command history, arrow keys (Up/Down for history), and backspace for a modern terminal experience inside SSH.
-- **Security Control**: Allows users to manage their identities via `/register`.
+When a visitor connects to a room:
+1. The entry point verifies the visitor's identity using their public key.
+2. The verification status and the **marshaled public key** are signaled to the room operator.
+3. This allows room operators to enforce strict public key authentication even in P2P mode.
 
-It is the spine of the network, but never the brain. A silent switchboard in the dark. A map that redraws itself every time someone logs in.
+## Manual Connection Support
 
-## User Authentication
+For users not using the `unn-ssh` wrapper:
+- The entry point provides simplified `ssh` command suggestions.
+- It displays the **Expected Fingerprint** of the target room in standard OpenSSH format (e.g., `ED25519 key fingerprint is SHA256:...`).
+- This allows manual users to securely verify room nodes with a single glance.
 
-## User Authentication
-
-The Entry Point enforces a **Manual Registration** policy for user identities.
-
-1.  **Registration**: To claim a username, you must connect manually and use the `/register` command:
-    ```bash
-    ssh newuser@entrypoint
-    # In the shell:
-    /register ssh-ed25519 AAA...
-    ```
-2.  **Persistence**: The public key is stored on disk in the `users/` directory.
-3.  **Enforcement**: Future connections as `newuser` MUST authenticate with the registered private key.
-4.  **Sanitization**: Usernames must consist of alphanumeric characters, hyphens, and underscores.
-
-This system ensures that usernames cannot be spoofed or stolen once claimed. Until registered, a username is available to anyone.
-
-## Room Hosting
-
-Users can register rooms (e.g., `myroom`). The room itself is ephemeral, but the user's identity is persistent.
-- A user is identified as `username@entrypoint`.
-- Room ownership is tied to the authenticated connection.
-- A user can only manage rooms they have registered (or rooms are simply ephemeral and tied to the live connection).
+## Interactive Experience
+The server provides a modern BBS experience inside SSH, with support for history, backspace, and real-time room updates.

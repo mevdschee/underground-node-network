@@ -38,57 +38,25 @@ Connect to the entry point interactively (interactive selection mode):
 ./unn-ssh.sh ssh://localhost:44322
 ```
 
-Connect with a specific identity:
-```bash
-./unn-ssh.sh -identity ~/.ssh/my_unn_key ssh://unn.example.com/lobby
-```
-
 ## Interactive Mode
 
-If no room name is specified in the URL, `unn-ssh` will:
-1. Connect to the entry point.
-2. Open an interactive shell (BBS style).
-3. Allow you to list rooms (`/rooms`), register keys (`/register`), or simply type a room name to teleport.
+If no room name is specified in the URL, `unn-ssh` will provide a raw terminal for you to interact with the entry point BBS. You can list rooms (`/rooms`), register keys (`/register`), or simply type a room name to teleport.
 
 ## Persistence
 
 The wrapper is designed for seamless navigation:
-1. When you "teleport" to a room from the entry point shell, the wrapper handles the P2P connection automatically.
-2. When you exit the room (via **Ctrl+C** or terminating the session), the wrapper automatically reconnects you to the entry point shell.
+1. When you "teleport" to a room, the wrapper handles the P2P transition automatically.
+2. When you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell.
 3. This allows you to jump between rooms without restarting the wrapper.
 
-## How It Works
+## Security & Identity
 
-1. **URL Parsing**: The wrapper extracts the entry point address, port, username, and room name.
-2. **Entry Point Connection**: Connects to the entry point using SSH public key authentication.
-3. **Shell/Interaction**: 
-   - If a room was specified, it sends it to the entry point.
-   - If not, it provides a raw terminal for you to interact with the entry point.
-4. **Hole-Punching Discovery**: Monitors the entry point output for a `[CONNECTION_DATA]` block containing P2P candidates and the target's public host keys.
-5. **Connectivity Test**: Quickly probes candidates to find a reachable one.
-6. **SSH Handoff**: Executes the system `ssh` client with a temporary `known_hosts` file containing the verified host keys, ensuring `StrictHostKeyChecking=yes`.
+- **Handover**: The wrapper uses the same identity (SSH key) for both the entry point and the room.
+- **Strict Verification**: It extract host keys from the entry point signaling and enforces `StrictHostKeyChecking=yes` automatically.
+- **P2P Auth**: Only visitors authenticated by the entry point can complete the P2P connection to a room.
 
-## Building
+## Technical Features
 
-The wrapper is automatically built when you run `./unn-ssh.sh`. To build manually:
-
-```bash
-go build -o unn-ssh-bin ./cmd/unn-ssh
-```
-
-## Requirements
-
-- Go 1.16 or later (for building)
-- Standard `ssh` client installed on your system
-- Network connectivity to the entry point and room candidates
-
-## Security
-
-- **Authentication**: Uses public key authentication.
-- **Host Keys**: Automatically handles room host keys by creating a temporary `known_hosts` file, ensuring you are connecting to the intended room operator.
-- **Raw Mode**: Temporarily sets your local terminal to raw mode for a responsive BBS experience, restoring it on exit or room transition.
-
-## Terminal Features
-
-- **Window Resizing**: Supports `SIGWINCH` signals, meaning the entry point shell and room sessions will correctly resize when you resize your terminal window.
-- **Improved Input Handling**: Uses a managed stdin proxy to prevent input competition between the wrapper and the system SSH client, ensuring no characters are lost during transitions.
+- **Window Resizing**: Supports `SIGWINCH` for correct PTY sizing.
+- **Managed Input**: Uses a managed stdin proxy to ensure `Ctrl+C` behavior is consistent and no characters are lost during transitions.
+- **Native Implementation**: Uses the native Go SSH library for the wrapper logic, falling back to system `ssh` only for the final room session.

@@ -1,31 +1,34 @@
-We are using a secret port 44322 for SSH and a subprotocol (named unn-room), as this provides a clean separation of concerns. The main SSH session becomes the user interface and the unn-room subsystem provides the room functionality. Doors are implemented as SSH subsystems, similar to how SFTP works.
+# UNN Implementation Details
 
-## Connection Flow
+The UNN is built on standard SSH primitives, using custom subsystems and signaling payloads to create a distributed network mesh.
 
-1. **Registration**: Users register at the entry point with their SSH public key using the `/register` command.
+## Security Model: Handover Trust
 
-2. **Node Online**: When a user starts the UNN client, it spins up an ephemeral SSH server (e.g., on 127.0.0.1:2222) and announces itself to the entry point.
+Authentication in the UNN is hierarchical:
+1. **Entry Point Auth**: Standard SSH public key authentication. Users must manually register via `/register`.
+2. **Room Handover**: When a visitor connects to a room, the entry point includes the visitor's authenticated public key in the `punch_offer` signaling payload.
+3. **Room Auth**: The room's ephemeral SSH server enforces strict public key authentication, only accepting keys that were pre-authorized by the entry point.
 
-3. **Traversal Coordination**: The client advertises candidates (public IP guess, LAN IP, reverse tunnel port). The entry point coordinates hole-punching between peers.
+## Connection Lifecycle
 
-4. **Interactive Discovery**: Visitors can connect to the entry point manually or via the `unn-ssh` wrapper.
-   - **Manual**: Connect via SSH to browse rooms and register keys.
-   - **Wrapper**: Uses `ssh://` URLs to automate the handshake and teleportation.
+1. **Client Startup**: `unn-client` starts a local SSH server. It then connects to the entry point. If this connection fails, the client exits (fatal).
+2. **Registration**: The client registers its room, doors, and connection candidates.
+3. **Visitor Jump**:
+   - Visitor requests a room at the entry point.
+   - Entry point signals the visitor's public key to the room operator (`punch_offer`).
+   - Room operator registers the key with the local SSH server.
+   - Entry point signals room candidates and host keys to the visitor (`punch_start`).
+   - Visitor (wrapper) probes candidates and initiates direct SSH connection.
+4. **Session**: Visitor enters the room. **Ctrl+C** is managed by the wrapper to allow instant exit back to the entry point shell.
 
-5. **Direct P2P Connection**: Once NAT traversal succeeds, visitors connect directly to the node over SSH. The entry point is out of the picture from this point—it never proxies room traffic.
+## Network Protocols
 
-## Interactive Mode & Persistence
+### Signaling JSON
+All coordination happens over an `unn-control` SSH subsystem using JSON messages.
+- `register`: Room metadata, candidates, and host keys.
+- `punch_offer`: Visitor ID, candidates, and **VisitorKey** (captured by entry point).
+- `punch_answer`: Operator candidates and SSH port.
+- `punch_start`: Final sync message to trigger hole-punching.
 
-The entry point provides an interactive shell for visitors:
-- **BBS Experience**: Supports command history, arrow keys, and basic terminal interaction.
-- **Hole-Punching Bridge**: When a visitor selects a room, the entry point sends a `[CONNECTION_DATA]` block containing P2P candidates and host keys.
-- **Auto-Return**: The `unn-ssh` wrapper is designed to return the user to the entry point shell after they finish their session in a room, allowing for persistent network navigation.
-
-## Advanced Terminal Handling
-
-To ensure a high-quality user experience, the system implements:
-- **StdinProxy (Wrapper)**: A managed stdin reader that avoids competition between the Go wrapper and the standard SSH client. It can pause and resume itself during SSH handoffs.
-- **SIGWINCH Support**: Both the wrapper and the entry point server handle window change signals to ensure the PTY is correctly resized.
-- **Async Door Execution**: Room doors are executed in separate goroutines, allowing the main interaction loop to remain responsive and intercept **Ctrl+C** to kill the door subprocess if requested.
-
-
+### Stdin Management
+To ensure a smooth "teleport" experience, the `unn-ssh` wrapper implements an asynchronous stdin manager. This manager can be paused during handle-off to the system SSH client, preventing the wrapper from "eating" characters intended for the room session.
