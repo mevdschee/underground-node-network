@@ -22,6 +22,13 @@ const (
 	rainDuration  = 2 * time.Second
 )
 
+type State int
+
+const (
+	StateRain State = iota
+	StateConsole
+)
+
 // --- Panel Definitions ---
 
 type Panel struct {
@@ -36,7 +43,6 @@ func (p *Panel) Draw(s tcell.Screen) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Draw border
 	for x := p.x; x < p.x+p.w; x++ {
 		s.SetContent(x, p.y, tcell.RuneHLine, nil, p.style)
 		s.SetContent(x, p.y+p.h-1, tcell.RuneHLine, nil, p.style)
@@ -50,13 +56,11 @@ func (p *Panel) Draw(s tcell.Screen) {
 	s.SetContent(p.x, p.y+p.h-1, tcell.RuneLLCorner, nil, p.style)
 	s.SetContent(p.x+p.w-1, p.y+p.h-1, tcell.RuneLRCorner, nil, p.style)
 
-	// Draw title
 	titleStr := fmt.Sprintf(" [ %s ] ", p.title)
 	for i, r := range titleStr {
 		s.SetContent(p.x+2+i, p.y, r, nil, p.style.Bold(true))
 	}
 
-	// Draw lines
 	for i, line := range p.lines {
 		if i >= p.h-2 {
 			break
@@ -91,7 +95,7 @@ func (p *Panel) SetLine(i int, line string) {
 type LatencyGraph struct {
 	*Panel
 	data  []int
-	state bool // Is gathering data
+	state bool
 }
 
 func (g *LatencyGraph) Draw(s tcell.Screen) {
@@ -106,13 +110,13 @@ func (g *LatencyGraph) Draw(s tcell.Screen) {
 	maxVal := 120
 	graphH := g.h - 3
 	for i, v := range g.data {
-		h := (v * graphH) / maxVal
-		if h < 1 && v > 0 {
-			h = 1
+		gh := (v * graphH) / maxVal
+		if gh < 1 && v > 0 {
+			gh = 1
 		}
-		for j := 0; j < h; j++ {
+		for j := 0; j < gh; j++ {
 			char := '┃'
-			if j == h-1 {
+			if j == gh-1 {
 				char = '┏'
 			}
 			s.SetContent(g.x+2+i, g.y+g.h-2-j, char, nil, g.style)
@@ -172,14 +176,6 @@ func applyGlitch(s tcell.Screen, w, h int) {
 	}
 }
 
-func applySubtleGlitch(s tcell.Screen, w, h int) {
-	rx, ry := rand.Intn(w), rand.Intn(h)
-	m, c, st, _ := s.GetContent(rx, ry)
-	if m != ' ' {
-		s.SetContent(rx, ry, m, c, st.Foreground(tcell.ColorLime))
-	}
-}
-
 func main() {
 	s, err := tcell.NewScreen()
 	if err != nil {
@@ -196,7 +192,12 @@ func main() {
 	baseStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorGreen)
 	brightStyle := baseStyle.Foreground(tcell.ColorLime)
 
-	// Layout Setup
+	// --- State Management ---
+	var mu sync.Mutex
+	currentState := StateRain
+	rainStartTime := time.Now()
+
+	// --- Component Setup ---
 	clockPanel := &Panel{x: sw - 24, y: 1, w: 22, h: 3, title: "SYSTEM_TIME", style: brightStyle}
 	scanPanel := &Panel{x: 2, y: 5, w: 30, h: 8, title: "ID_SCANNER", style: baseStyle}
 	clientLog := &Panel{x: 34, y: 5, w: (sw - 38) / 2, h: 12, title: "CLIENT_LOG", style: baseStyle}
@@ -206,27 +207,16 @@ func main() {
 		data:  make([]int, 0),
 	}
 
+	drops := make([]*Drop, sw)
+	for i := 0; i < sw; i++ {
+		drops[i] = &Drop{x: i, y: rand.Intn(sh), speed: rand.Intn(2) + 1, length: rand.Intn(sh/2) + 5}
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	stopChan := make(chan struct{})
 
-	// --- Component: Background Loops ---
-
-	// Glitch loop
-	go func() {
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-time.After(time.Duration(200+rand.Intn(3000)) * time.Millisecond):
-				if rand.Float64() < 0.2 {
-					s.Clear()
-					s.Show()
-					time.Sleep(20 * time.Millisecond)
-				}
-			}
-		}
-	}()
+	// --- Background Loops ---
 
 	// Clock Loop
 	go func() {
@@ -237,8 +227,7 @@ func main() {
 			case <-stopChan:
 				return
 			case <-ticker.C:
-				now := time.Now()
-				clockPanel.SetLine(0, now.Format("15:04:05.000"))
+				clockPanel.SetLine(0, time.Now().Format("15:04:05.000"))
 			}
 		}
 	}()
@@ -252,11 +241,7 @@ func main() {
 			case <-stopChan:
 				return
 			case <-ticker.C:
-				graphPanel.mu.Lock()
-				active := graphPanel.state
-				graphPanel.mu.Unlock()
-
-				if active {
+				if graphPanel.state {
 					p := 20 + rand.Intn(40)
 					if rand.Float64() < 0.05 {
 						p += 80
@@ -269,7 +254,7 @@ func main() {
 		}
 	}()
 
-	// Rendering Loop
+	// Global Rendering Loop
 	go func() {
 		ticker := time.NewTicker(tickerRate)
 		defer ticker.Stop()
@@ -279,55 +264,68 @@ func main() {
 				return
 			case <-ticker.C:
 				s.Clear()
-				drawText(s, 2, 1, " [ UNDERGROUND_NODE_NETWORK OPERATOR CONSOLE ] ", brightStyle.Bold(true))
-				clockPanel.Draw(s)
-				scanPanel.Draw(s)
-				clientLog.Draw(s)
-				serverLog.Draw(s)
-				graphPanel.Draw(s)
+				mu.Lock()
+				st := currentState
+				mu.Unlock()
+
+				if st == StateRain {
+					// Draw Rain
+					for _, d := range drops {
+						d.y += d.speed
+						if d.y-d.length > sh {
+							d.y = 0
+						}
+						for i := 0; i < d.length; i++ {
+							y := d.y - i
+							if y >= 0 && y < sh {
+								char := rune(rainChars[rand.Intn(len(rainChars))])
+								style := baseStyle
+								if i == 0 {
+									style = brightStyle.Bold(true)
+								} else if i > d.length/2 {
+									style = baseStyle.Foreground(tcell.ColorDarkGreen)
+								}
+								s.SetContent(d.x, y, char, nil, style)
+							}
+						}
+					}
+					if rand.Float64() < 0.05 {
+						applyGlitch(s, sw, sh)
+					}
+					if time.Since(rainStartTime) > rainDuration {
+						mu.Lock()
+						currentState = StateConsole
+						mu.Unlock()
+					}
+				} else {
+					// Draw Console
+					drawText(s, 2, 1, " [ UNDERGROUND_NODE_NETWORK OPERATOR CONSOLE ] ", brightStyle.Bold(true))
+					clockPanel.Draw(s)
+					scanPanel.Draw(s)
+					clientLog.Draw(s)
+					serverLog.Draw(s)
+					graphPanel.Draw(s)
+					if rand.Float64() < 0.005 {
+						applyGlitch(s, sw, sh)
+					}
+				}
 				s.Show()
 			}
 		}
 	}()
 
-	// --- Phase 1: Digital Rain ---
-	drops := make([]*Drop, sw)
-	for i := 0; i < sw; i++ {
-		drops[i] = &Drop{x: i, y: rand.Intn(sh), speed: rand.Intn(2) + 1, length: rand.Intn(sh/2) + 5}
-	}
-
-	start := time.Now()
-	for time.Since(start) < rainDuration {
-		s.Clear()
-		for _, d := range drops {
-			d.y += d.speed
-			if d.y-d.length > sh {
-				d.y = 0
-			}
-			for i := 0; i < d.length; i++ {
-				y := d.y - i
-				if y >= 0 && y < sh {
-					char := rune(rainChars[rand.Intn(len(rainChars))])
-					style := baseStyle
-					if i == 0 {
-						style = brightStyle.Bold(true)
-					} else if i > d.length/2 {
-						style = baseStyle.Foreground(tcell.ColorDarkGreen)
-					}
-					s.SetContent(d.x, y, char, nil, style)
-				}
-			}
-		}
-		if rand.Float64() < 0.05 {
-			applyGlitch(s, sw, sh)
-		}
-		s.Show()
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	// --- Component: Scenario Runner ---
+	// Scenario Runner
 	go func() {
-		defer close(stopChan)
+		// Wait for rain to finish
+		for {
+			mu.Lock()
+			st := currentState
+			mu.Unlock()
+			if st == StateConsole {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 
 		scanPanel.AddLine("STATE: INITIALIZING...")
 		time.Sleep(500 * time.Millisecond)
@@ -371,6 +369,7 @@ func main() {
 		serverLog.AddLine("> SYNC_COMPLETE. P2P_FABRIC ESTABLISHED.")
 
 		time.Sleep(4 * time.Second)
+		close(stopChan)
 	}()
 
 	select {
