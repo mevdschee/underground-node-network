@@ -13,6 +13,7 @@ import (
 	"github.com/mevdschee/underground-node-network/internal/doors"
 	"github.com/mevdschee/underground-node-network/internal/entrypoint"
 	"github.com/mevdschee/underground-node-network/internal/nat"
+	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/sshserver"
 	"golang.org/x/crypto/ssh"
 )
@@ -146,7 +147,16 @@ func main() {
 			}
 
 			// Listen for messages in background (handles punch_offer and server errors)
-			go epClient.ListenForMessages(nil, func(err error) {
+			go epClient.ListenForMessages(nil, func(offer protocol.PunchOfferPayload) {
+				if offer.VisitorKey != "" {
+					pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(offer.VisitorKey))
+					if err == nil {
+						server.AuthorizeKey(pubKey)
+					} else {
+						log.Printf("Warning: Failed to parse visitor public key: %v", err)
+					}
+				}
+			}, func(err error) {
 				log.Fatalf("Entry point error: %v", err)
 			}, actualPort, candidateStrs)
 		}

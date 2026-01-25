@@ -77,8 +77,12 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 			return nil, fmt.Errorf("public key mismatch for user %s", username)
 		}
 
+		pubKeyStr := string(ssh.MarshalAuthorizedKey(pubKey))
 		return &ssh.Permissions{
-			Extensions: map[string]string{"registered": "true"},
+			Extensions: map[string]string{
+				"registered": "true",
+				"pubkey":     pubKeyStr,
+			},
 		}, nil
 	}
 
@@ -225,7 +229,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 						}
 					}
 				}()
-				s.handleVisitor(channel, username)
+				s.handleVisitor(channel, conn, username)
 				return
 			}
 		default:
@@ -327,7 +331,7 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 	}
 }
 
-func (s *Server) handleVisitor(channel ssh.Channel, username string) {
+func (s *Server) handleVisitor(channel ssh.Channel, conn *ssh.ServerConn, username string) {
 	// Welcome message
 	fmt.Fprintf(channel, "\r\n")
 	fmt.Fprintf(channel, "╔═══════════════════════════════════════════════════════════════╗\r\n")
@@ -403,7 +407,7 @@ func (s *Server) handleVisitor(channel ssh.Channel, username string) {
 				fmt.Fprintf(channel, "\r\n")
 				if len(line) > 0 {
 					cmd := string(line)
-					s.handleVisitorCommand(channel, username, cmd)
+					s.handleVisitorCommand(channel, conn, username, cmd)
 					// Add to history if it's different from the last one
 					if len(history) == 0 || history[len(history)-1] != cmd {
 						history = append(history, cmd)
@@ -444,7 +448,7 @@ func (s *Server) showRooms(w io.Writer) {
 	}
 }
 
-func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, input string) {
+func (s *Server) handleVisitorCommand(channel ssh.Channel, conn *ssh.ServerConn, username string, input string) {
 	input = strings.TrimSpace(input)
 
 	if strings.HasPrefix(input, "/") {
@@ -529,10 +533,17 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 		s.mu.Unlock()
 	}()
 
+	// Extract visitor public key from connection extensions
+	visitorKey := ""
+	if conn.Permissions != nil {
+		visitorKey = conn.Permissions.Extensions["pubkey"]
+	}
+
 	// Send punch_offer to room operator
 	offerPayload := protocol.PunchOfferPayload{
 		VisitorID:  visitorID,
 		Candidates: []string{}, // Visitor doesn't have STUN in CLI mode
+		VisitorKey: visitorKey,
 	}
 	offerMsg, _ := protocol.NewMessage(protocol.MsgTypePunchOffer, offerPayload)
 

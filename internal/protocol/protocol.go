@@ -78,6 +78,7 @@ type PunchRequestPayload struct {
 type PunchOfferPayload struct {
 	VisitorID  string   `json:"visitor_id"`
 	Candidates []string `json:"candidates"`
+	VisitorKey string   `json:"visitor_key"` // Visitor's public key for P2P auth
 }
 
 // PunchAnswerPayload is sent by room operator back to entry point

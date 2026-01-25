@@ -22,19 +22,40 @@ type Visitor struct {
 
 // Server is an ephemeral SSH server for the UNN node
 type Server struct {
-	address     string
-	config      *ssh.ServerConfig
-	doorManager *doors.Manager
-	roomName    string
-	visitors    map[string]*Visitor
-	mu          sync.RWMutex
-	listener    net.Listener
+	address        string
+	config         *ssh.ServerConfig
+	doorManager    *doors.Manager
+	roomName       string
+	visitors       map[string]*Visitor
+	authorizedKeys map[string]bool // Marshaled pubkey -> true
+	mu             sync.RWMutex
+	listener       net.Listener
 }
 
 // NewServer creates a new SSH server
 func NewServer(address, hostKeyPath, roomName string, doorManager *doors.Manager) (*Server, error) {
+	s := &Server{
+		address:        address,
+		doorManager:    doorManager,
+		roomName:       roomName,
+		visitors:       make(map[string]*Visitor),
+		authorizedKeys: make(map[string]bool),
+	}
+
 	config := &ssh.ServerConfig{
-		NoClientAuth: true, // For now, allow any connection
+		NoClientAuth: false,
+	}
+
+	config.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+
+		marshaled := pubKey.Marshal()
+		if !s.authorizedKeys[string(marshaled)] {
+			return nil, fmt.Errorf("public key not authorized for this room")
+		}
+
+		return nil, nil
 	}
 
 	// Load or generate host key
@@ -44,13 +65,16 @@ func NewServer(address, hostKeyPath, roomName string, doorManager *doors.Manager
 	}
 	config.AddHostKey(hostKey)
 
-	return &Server{
-		address:     address,
-		config:      config,
-		doorManager: doorManager,
-		roomName:    roomName,
-		visitors:    make(map[string]*Visitor),
-	}, nil
+	s.config = config
+	return s, nil
+}
+
+// AuthorizeKey registers a public key that is allowed to connect to this room
+func (s *Server) AuthorizeKey(pubKey ssh.PublicKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authorizedKeys[string(pubKey.Marshal())] = true
+	log.Printf("Authorized key for visitor")
 }
 
 // Start begins listening for SSH connections
