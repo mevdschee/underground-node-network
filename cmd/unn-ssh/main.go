@@ -388,15 +388,12 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		return fmt.Errorf("host key mismatch")
 	}
 
-	// Use specific configuration for the room connection
+	// Use the same auth as the entrypoint
 	config := &ssh.ClientConfig{
-		User:            "unn", // Standard username for room connections
+		User:            entrypointConfig.User,
 		Auth:            entrypointConfig.Auth,
 		HostKeyCallback: hostKeyCallback,
 		Timeout:         10 * time.Second,
-		HostKeyAlgorithms: []string{
-			ssh.KeyAlgoED25519, // Enforce ed25519 host keys
-		},
 	}
 
 	// Try each candidate
