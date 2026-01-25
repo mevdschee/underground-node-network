@@ -572,10 +572,18 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 		log.Printf("Sent connection data to visitor %s for room %s", username, input)
 
 		fmt.Fprintf(channel, "\r\nOr connect directly:\r\n")
-		var hostKey string
+		var fingerprint string
 		if len(startPayload.PublicKeys) > 0 {
-			hostKey = strings.TrimSpace(startPayload.PublicKeys[0])
+			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(startPayload.PublicKeys[0]))
+			if err == nil {
+				fingerprint = ssh.FingerprintSHA256(pubKey)
+			}
 		}
+
+		if fingerprint != "" {
+			fmt.Fprintf(channel, "  Expected fingerprint: %s\r\n", fingerprint)
+		}
+
 		for _, candidate := range startPayload.Candidates {
 			// Extract IP if it's in the old format (type:ip:port)
 			ip := candidate
@@ -586,13 +594,7 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 				}
 			}
 
-			if hostKey != "" {
-				hostSpec := fmt.Sprintf("unn-room,[unn-room]:%d,%s,[%s]:%d", startPayload.SSHPort, ip, ip, startPayload.SSHPort)
-				fmt.Fprintf(channel, "  K=$(mktemp); echo '%s %s' > $K; ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$K -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o HashKnownHosts=no -o HostKeyAlias=unn-room -p %d %s@%s; rm $K\r\n",
-					hostSpec, hostKey, startPayload.SSHPort, username, ip)
-			} else {
-				fmt.Fprintf(channel, "  ssh -p %d %s@%s\r\n", startPayload.SSHPort, username, ip)
-			}
+			fmt.Fprintf(channel, "  ssh -p %d %s@%s\r\n", startPayload.SSHPort, username, ip)
 		}
 
 	case <-time.After(30 * time.Second):
