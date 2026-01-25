@@ -18,6 +18,8 @@ const (
 	charDelayMin  = 5 * time.Millisecond
 	charDelayMax  = 15 * time.Millisecond
 	blinkRate     = 300 * time.Millisecond
+	rainChars     = "0123456789ABCDEF!@#$%^&*()_+-=[]{}|;':,./<>?"
+	rainDuration  = 2 * time.Second
 )
 
 // --- Panel Definitions ---
@@ -127,6 +129,12 @@ func (g *LatencyGraph) AddPoint(p int) {
 	}
 }
 
+type Drop struct {
+	x, y   int
+	speed  int
+	length int
+}
+
 // --- Main Helper Functions ---
 
 func drawText(s tcell.Screen, x, y int, text string, style tcell.Style) {
@@ -144,6 +152,34 @@ func typeLine(p *Panel, text string) {
 	p.SetLine(len(p.lines)-1, fullText)
 }
 
+func applyGlitch(s tcell.Screen, w, h int) {
+	if rand.Float64() < 0.5 {
+		row := rand.Intn(h)
+		shift := rand.Intn(5) - 2
+		for x := 0; x < w; x++ {
+			nx := (x + shift + w) % w
+			m, c, st, _ := s.GetContent(x, row)
+			s.SetContent(nx, row, m, c, st)
+		}
+	} else {
+		for i := 0; i < 50; i++ {
+			rx, ry := rand.Intn(w), rand.Intn(h)
+			m, c, st, _ := s.GetContent(rx, ry)
+			if m != ' ' {
+				s.SetContent(rx, ry, rune(rainChars[rand.Intn(len(rainChars))]), c, st.Foreground(tcell.ColorLime))
+			}
+		}
+	}
+}
+
+func applySubtleGlitch(s tcell.Screen, w, h int) {
+	rx, ry := rand.Intn(w), rand.Intn(h)
+	m, c, st, _ := s.GetContent(rx, ry)
+	if m != ' ' {
+		s.SetContent(rx, ry, m, c, st.Foreground(tcell.ColorLime))
+	}
+}
+
 func main() {
 	s, err := tcell.NewScreen()
 	if err != nil {
@@ -157,15 +193,16 @@ func main() {
 	defer s.Fini()
 
 	sw, sh := s.Size()
-	baseStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorLime)
+	baseStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorGreen)
+	brightStyle := baseStyle.Foreground(tcell.ColorLime)
 
 	// Layout Setup
-	clockPanel := &Panel{x: sw - 24, y: 1, w: 22, h: 3, title: "SYSTEM_TIME", style: baseStyle.Foreground(tcell.ColorYellow)}
-	scanPanel := &Panel{x: 2, y: 5, w: 30, h: 8, title: "ID_SCANNER", style: baseStyle.Foreground(tcell.ColorTeal)}
+	clockPanel := &Panel{x: sw - 24, y: 1, w: 22, h: 3, title: "SYSTEM_TIME", style: brightStyle}
+	scanPanel := &Panel{x: 2, y: 5, w: 30, h: 8, title: "ID_SCANNER", style: baseStyle}
 	clientLog := &Panel{x: 34, y: 5, w: (sw - 38) / 2, h: 12, title: "CLIENT_LOG", style: baseStyle}
-	serverLog := &Panel{x: 34 + (sw-38)/2 + 2, y: 5, w: (sw - 38) / 2, h: 12, title: "SERVER_LOG", style: baseStyle.Foreground(tcell.ColorAqua)}
+	serverLog := &Panel{x: 34 + (sw-38)/2 + 2, y: 5, w: (sw - 38) / 2, h: 12, title: "SERVER_LOG", style: brightStyle}
 	graphPanel := &LatencyGraph{
-		Panel: &Panel{x: 2, y: sh - 9, w: sw - 4, h: 8, title: "P2P_LATENCY_TRACKER (ms)", style: baseStyle.Foreground(tcell.ColorPink)},
+		Panel: &Panel{x: 2, y: sh - 9, w: sw - 4, h: 8, title: "P2P_LATENCY_TRACKER (ms)", style: baseStyle},
 		data:  make([]int, 0),
 	}
 
@@ -242,7 +279,7 @@ func main() {
 				return
 			case <-ticker.C:
 				s.Clear()
-				drawText(s, 2, 1, " [ UNDERGROUND_NODE_NETWORK OPERATOR CONSOLE ] ", baseStyle.Foreground(tcell.ColorWhite).Bold(true))
+				drawText(s, 2, 1, " [ UNDERGROUND_NODE_NETWORK OPERATOR CONSOLE ] ", brightStyle.Bold(true))
 				clockPanel.Draw(s)
 				scanPanel.Draw(s)
 				clientLog.Draw(s)
@@ -252,6 +289,41 @@ func main() {
 			}
 		}
 	}()
+
+	// --- Phase 1: Digital Rain ---
+	drops := make([]*Drop, sw)
+	for i := 0; i < sw; i++ {
+		drops[i] = &Drop{x: i, y: rand.Intn(sh), speed: rand.Intn(2) + 1, length: rand.Intn(sh/2) + 5}
+	}
+
+	start := time.Now()
+	for time.Since(start) < rainDuration {
+		s.Clear()
+		for _, d := range drops {
+			d.y += d.speed
+			if d.y-d.length > sh {
+				d.y = 0
+			}
+			for i := 0; i < d.length; i++ {
+				y := d.y - i
+				if y >= 0 && y < sh {
+					char := rune(rainChars[rand.Intn(len(rainChars))])
+					style := baseStyle
+					if i == 0 {
+						style = brightStyle.Bold(true)
+					} else if i > d.length/2 {
+						style = baseStyle.Foreground(tcell.ColorDarkGreen)
+					}
+					s.SetContent(d.x, y, char, nil, style)
+				}
+			}
+		}
+		if rand.Float64() < 0.05 {
+			applyGlitch(s, sw, sh)
+		}
+		s.Show()
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	// --- Component: Scenario Runner ---
 	go func() {
