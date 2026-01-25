@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ func main() {
 	}
 
 	verbose := flag.Bool("v", false, "Verbose output")
+	identity := flag.String("identity", "", "Path to private key for authentication")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
@@ -37,12 +39,12 @@ func main() {
 	}
 
 	sshURL := flag.Arg(0)
-	if err := teleport(sshURL, *verbose); err != nil {
+	if err := teleport(sshURL, *identity, *verbose); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 }
 
-func teleport(sshURL string, verbose bool) error {
+func teleport(sshURL string, identPath string, verbose bool) error {
 	// Parse the SSH URL
 	u, err := url.Parse(sshURL)
 	if err != nil {
@@ -82,12 +84,43 @@ func teleport(sshURL string, verbose bool) error {
 		log.Printf("Target room: %s", roomName)
 	}
 
+	// Load identity key
+	var authMethods []ssh.AuthMethod
+
+	if identPath != "" {
+		signer, err := loadKey(identPath)
+		if err != nil {
+			return fmt.Errorf("failed to load identity key: %w", err)
+		}
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	} else {
+		// Try standard SSH keys
+		homeDir, _ := os.UserHomeDir()
+		possibleKeys := []string{
+			filepath.Join(homeDir, ".ssh", "id_ed25519"),
+			filepath.Join(homeDir, ".ssh", "id_rsa"),
+		}
+
+		for _, keyPath := range possibleKeys {
+			signer, err := loadKey(keyPath)
+			if err == nil {
+				authMethods = append(authMethods, ssh.PublicKeys(signer))
+				if verbose {
+					log.Printf("Using identity: %s", keyPath)
+				}
+				break
+			}
+		}
+	}
+
+	if len(authMethods) == 0 {
+		return fmt.Errorf("no SSH identity found. Use -identity or ensure ~/.ssh/id_rsa or id_ed25519 exists")
+	}
+
 	// Connect to entry point
 	config := &ssh.ClientConfig{
-		User: username,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(""), // No password needed for entry point
-		},
+		User:            username,
+		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         10 * time.Second,
 	}
@@ -310,4 +343,12 @@ connect:
 	}
 
 	return fmt.Errorf("no candidates available")
+}
+
+func loadKey(path string) (ssh.Signer, error) {
+	keyBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ssh.ParsePrivateKey(keyBytes)
 }
