@@ -9,14 +9,80 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
+
+type StdinProxy struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	writer io.Writer
+	active bool
+	paused bool
+}
+
+func (p *StdinProxy) SetWriter(w io.Writer) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.writer = w
+}
+
+func (p *StdinProxy) Pause() {
+	p.mu.Lock()
+	p.paused = true
+	p.mu.Unlock()
+}
+
+func (p *StdinProxy) Resume() {
+	p.mu.Lock()
+	p.paused = false
+	if p.cond != nil {
+		p.cond.Broadcast()
+	}
+	p.mu.Unlock()
+}
+
+func (p *StdinProxy) Start() {
+	p.mu.Lock()
+	if p.active {
+		p.mu.Unlock()
+		return
+	}
+	p.active = true
+	p.cond = sync.NewCond(&p.mu)
+	p.mu.Unlock()
+
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			p.mu.Lock()
+			for p.paused {
+				p.cond.Wait()
+			}
+			p.mu.Unlock()
+
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				return
+			}
+			p.mu.Lock()
+			if p.writer != nil {
+				p.writer.Write(buf[:n])
+			}
+			p.mu.Unlock()
+		}
+	}()
+}
+
+var globalProxy StdinProxy
 
 func main() {
 	flag.Usage = func() {
@@ -174,6 +240,20 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			return fmt.Errorf("failed to request PTY: %w", err)
 		}
 
+		// Handle window size changes
+		winch := make(chan os.Signal, 1)
+		signal.Notify(winch, syscall.SIGWINCH)
+		defer signal.Stop(winch)
+
+		go func() {
+			for range winch {
+				width, height, err := term.GetSize(fd)
+				if err == nil {
+					session.WindowChange(height, width)
+				}
+			}
+		}()
+
 		// Start shell
 		if err := session.Shell(); err != nil {
 			session.Close()
@@ -210,10 +290,10 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 
 					if b == '\n' || b == '\r' {
 						line := strings.TrimSpace(currentLine.String())
-						currentLine.Reset()
 
 						if line == "[CONNECTION_DATA]" {
 							inData = true
+							currentLine.Reset()
 							continue
 						}
 						if inData {
@@ -234,30 +314,30 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 								key := strings.TrimPrefix(line, "HostKey: ")
 								hostKeys = append(hostKeys, strings.TrimSpace(key))
 							}
+							currentLine.Reset()
 							continue
 						}
-					} else if inData {
-						currentLine.WriteByte(b)
-					}
 
-					if !inData {
-						// Relay to stdout immediately
+						// Print accumulated character
 						os.Stdout.Write([]byte{b})
-						// In raw mode, we might need to add \r after \n for some terminals,
-						// but usually the server sends \r\n already.
-						if b == '\n' {
+						// Convert \n to \r\n for raw terminal if needed
+						if b == '\n' && !strings.HasSuffix(currentLine.String(), "\r") {
 							os.Stdout.Write([]byte{'\r'})
 						}
+						currentLine.Reset()
+					} else {
 						currentLine.WriteByte(b)
+						if !inData {
+							os.Stdout.Write([]byte{b})
+						}
 					}
 				}
 			}
 		}()
 
-		// Proxy stdin
-		go func() {
-			io.Copy(stdinPipe, os.Stdin)
-		}()
+		// Proxy stdin using the global proxy to avoid competition
+		globalProxy.Start()
+		globalProxy.SetWriter(stdinPipe)
 
 		// If room name was provided, send it immediately
 		if currentRoom != "" {
@@ -286,6 +366,8 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			term.Restore(fd, oldState)
 		}
 
+		globalProxy.SetWriter(nil)
+		globalProxy.Pause()
 		session.Close()
 		client.Close()
 
@@ -303,6 +385,7 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 				time.Sleep(2 * time.Second)
 			}
 		}
+		globalProxy.Resume()
 		// Loop back to entry point
 	}
 }

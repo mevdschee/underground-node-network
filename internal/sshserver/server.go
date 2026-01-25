@@ -238,6 +238,10 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	currentLineBackup := ""
 	escState := 0
 
+	var doorStdin io.WriteCloser
+	var doorDone chan struct{}
+	var doorMu sync.Mutex
+
 	for {
 		n, err := channel.Read(buf)
 		if err != nil {
@@ -246,6 +250,33 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 
 		for i := 0; i < n; i++ {
 			b := buf[i]
+
+			doorMu.Lock()
+			if doorDone != nil {
+				select {
+				case <-doorDone:
+					doorStdin = nil
+					doorDone = nil
+				default:
+				}
+			}
+
+			if doorStdin != nil {
+				if b == 3 { // Ctrl+C
+					fmt.Fprintf(channel, "\r\n[Interrupting door...]\r\n")
+					doorStdin.Close()
+					// doorStdin/doorDone will be cleared by the select in the next iteration
+					// or we can clear them here to be immediate.
+					doorStdin = nil
+					// We don't clear doorDone here because the goroutine still needs to finish
+					doorMu.Unlock()
+					continue
+				}
+				doorStdin.Write([]byte{b})
+				doorMu.Unlock()
+				continue
+			}
+			doorMu.Unlock()
 
 			// Handle ANSI escape sequences for arrow keys
 			if b == 27 {
@@ -295,7 +326,15 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 				fmt.Fprintf(channel, "\r\n")
 				if len(line) > 0 {
 					cmd := string(line)
-					s.handleCommand(channel, username, cmd)
+					// Special case: handleCommand might start a door
+					pw, done := s.handleCommand(channel, username, cmd)
+					if pw != nil {
+						doorMu.Lock()
+						doorStdin = pw
+						doorDone = done
+						doorMu.Unlock()
+					}
+
 					// Add to history if it's different from the last one
 					if len(history) == 0 || history[len(history)-1] != cmd {
 						history = append(history, cmd)
@@ -318,13 +357,13 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	}
 }
 
-func (s *Server) handleCommand(channel ssh.Channel, username string, input string) {
+func (s *Server) handleCommand(channel ssh.Channel, username string, input string) (io.WriteCloser, chan struct{}) {
 	input = strings.TrimSpace(input)
 
 	if !strings.HasPrefix(input, "/") {
 		// Regular chat message
 		fmt.Fprintf(channel, "\r<%s> %s\r\n", username, input)
-		return
+		return nil, nil
 	}
 
 	cmd := strings.TrimPrefix(input, "/")
@@ -334,7 +373,7 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 	switch command {
 	case "exit":
 		channel.Close()
-		return
+		return nil, nil
 	case "help":
 		fmt.Fprintf(channel, "\rCommands:\r\n")
 		fmt.Fprintf(channel, "  /help     - Show this help\r\n")
@@ -343,29 +382,40 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 		fmt.Fprintf(channel, "  /<door>   - Enter a door\r\n")
 		fmt.Fprintf(channel, "  /exit     - Exit room\r\n")
 		fmt.Fprintf(channel, "  Ctrl+C    - Exit room\r\n")
+		return nil, nil
 	case "who":
 		visitors := s.GetVisitors()
 		fmt.Fprintf(channel, "\rVisitors in room:\r\n")
 		for _, v := range visitors {
 			fmt.Fprintf(channel, "  %s\r\n", v)
 		}
+		return nil, nil
 	case "doors":
 		doorList := s.doorManager.List()
 		fmt.Fprintf(channel, "\rAvailable doors:\r\n")
 		for _, door := range doorList {
 			fmt.Fprintf(channel, "  /%s\r\n", door)
 		}
+		return nil, nil
 	default:
 		// Try to execute as a door
 		if _, ok := s.doorManager.Get(command); ok {
 			fmt.Fprintf(channel, "\r[Entering door: %s]\r\n", command)
-			if err := s.doorManager.Execute(command, channel, channel, channel); err != nil {
-				fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)
-			}
-			fmt.Fprintf(channel, "\r[Exited door: %s]\r\n", command)
+			pr, pw := io.Pipe()
+			done := make(chan struct{})
+			go func() {
+				if err := s.doorManager.Execute(command, pr, channel, channel); err != nil {
+					fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)
+				}
+				pw.Close()
+				fmt.Fprintf(channel, "\r[Exited door: %s]\r\n", command)
+				close(done)
+			}()
+			return pw, done
 		} else {
 			fmt.Fprintf(channel, "\rUnknown command: %s\r\n", command)
 		}
+		return nil, nil
 	}
 }
 
