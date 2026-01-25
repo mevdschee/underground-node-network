@@ -80,6 +80,45 @@ func (m *Manager) Get(name string) (*Door, bool) {
 	return door, ok
 }
 
+// crlfWriter wraps an io.Writer and replaces \n with \r\n
+type crlfWriter struct {
+	w             io.Writer
+	lastCharWasCR bool
+}
+
+func (cw *crlfWriter) Write(p []byte) (n int, err error) {
+	start := 0
+	for i := 0; i < len(p); i++ {
+		if p[i] == '\n' {
+			// Write everything up to this \n
+			if i > start {
+				if _, err := cw.w.Write(p[start:i]); err != nil {
+					return n, err
+				}
+			}
+			// If not preceded by \r, write \r first
+			if !cw.lastCharWasCR {
+				if _, err := cw.w.Write([]byte{'\r'}); err != nil {
+					return n, err
+				}
+			}
+			if _, err := cw.w.Write([]byte{'\n'}); err != nil {
+				return n, err
+			}
+			start = i + 1
+			cw.lastCharWasCR = false
+		} else {
+			cw.lastCharWasCR = (p[i] == '\r')
+		}
+	}
+	if start < len(p) {
+		if _, err := cw.w.Write(p[start:]); err != nil {
+			return n, err
+		}
+	}
+	return len(p), nil
+}
+
 // Execute runs a door program with I/O connected to the provided streams
 func (m *Manager) Execute(name string, stdin io.Reader, stdout, stderr io.Writer) error {
 	door, ok := m.doors[name]
@@ -89,8 +128,8 @@ func (m *Manager) Execute(name string, stdin io.Reader, stdout, stderr io.Writer
 
 	cmd := exec.Command(door.Path)
 	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdout = &crlfWriter{w: stdout}
+	cmd.Stderr = &crlfWriter{w: stderr}
 
 	return cmd.Run()
 }
