@@ -580,10 +580,6 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 			}
 		}
 
-		if fingerprint != "" {
-			fmt.Fprintf(channel, "  Expected fingerprint: %s\r\n", fingerprint)
-		}
-
 		for _, candidate := range startPayload.Candidates {
 			// Extract IP if it's in the old format (type:ip:port)
 			ip := candidate
@@ -595,6 +591,9 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 			}
 
 			fmt.Fprintf(channel, "  ssh -p %d %s@%s\r\n", startPayload.SSHPort, username, ip)
+			if fingerprint != "" {
+				fmt.Fprintf(channel, "  ED25519 key fingerprint is %s.\r\n", fingerprint)
+			}
 		}
 
 	case <-time.After(30 * time.Second):
