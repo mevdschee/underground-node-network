@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/creack/pty"
 )
 
 // Door represents an executable door program
@@ -80,46 +82,7 @@ func (m *Manager) Get(name string) (*Door, bool) {
 	return door, ok
 }
 
-// crlfWriter wraps an io.Writer and replaces \n with \r\n
-type crlfWriter struct {
-	w             io.Writer
-	lastCharWasCR bool
-}
-
-func (cw *crlfWriter) Write(p []byte) (n int, err error) {
-	start := 0
-	for i := 0; i < len(p); i++ {
-		if p[i] == '\n' {
-			// Write everything up to this \n
-			if i > start {
-				if _, err := cw.w.Write(p[start:i]); err != nil {
-					return n, err
-				}
-			}
-			// If not preceded by \r, write \r first
-			if !cw.lastCharWasCR {
-				if _, err := cw.w.Write([]byte{'\r'}); err != nil {
-					return n, err
-				}
-			}
-			if _, err := cw.w.Write([]byte{'\n'}); err != nil {
-				return n, err
-			}
-			start = i + 1
-			cw.lastCharWasCR = false
-		} else {
-			cw.lastCharWasCR = (p[i] == '\r')
-		}
-	}
-	if start < len(p) {
-		if _, err := cw.w.Write(p[start:]); err != nil {
-			return n, err
-		}
-	}
-	return len(p), nil
-}
-
-// Execute runs a door program with I/O connected to the provided streams
+// Execute runs a door program with I/O connected to the provided streams using a PTY
 func (m *Manager) Execute(name string, stdin io.Reader, stdout, stderr io.Writer) error {
 	door, ok := m.doors[name]
 	if !ok {
@@ -127,9 +90,20 @@ func (m *Manager) Execute(name string, stdin io.Reader, stdout, stderr io.Writer
 	}
 
 	cmd := exec.Command(door.Path)
-	cmd.Stdin = stdin
-	cmd.Stdout = &crlfWriter{w: stdout}
-	cmd.Stderr = &crlfWriter{w: stderr}
 
-	return cmd.Run()
+	// Start the command with a pty
+	f, err := pty.Start(cmd)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Copy stdin to the pty, and the pty to stdout.
+	// We don't need stderr separately as PTY merges them.
+	go func() {
+		io.Copy(f, stdin)
+	}()
+
+	_, err = io.Copy(stdout, f)
+	return err
 }
