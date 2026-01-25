@@ -572,8 +572,26 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 		log.Printf("Sent connection data to visitor %s for room %s", username, input)
 
 		fmt.Fprintf(channel, "\r\nOr connect directly:\r\n")
+		var hostKey string
+		if len(startPayload.PublicKeys) > 0 {
+			hostKey = strings.TrimSpace(startPayload.PublicKeys[0])
+		}
 		for _, candidate := range startPayload.Candidates {
-			fmt.Fprintf(channel, "  ssh -p %d %s\r\n", startPayload.SSHPort, candidate)
+			// Extract IP if it's in the old format (type:ip:port)
+			ip := candidate
+			if strings.Count(candidate, ":") >= 2 {
+				parts := strings.Split(candidate, ":")
+				if len(parts) == 3 {
+					ip = parts[1]
+				}
+			}
+
+			if hostKey != "" {
+				fmt.Fprintf(channel, "  ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/dev/fd/3 -p %d %s@%s 3<<<\"%s %s\"\r\n",
+					startPayload.SSHPort, username, ip, ip, hostKey)
+			} else {
+				fmt.Fprintf(channel, "  ssh -p %d %s@%s\r\n", startPayload.SSHPort, username, ip)
+			}
 		}
 
 	case <-time.After(30 * time.Second):

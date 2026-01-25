@@ -30,7 +30,7 @@ type Message struct {
 type RegisterPayload struct {
 	RoomName   string   `json:"room_name"`
 	Doors      []string `json:"doors"`
-	Candidates []string `json:"candidates"`  // NAT traversal candidates (IP:port)
+	Candidates []string `json:"candidates"`  // NAT traversal candidates (IP only)
 	SSHPort    int      `json:"ssh_port"`    // Local SSH server port
 	PublicKeys []string `json:"public_keys"` // SSH public keys (authorized_keys format)
 }

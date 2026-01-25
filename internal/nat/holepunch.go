@@ -158,11 +158,11 @@ func (p *Puncher) Punch(remoteCandidates []Candidate, timeout time.Duration) (ne
 	return result.Conn, nil
 }
 
-// CandidatesToStrings converts candidates to string format for protocol
+// CandidatesToStrings converts candidates to string format for protocol (IP only)
 func CandidatesToStrings(candidates []Candidate) []string {
 	strs := make([]string, len(candidates))
 	for i, c := range candidates {
-		strs[i] = fmt.Sprintf("%s:%s:%d", c.Type, c.IP, c.Port)
+		strs[i] = c.IP
 	}
 	return strs
 }
@@ -171,11 +171,11 @@ func CandidatesToStrings(candidates []Candidate) []string {
 func StringsToCandidates(strs []string) []Candidate {
 	candidates := make([]Candidate, 0, len(strs))
 	for _, s := range strs {
-		var c Candidate
-		_, err := fmt.Sscanf(s, "%[^:]:%[^:]:%d", &c.Type, &c.IP, &c.Port)
-		if err == nil {
-			candidates = append(candidates, c)
-		}
+		candidates = append(candidates, Candidate{
+			Type: "host",
+			IP:   s,
+			Port: 0, // Port is provided separately in protocol
+		})
 	}
 	return candidates
 }
