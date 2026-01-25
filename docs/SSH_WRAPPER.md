@@ -18,68 +18,55 @@ Instead of manually connecting to the entry point, navigating the menu, and then
 ### Basic Syntax
 
 ```bash
-./unn-ssh.sh ssh://[user@]entrypoint[:port]/roomname
+./unn-ssh.sh [options] ssh://[user@]entrypoint[:port][/roomname]
 ```
+
+### Options
+
+- `-identity <path>`: Path to a specific private key for authentication (default: searches `~/.ssh/id_ed25519` and `~/.ssh/id_rsa`).
+- `-v`: Verbose output.
 
 ### Examples
 
-Connect to a room on localhost:
+Connect to a specific room:
 ```bash
 ./unn-ssh.sh ssh://localhost:44322/myroom
 ```
 
-Connect with a specific username:
+Connect to the entry point interactively (interactive selection mode):
 ```bash
-./unn-ssh.sh ssh://alice@unn.example.com/hackerspace
+./unn-ssh.sh ssh://localhost:44322
 ```
 
-Connect to a room on a remote entry point:
+Connect with a specific identity:
 ```bash
-./unn-ssh.sh ssh://entry.unn.network:2222/cybercafe
+./unn-ssh.sh -identity ~/.ssh/my_unn_key ssh://unn.example.com/lobby
 ```
 
-### Verbose Mode
+## Interactive Mode
 
-Use the `-v` flag to see detailed connection progress:
+If no room name is specified in the URL, `unn-ssh` will:
+1. Connect to the entry point.
+2. Open an interactive shell (BBS style).
+3. Allow you to list rooms (`/rooms`), register keys (`/register`), or simply type a room name to teleport.
 
-```bash
-./unn-ssh.sh -v ssh://localhost:44322/myroom
-```
+## Persistence
 
-This will show:
-- Entry point connection status
-- Room request details
-- Candidate discovery
-- Connection attempts
-- SSH client launch
+The wrapper is designed for seamless navigation:
+1. When you "teleport" to a room from the entry point shell, the wrapper handles the P2P connection automatically.
+2. When you exit the room (via `/exit` or terminating the session), the wrapper automatically reconnects you to the entry point shell.
+3. This allows you to jump between rooms without restarting the wrapper.
 
 ## How It Works
 
-1. **URL Parsing**: The wrapper extracts the entry point address, port, username, and room name from the URL
-2. **Entry Point Connection**: Connects to the entry point using SSH
-3. **Room Request**: Sends the room name to the entry point's interactive menu
-4. **Response Parsing**: Extracts the candidate IPs and SSH port from the entry point's response
-5. **Connectivity Test**: Tests each candidate to find a reachable one
-6. **SSH Handoff**: Executes the standard `ssh` command to connect to the room
-
-## Integration with Entry Point
-
-When you connect to a room through the entry point's interactive menu, it now displays both:
-
-1. **Wrapper URL**: An `ssh://` link you can use with `unn-ssh`
-2. **Direct Commands**: Traditional `ssh -p` commands for manual connection
-
-Example output:
-```
-[Connection ready!]
-
-Connect using unn-ssh wrapper:
-  ssh://0.0.0.0:44322/myroom
-
-Or connect directly:
-  ssh -p 2222 192.168.1.100
-  ssh -p 2222 10.0.0.5
-```
+1. **URL Parsing**: The wrapper extracts the entry point address, port, username, and room name.
+2. **Entry Point Connection**: Connects to the entry point using SSH public key authentication.
+3. **Shell/Interaction**: 
+   - If a room was specified, it sends it to the entry point.
+   - If not, it provides a raw terminal for you to interact with the entry point.
+4. **Hole-Punching Discovery**: Monitors the entry point output for a `[CONNECTION_DATA]` block containing P2P candidates and the target's public host keys.
+5. **Connectivity Test**: Quickly probes candidates to find a reachable one.
+6. **SSH Handoff**: Executes the system `ssh` client with a temporary `known_hosts` file containing the verified host keys, ensuring `StrictHostKeyChecking=yes`.
 
 ## Building
 
@@ -95,9 +82,8 @@ go build -o unn-ssh-bin ./cmd/unn-ssh
 - Standard `ssh` client installed on your system
 - Network connectivity to the entry point and room candidates
 
-## Limitations
+## Security
 
-- Currently uses `ssh.InsecureIgnoreHostKey()` - host key verification should be added for production use
-- Requires the standard `ssh` command to be available in PATH
-- Timeout is fixed at 30 seconds for room response
-- Only tests TCP connectivity, not full SSH handshake, before launching client
+- **Authentication**: Uses public key authentication.
+- **Host Keys**: Automatically handles room host keys by creating a temporary `known_hosts` file, ensuring you are connecting to the intended room operator.
+- **Raw Mode**: Temporarily sets your local terminal to raw mode for a responsive BBS experience, restoring it on exit or room transition.

@@ -114,7 +114,9 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConnection(conn net.Conn) {
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.config)
 	if err != nil {
-		log.Printf("Failed SSH handshake: %v", err)
+		if err != io.EOF {
+			log.Printf("Failed SSH handshake: %v", err)
+		}
 		return
 	}
 	defer sshConn.Close()

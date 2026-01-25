@@ -147,7 +147,9 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConnection(conn net.Conn) {
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.config)
 	if err != nil {
-		log.Printf("Failed SSH handshake: %v", err)
+		if err != io.EOF {
+			log.Printf("Failed SSH handshake: %v", err)
+		}
 		return
 	}
 	defer sshConn.Close()
@@ -555,15 +557,23 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 
 		fmt.Fprintf(channel, "\r\nConnect using unn-ssh wrapper:\r\n")
 
-		// Get entry point address from listener
-		entryAddr := s.listener.Addr().String()
+		entryAddr := s.address
+		if strings.HasPrefix(entryAddr, "0.0.0.0") {
+			entryAddr = "localhost" + entryAddr[7:]
+		}
 
-		// Show ssh:// URL for the wrapper
 		fmt.Fprintf(channel, "  ssh://%s/%s\r\n", entryAddr, input)
 
-		if len(startPayload.PublicKeys) > 0 {
-			fmt.Fprintf(channel, "Host Keys: %v\r\n", startPayload.PublicKeys)
+		fmt.Fprintf(channel, "\r\n[CONNECTION_DATA]\r\n")
+		fmt.Fprintf(channel, "Candidates: %s\r\n", strings.Join(startPayload.Candidates, ","))
+		fmt.Fprintf(channel, "SSHPort: %d\r\n", startPayload.SSHPort)
+		for _, k := range startPayload.PublicKeys {
+			// Trim to remove any trailing newlines from key files
+			fmt.Fprintf(channel, "HostKey: %s\r\n", strings.TrimSpace(k))
 		}
+		fmt.Fprintf(channel, "[/CONNECTION_DATA]\r\n")
+
+		log.Printf("Sent connection data to visitor %s for room %s", username, input)
 
 		fmt.Fprintf(channel, "\r\nOr connect directly:\r\n")
 		for _, candidate := range startPayload.Candidates {

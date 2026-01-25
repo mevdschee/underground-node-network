@@ -1,21 +1,21 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -75,13 +75,14 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 	}
 
 	roomName := strings.TrimPrefix(u.Path, "/")
-	if roomName == "" {
-		return fmt.Errorf("no room name specified in URL path")
-	}
 
 	if verbose {
 		log.Printf("Connecting to entry point: %s@%s", username, entrypoint)
-		log.Printf("Target room: %s", roomName)
+		if roomName != "" {
+			log.Printf("Target room: %s", roomName)
+		} else {
+			log.Printf("Interactive selection mode")
+		}
 	}
 
 	// Load identity key
@@ -117,7 +118,7 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		return fmt.Errorf("no SSH identity found. Use -identity or ensure ~/.ssh/id_rsa or id_ed25519 exists")
 	}
 
-	// Connect to entry point
+	// Connect to entry point configuration
 	config := &ssh.ClientConfig{
 		User:            username,
 		Auth:            authMethods,
@@ -125,156 +126,188 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		Timeout:         10 * time.Second,
 	}
 
-	client, err := ssh.Dial("tcp", entrypoint, config)
-	if err != nil {
-		return fmt.Errorf("failed to connect to entry point: %w", err)
-	}
-	defer client.Close()
-
-	if verbose {
-		log.Printf("Connected to entry point")
-	}
-
-	// Open a session
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("failed to create session: %w", err)
-	}
-	defer session.Close()
-
-	// Set up pipes
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdin pipe: %w", err)
-	}
-
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdout pipe: %w", err)
-	}
-
-	// Request PTY
-	if err := session.RequestPty("xterm", 80, 24, ssh.TerminalModes{}); err != nil {
-		return fmt.Errorf("failed to request PTY: %w", err)
-	}
-
-	// Start shell
-	if err := session.Shell(); err != nil {
-		return fmt.Errorf("failed to start shell: %w", err)
-	}
-
-	if verbose {
-		log.Printf("Requesting room: %s", roomName)
-	}
-
-	// Wait for the prompt and send room name
-	scanner := bufio.NewScanner(stdout)
-	var candidates []string
-	var hostKeys []string
-	var sshPort int
-
-	// Read output and look for connection info
-	go func() {
-		for scanner.Scan() {
-			line := scanner.Text()
-			if verbose {
-				log.Printf("< %s", line)
-			}
-
-			// Look for candidate IPs and port
-			if strings.Contains(line, "Candidates:") {
-				// Parse candidates from output like "Candidates: [1IP 2IP]"
-				re := regexp.MustCompile(`Candidates:\s*\[(.*?)\]`)
-				if matches := re.FindStringSubmatch(line); len(matches) > 1 {
-					candidates = strings.Fields(matches[1])
-				}
-			}
-
-			if strings.Contains(line, "SSH Port:") {
-				re := regexp.MustCompile(`SSH Port:\s*(\d+)`)
-				if matches := re.FindStringSubmatch(line); len(matches) > 1 {
-					sshPort, _ = strconv.Atoi(matches[1])
-				}
-			}
-
-			// Look for host keys
-			if strings.Contains(line, "Host Keys:") {
-				// Parse keys from output like "Host Keys: [key1 key2]"
-				re := regexp.MustCompile(`Host Keys:\s*\[(.*?)\]`)
-				if matches := re.FindStringSubmatch(line); len(matches) > 1 {
-					// Keys might be space separated, but keys themselves have spaces.
-					// However, the standard public key format is "type blob [comment]".
-					// Since we printed with %v, it's just spaces.
-					// It's safer to just take the whole content and split by "ssh-" if we support multiple types
-					// But usually there is one key. Simple space splitting might break if comments have spaces.
-					// For now, let's assume standard format and try to reconstruct.
-					// The simplest way to handle %v output [a b c] is to take the string content and parse it.
-					// Actually, the keys printed are from pub key file which is "type blob comment\n".
-					// So it might look messy.
-					// Let's iterate and try to find valid key prefixes.
-					content := matches[1]
-
-					// Split by known key types
-					for _, keyType := range []string{"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256"} {
-						parts := strings.Split(content, keyType)
-						for i, part := range parts {
-							if i == 0 {
-								continue
-							} // Skip everything before first key
-							// part starts after key type. It should start with space then blob.
-							// Reconstruct: keyType + part
-							fullKey := keyType + part
-							// Clean up: stop at next key type or end of string
-							for _, nextType := range []string{"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256"} {
-								if idx := strings.Index(fullKey, " "+nextType); idx != -1 {
-									fullKey = fullKey[:idx]
-								}
-							}
-							hostKeys = append(hostKeys, strings.TrimSpace(fullKey))
-						}
-					}
-					// Fallback: if empty, just try to split by space and take pairs?
-					// No, let's treat the whole content as one key if parsing failed, assuming 1 key
-					if len(hostKeys) == 0 {
-						hostKeys = []string{content}
-					}
-				}
-			}
-		}
-	}()
-
-	// Give it a moment to display the welcome message
-	time.Sleep(500 * time.Millisecond)
-
-	// Send the room name
-	if verbose {
-		log.Printf("> %s", roomName)
-	}
-	fmt.Fprintf(stdin, "%s\r\n", roomName)
-
-	// Wait for connection info
-	timeout := time.After(30 * time.Second)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
+	// Loop for persistent entry point session
+	currentRoom := roomName
 	for {
-		select {
-		case <-timeout:
-			return fmt.Errorf("timeout waiting for connection info")
-		case <-ticker.C:
-			if len(candidates) > 0 && sshPort > 0 {
-				// We don't strictly wait for keys, but we should try
-				if len(hostKeys) > 0 {
-					goto connect
+		// Connect to entry point
+		client, err := ssh.Dial("tcp", entrypoint, config)
+		if err != nil {
+			return fmt.Errorf("failed to connect to entry point: %w", err)
+		}
+
+		if verbose {
+			log.Printf("Connected to entry point")
+		}
+
+		// Open a session
+		session, err := client.NewSession()
+		if err != nil {
+			client.Close()
+			return fmt.Errorf("failed to create session: %w", err)
+		}
+
+		// Set up pipes
+		stdinPipe, err := session.StdinPipe()
+		if err != nil {
+			session.Close()
+			client.Close()
+			return fmt.Errorf("failed to get stdin pipe: %w", err)
+		}
+
+		stdoutPipe, err := session.StdoutPipe()
+		if err != nil {
+			session.Close()
+			client.Close()
+			return fmt.Errorf("failed to get stdout pipe: %w", err)
+		}
+
+		// Request PTY
+		fd := int(os.Stdin.Fd())
+		width, height, err := term.GetSize(fd)
+		if err != nil {
+			width, height = 80, 24
+		}
+
+		if err := session.RequestPty("xterm", height, width, ssh.TerminalModes{}); err != nil {
+			session.Close()
+			client.Close()
+			return fmt.Errorf("failed to request PTY: %w", err)
+		}
+
+		// Start shell
+		if err := session.Shell(); err != nil {
+			session.Close()
+			client.Close()
+			return fmt.Errorf("failed to start shell: %w", err)
+		}
+
+		// Variables for connection info
+		var (
+			candidates []string
+			hostKeys   []string
+			sshPort    int
+			done       = make(chan bool)
+			userExited = make(chan bool)
+		)
+
+		// Set terminal to raw mode for interaction
+		oldState, _ := term.MakeRaw(fd)
+
+		// Monitor output for connection data and echo to user
+		go func() {
+			var currentLine strings.Builder
+			var inData bool
+			buf := make([]byte, 1024)
+			for {
+				n, err := stdoutPipe.Read(buf)
+				if err != nil {
+					close(userExited)
+					return
 				}
-				// If we have candidates but no keys after a while, proceed without keys?
-				// No, secure by default. Wait a bit more?
-				// The server prints keys immediately after candidates/port.
+
+				for i := 0; i < n; i++ {
+					b := buf[i]
+
+					if b == '\n' || b == '\r' {
+						line := strings.TrimSpace(currentLine.String())
+						currentLine.Reset()
+
+						if line == "[CONNECTION_DATA]" {
+							inData = true
+							continue
+						}
+						if inData {
+							if line == "[/CONNECTION_DATA]" {
+								close(done)
+								return
+							}
+							if strings.HasPrefix(line, "Candidates: ") {
+								val := strings.TrimPrefix(line, "Candidates: ")
+								candidates = strings.Split(val, ",")
+								for i := range candidates {
+									candidates[i] = strings.TrimSpace(candidates[i])
+								}
+							} else if strings.HasPrefix(line, "SSHPort: ") {
+								val := strings.TrimPrefix(line, "SSHPort: ")
+								sshPort, _ = strconv.Atoi(strings.TrimSpace(val))
+							} else if strings.HasPrefix(line, "HostKey: ") {
+								key := strings.TrimPrefix(line, "HostKey: ")
+								hostKeys = append(hostKeys, strings.TrimSpace(key))
+							}
+							continue
+						}
+					} else if inData {
+						currentLine.WriteByte(b)
+					}
+
+					if !inData {
+						// Relay to stdout immediately
+						os.Stdout.Write([]byte{b})
+						// In raw mode, we might need to add \r after \n for some terminals,
+						// but usually the server sends \r\n already.
+						if b == '\n' {
+							os.Stdout.Write([]byte{'\r'})
+						}
+						currentLine.WriteByte(b)
+					}
+				}
+			}
+		}()
+
+		// Proxy stdin
+		go func() {
+			io.Copy(stdinPipe, os.Stdin)
+		}()
+
+		// If room name was provided, send it immediately
+		if currentRoom != "" {
+			fmt.Fprintf(stdinPipe, "%s\r\n", currentRoom)
+			currentRoom = "" // Only do it once per URL invocation
+		}
+
+		// Wait for connection info or manual exit
+		var shouldConnect bool
+		select {
+		case <-done:
+			shouldConnect = true
+			// Give it a tiny moment to finish printing any trailing data
+			time.Sleep(100 * time.Millisecond)
+		case <-userExited:
+			shouldConnect = false
+		case <-time.After(5 * time.Minute):
+			if oldState != nil {
+				term.Restore(fd, oldState)
+			}
+			return fmt.Errorf("timeout waiting for connection info")
+		}
+
+		// Restore terminal before closing EP session
+		if oldState != nil {
+			term.Restore(fd, oldState)
+		}
+
+		session.Close()
+		client.Close()
+
+		if !shouldConnect {
+			return nil // User exited manually
+		}
+
+		// Connect to room...
+		if err := runRoomSSH(candidates, sshPort, hostKeys, verbose); err != nil {
+			if _, ok := err.(*exec.ExitError); ok {
+				// SSH exited with non-zero status, which is common when the server
+				// closes a BBS-style session. We'll treat it as a normal session end.
+			} else {
+				fmt.Fprintf(os.Stderr, "Error connecting to room: %v\n", err)
+				time.Sleep(2 * time.Second)
 			}
 		}
+		// Loop back to entry point
 	}
+}
 
-connect:
+func runRoomSSH(candidates []string, sshPort int, hostKeys []string, verbose bool) error {
 	if verbose {
 		log.Printf("Got connection info: candidates=%v port=%d keys=%d", candidates, sshPort, len(hostKeys))
 	}
@@ -289,45 +322,40 @@ connect:
 	// Try each candidate
 	var lastErr error
 	for _, candidate := range candidates {
-		target := fmt.Sprintf("%s:%d", candidate, sshPort)
-		if verbose {
-			log.Printf("Attempting to connect to %s", target)
+		target := candidate
+		if strings.Count(candidate, ":") >= 2 {
+			parts := strings.Split(candidate, ":")
+			if len(parts) == 3 {
+				target = net.JoinHostPort(parts[1], parts[2])
+			}
+		} else if !strings.Contains(candidate, ":") {
+			target = net.JoinHostPort(candidate, strconv.Itoa(sshPort))
 		}
 
-		// Test if we can reach it
 		conn, err := net.DialTimeout("tcp", target, 2*time.Second)
 		if err != nil {
 			lastErr = err
-			if verbose {
-				log.Printf("Failed to connect to %s: %v", target, err)
-			}
 			continue
 		}
 		conn.Close()
 
-		// Write to known_hosts for this candidate
-		// entry format: [ip]:port key-type key-blob
+		host, port, _ := net.SplitHostPort(target)
 		for _, key := range hostKeys {
-			// Extract type and blob (remove comment)
 			parts := strings.Fields(key)
 			if len(parts) >= 2 {
-				entry := fmt.Sprintf("[%s]:%d %s %s\n", candidate, sshPort, parts[0], parts[1])
+				entry := fmt.Sprintf("[%s]:%s %s %s\n", host, port, parts[0], parts[1])
 				knownHostsFile.WriteString(entry)
 			}
 		}
 		knownHostsFile.Close()
 
-		// Success! Exec real SSH client
-		if verbose {
-			log.Printf("Connection successful! Launching SSH client...")
-		}
-
+		finalHost, finalPort, _ := net.SplitHostPort(target)
 		sshArgs := []string{
-			"-p", strconv.Itoa(sshPort),
+			"-p", finalPort,
 			"-o", fmt.Sprintf("UserKnownHostsFile=%s", knownHostsFile.Name()),
 			"-o", "StrictHostKeyChecking=yes",
-			"-o", "LogLevel=ERROR", // Suppress "permanently added" warnings
-			candidate,
+			"-o", "LogLevel=ERROR",
+			finalHost,
 		}
 
 		cmd := exec.Command("ssh", sshArgs...)
@@ -341,7 +369,6 @@ connect:
 	if lastErr != nil {
 		return fmt.Errorf("failed to connect to any candidate: %w", lastErr)
 	}
-
 	return fmt.Errorf("no candidates available")
 }
 
