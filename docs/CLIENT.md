@@ -15,3 +15,15 @@ When you are connected you can idle in your room. You can describe what you are 
 The client has two types of doors: 
 1. Applications: These are doors that are run locally on the client. When a user enters your room they can start an application, the applications has an entry in the room chat (prefixed with slash) and shows the number of people that are currently using the application. The application can be started by typing /appname. The application starts fullscreen and should exit with the escape key. 
 2. Agents: These are chat bots that have a presence in the chat of the room. They have a name and can react to anything. You can address them by typing @agentname followed by a message. The agent will then respond to the message. 
+
+## Authentication
+
+### User Identity
+When connecting to the entry point, the client uses a **User Key** to authenticate.
+- **Source**: It automatically detects your system key (`~/.ssh/id_ed25519` or `~/.ssh/id_rsa`).
+- **Registration**: Before starting the client, you must register your public key manually with the entry point (via `/register`).
+
+### Room Identity
+- **Host Key**: The client generates a temporary, **ephemeral** SSH host key for your room server.
+- **Validity**: This key is valid only as long as the room session exists.
+- **Verification**: Visitors verify this ephemeral key via the secure handshake coordinated by the entry point. 

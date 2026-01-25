@@ -1,6 +1,7 @@
 package entrypoint
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +21,7 @@ import (
 // Room represents a registered room
 type Room struct {
 	Info       protocol.RoomInfo
-	Connection ssh.Conn
+	Connection *ssh.ServerConn
 	Channel    ssh.Channel // For sending messages to operator
 	Encoder    *json.Encoder
 }
@@ -34,6 +36,7 @@ type PunchSession struct {
 // Server is the entry point SSH server
 type Server struct {
 	address       string
+	usersDir      string
 	config        *ssh.ServerConfig
 	rooms         map[string]*Room
 	punchSessions map[string]*PunchSession // keyed by visitor ID
@@ -42,9 +45,41 @@ type Server struct {
 }
 
 // NewServer creates a new entry point server
-func NewServer(address, hostKeyPath string) (*Server, error) {
+func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 	config := &ssh.ServerConfig{
-		NoClientAuth: true, // For now, allow any connection
+		NoClientAuth: false,
+	}
+
+	config.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+		username := c.User()
+		// Sanitize
+		if !isValidUsername(username) {
+			return nil, fmt.Errorf("invalid username: only alphanumeric characters allowed")
+		}
+
+		keyPath := filepath.Join(usersDir, username)
+
+		// Check if user exists
+		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+			// Manual registration required
+			return &ssh.Permissions{
+				Extensions: map[string]string{"registered": "false"},
+			}, nil
+		}
+
+		// Verify key
+		valid, err := verifyUserKey(keyPath, pubKey)
+		if err != nil {
+			log.Printf("Failed to verify user %s: %v", username, err)
+			return nil, fmt.Errorf("internal verification error")
+		}
+		if !valid {
+			return nil, fmt.Errorf("public key mismatch for user %s", username)
+		}
+
+		return &ssh.Permissions{
+			Extensions: map[string]string{"registered": "true"},
+		}, nil
 	}
 
 	// Load or generate host key
@@ -56,6 +91,7 @@ func NewServer(address, hostKeyPath string) (*Server, error) {
 
 	return &Server{
 		address:       address,
+		usersDir:      usersDir,
 		config:        config,
 		rooms:         make(map[string]*Room),
 		punchSessions: make(map[string]*PunchSession),
@@ -128,7 +164,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *Server) handleChannel(newChannel ssh.NewChannel, conn ssh.Conn, username string) {
+func (s *Server) handleChannel(newChannel ssh.NewChannel, conn *ssh.ServerConn, username string) {
 	channelType := newChannel.ChannelType()
 
 	switch channelType {
@@ -139,7 +175,7 @@ func (s *Server) handleChannel(newChannel ssh.NewChannel, conn ssh.Conn, usernam
 	}
 }
 
-func (s *Server) handleSession(newChannel ssh.NewChannel, conn ssh.Conn, username string) {
+func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, username string) {
 	channel, requests, err := newChannel.Accept()
 	if err != nil {
 		log.Printf("Could not accept session: %v", err)
@@ -196,7 +232,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn ssh.Conn, usernam
 	}
 }
 
-func (s *Server) handleOperator(channel ssh.Channel, conn ssh.Conn, username string, roomName *string) {
+func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, username string, roomName *string) {
 	decoder := json.NewDecoder(channel)
 	encoder := json.NewEncoder(channel)
 
@@ -217,6 +253,13 @@ func (s *Server) handleOperator(channel ssh.Channel, conn ssh.Conn, username str
 				continue
 			}
 
+			// Enforce registration
+			if conn.Permissions == nil || conn.Permissions.Extensions["registered"] != "true" {
+				log.Printf("Rejected room registration for unregistered user: %s", username)
+				s.sendError(encoder, "User not registered. Please connect manually and /register first.")
+				continue
+			}
+
 			s.mu.Lock()
 			*roomName = payload.RoomName
 			s.rooms[payload.RoomName] = &Room{
@@ -226,6 +269,7 @@ func (s *Server) handleOperator(channel ssh.Channel, conn ssh.Conn, username str
 					Doors:      payload.Doors,
 					Candidates: payload.Candidates,
 					SSHPort:    payload.SSHPort,
+					PublicKeys: payload.PublicKeys,
 				},
 				Connection: conn,
 				Channel:    channel,
@@ -259,10 +303,19 @@ func (s *Server) handleOperator(channel ssh.Channel, conn ssh.Conn, username str
 			s.mu.RUnlock()
 
 			if ok {
+				// Look up room keys
+				var publicKeys []string
+				s.mu.RLock()
+				if room, exists := s.rooms[session.RoomName]; exists {
+					publicKeys = room.Info.PublicKeys
+				}
+				s.mu.RUnlock()
+
 				// Send punch_start to visitor with room's candidates
 				startPayload := protocol.PunchStartPayload{
 					Candidates: payload.Candidates,
 					SSHPort:    payload.SSHPort,
+					PublicKeys: publicKeys,
 				}
 				startMsg, _ := protocol.NewMessage(protocol.MsgTypePunchStart, startPayload)
 				session.VisitorChan <- startMsg
@@ -287,6 +340,10 @@ func (s *Server) handleVisitor(channel ssh.Channel, username string) {
 	// Interaction loop
 	buf := make([]byte, 1024)
 	var line []byte
+	var history []string
+	historyIndex := -1
+	currentLineBackup := ""
+	escState := 0
 
 	for {
 		n, err := channel.Read(buf)
@@ -297,19 +354,67 @@ func (s *Server) handleVisitor(channel ssh.Channel, username string) {
 		for i := 0; i < n; i++ {
 			b := buf[i]
 
+			// Handle ANSI escape sequences for arrow keys
+			if b == 27 {
+				escState = 1
+				continue
+			}
+			if escState == 1 && b == '[' {
+				escState = 2
+				continue
+			}
+			if escState == 2 {
+				escState = 0
+				if b == 'A' { // Arrow Up
+					if len(history) > 0 && historyIndex != 0 {
+						if historyIndex == -1 || historyIndex == len(history) {
+							currentLineBackup = string(line)
+							historyIndex = len(history)
+						}
+						historyIndex--
+						// Clear line: \r (carriage return) + \x1b[K (clear to end of line)
+						fmt.Fprintf(channel, "\r\x1b[K")
+						line = []byte(history[historyIndex])
+						channel.Write(line)
+					}
+					continue
+				} else if b == 'B' { // Arrow Down
+					if historyIndex != -1 && historyIndex < len(history) {
+						historyIndex++
+						fmt.Fprintf(channel, "\r\x1b[K")
+						if historyIndex == len(history) {
+							line = []byte(currentLineBackup)
+						} else {
+							line = []byte(history[historyIndex])
+						}
+						channel.Write(line)
+					}
+					continue
+				}
+				// Other escape sequences ignored for now
+				continue
+			}
+			escState = 0
+
 			switch b {
 			case '\r', '\n':
+				fmt.Fprintf(channel, "\r\n")
 				if len(line) > 0 {
-					s.handleVisitorCommand(channel, username, string(line))
+					cmd := string(line)
+					s.handleVisitorCommand(channel, username, cmd)
+					// Add to history if it's different from the last one
+					if len(history) == 0 || history[len(history)-1] != cmd {
+						history = append(history, cmd)
+					}
+					historyIndex = len(history)
 					line = nil
 				}
-				fmt.Fprintf(channel, "\r\n")
 			case 127, 8: // Backspace
 				if len(line) > 0 {
 					line = line[:len(line)-1]
 					fmt.Fprintf(channel, "\b \b")
 				}
-			case 3, 27: // Ctrl+C or Escape
+			case 3: // Ctrl+C
 				return
 			default:
 				line = append(line, b)
@@ -341,18 +446,56 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 	input = strings.TrimSpace(input)
 
 	if strings.HasPrefix(input, "/") {
-		cmd := strings.TrimPrefix(input, "/")
-		switch cmd {
+		cmdLine := strings.TrimPrefix(input, "/")
+		parts := strings.Fields(cmdLine)
+		if len(parts) == 0 {
+			return
+		}
+		command := parts[0]
+
+		switch command {
 		case "help":
 			fmt.Fprintf(channel, "\rCommands:\r\n")
-			fmt.Fprintf(channel, "  /rooms    - List active rooms\r\n")
-			fmt.Fprintf(channel, "  /help     - Show this help\r\n")
-			fmt.Fprintf(channel, "  <room>    - Connect to a room\r\n")
-			fmt.Fprintf(channel, "  ESC       - Exit\r\n")
+			fmt.Fprintf(channel, "  /rooms           - List active rooms\r\n")
+			fmt.Fprintf(channel, "  /register <key>  - Register your public key\r\n")
+			fmt.Fprintf(channel, "  /exit            - Exit the network\r\n")
+			fmt.Fprintf(channel, "  /help            - Show this help\r\n")
+			fmt.Fprintf(channel, "  <room>           - Connect to a room\r\n")
+			fmt.Fprintf(channel, "  Ctrl+C           - Exit\r\n")
 		case "rooms":
 			s.showRooms(channel)
+		case "exit":
+			channel.Close()
+			return
+		case "register":
+			if len(parts) < 2 {
+				fmt.Fprintf(channel, "\rUsage: /register <public_key>\r\n")
+				return
+			}
+			// Re-join the key parts (type blob [comment])
+			keyStr := strings.Join(parts[1:], " ")
+			// ParseAuthorizedKey handles "type blob comment"
+			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyStr))
+			if err != nil {
+				fmt.Fprintf(channel, "\rInvalid public key format: %v\r\n", err)
+				return
+			}
+
+			keyPath := filepath.Join(s.usersDir, username)
+			// Check if already registered?
+			// If file exists, we imply authentication passed (so we are the owner).
+			// So we allow overwrite/update.
+			// If file doesn't exist, we are claiming it.
+
+			if err := registerUserKey(keyPath, pubKey); err != nil {
+				fmt.Fprintf(channel, "\rRegistration failed: %v\r\n", err)
+			} else {
+				fmt.Fprintf(channel, "\rSuccessfully registered user '%s'.\r\n", username)
+				log.Printf("User registered manually: %s", username)
+			}
+
 		default:
-			fmt.Fprintf(channel, "\rUnknown command: %s\r\n", cmd)
+			fmt.Fprintf(channel, "\rUnknown command: %s\r\n", command)
 		}
 		return
 	}
@@ -368,7 +511,6 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 	}
 
 	// Initiate hole-punch
-	fmt.Fprintf(channel, "\r\n[Initiating connection to %s...]\r\n", room.Info.Name)
 
 	// Generate visitor ID for this punch session
 	visitorID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
@@ -402,8 +544,6 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 	}
 	s.mu.RUnlock()
 
-	fmt.Fprintf(channel, "Waiting for room operator...\r\n")
-
 	// Wait for punch_start with timeout
 	select {
 	case startMsg := <-visitorChan:
@@ -413,10 +553,22 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 			return
 		}
 
-		fmt.Fprintf(channel, "\r\n[Connection ready!]\r\n")
-		fmt.Fprintf(channel, "Candidates: %v\r\n", startPayload.Candidates)
-		fmt.Fprintf(channel, "SSH Port: %d\r\n", startPayload.SSHPort)
-		fmt.Fprintf(channel, "\r\nRun: ssh -p %d <candidate-ip>\r\n", startPayload.SSHPort)
+		fmt.Fprintf(channel, "\r\nConnect using unn-ssh wrapper:\r\n")
+
+		// Get entry point address from listener
+		entryAddr := s.listener.Addr().String()
+
+		// Show ssh:// URL for the wrapper
+		fmt.Fprintf(channel, "  ssh://%s/%s\r\n", entryAddr, input)
+
+		if len(startPayload.PublicKeys) > 0 {
+			fmt.Fprintf(channel, "Host Keys: %v\r\n", startPayload.PublicKeys)
+		}
+
+		fmt.Fprintf(channel, "\r\nOr connect directly:\r\n")
+		for _, candidate := range startPayload.Candidates {
+			fmt.Fprintf(channel, "  ssh -p %d %s\r\n", startPayload.SSHPort, candidate)
+		}
 
 	case <-time.After(30 * time.Second):
 		fmt.Fprintf(channel, "Timeout waiting for room operator\r\n")
@@ -455,4 +607,45 @@ func loadOrGenerateHostKey(path string) (ssh.Signer, error) {
 	}
 
 	return ssh.ParsePrivateKey(keyBytes)
+}
+
+func isValidUsername(name string) bool {
+	if len(name) == 0 || len(name) > 32 {
+		return false
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func registerUserKey(path string, key ssh.PublicKey) error {
+	// Create directory if not exists
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("failed to create users directory: %w", err)
+	}
+
+	// Marshal key to authorized_keys format
+	keyBytes := ssh.MarshalAuthorizedKey(key)
+	if err := os.WriteFile(path, keyBytes, 0600); err != nil {
+		return fmt.Errorf("failed to write user key: %w", err)
+	}
+	return nil
+}
+
+func verifyUserKey(path string, offeredKey ssh.PublicKey) (bool, error) {
+	keyBytes, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("failed to read user key: %w", err)
+	}
+
+	storedKey, _, _, _, err := ssh.ParseAuthorizedKey(keyBytes)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse stored key: %w", err)
+	}
+
+	return bytes.Equal(storedKey.Marshal(), offeredKey.Marshal()), nil
 }

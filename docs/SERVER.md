@@ -13,3 +13,28 @@ When a user connects through the UNN Client, the server opens a second, hidden l
 The server’s role is to maintain the illusion of a vast, distributed underground — a network made not of machines, but of people. Nodes appear and vanish as users come and go. Services flicker online, run their course, and disappear again. The server keeps the whole thing coherent without ever becoming the center of it.
 
 It is the spine of the network, but never the brain. A silent switchboard in the dark. A map that redraws itself every time someone logs in.
+
+## User Authentication
+
+## User Authentication
+
+The Entry Point enforces a **Manual Registration** policy for user identities.
+
+1.  **Registration**: To claim a username, you must connect manually and use the `/register` command:
+    ```bash
+    ssh newuser@entrypoint
+    # In the shell:
+    /register ssh-ed25519 AAA...
+    ```
+2.  **Persistence**: The public key is stored on disk in the `users/` directory.
+3.  **Enforcement**: Future connections as `newuser` MUST authenticate with the registered private key.
+4.  **Sanitization**: Usernames must consist of alphanumeric characters, hyphens, and underscores.
+
+This system ensures that usernames cannot be spoofed or stolen once claimed. Until registered, a username is available to anyone.
+
+## Room Hosting
+
+Users can register rooms (e.g., `myroom`). The room itself is ephemeral, but the user's identity is persistent.
+- A user is identified as `username@entrypoint`.
+- Room ownership is tied to the authenticated connection.
+- A user can only manage rooms they have registered (or rooms are simply ephemeral and tied to the live connection).

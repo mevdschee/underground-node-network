@@ -31,8 +31,9 @@ func main() {
 		}
 	}
 
+	usersDir := filepath.Join(filepath.Dir(*hostKey), "users")
 	address := fmt.Sprintf("%s:%d", *bind, *port)
-	server, err := entrypoint.NewServer(address, *hostKey)
+	server, err := entrypoint.NewServer(address, *hostKey, usersDir)
 	if err != nil {
 		log.Fatalf("Failed to create entry point: %v", err)
 	}

@@ -30,8 +30,9 @@ type Message struct {
 type RegisterPayload struct {
 	RoomName   string   `json:"room_name"`
 	Doors      []string `json:"doors"`
-	Candidates []string `json:"candidates"` // NAT traversal candidates (IP:port)
-	SSHPort    int      `json:"ssh_port"`   // Local SSH server port
+	Candidates []string `json:"candidates"`  // NAT traversal candidates (IP:port)
+	SSHPort    int      `json:"ssh_port"`    // Local SSH server port
+	PublicKeys []string `json:"public_keys"` // SSH public keys (authorized_keys format)
 }
 
 // RoomInfo represents an active room in the network
@@ -41,6 +42,7 @@ type RoomInfo struct {
 	Doors      []string `json:"doors"`
 	Candidates []string `json:"candidates"`
 	SSHPort    int      `json:"ssh_port"`
+	PublicKeys []string `json:"public_keys"`
 }
 
 // RoomListPayload contains the list of active rooms
@@ -87,9 +89,10 @@ type PunchAnswerPayload struct {
 
 // PunchStartPayload tells both sides to start hole-punching
 type PunchStartPayload struct {
-	Candidates []string `json:"candidates"` // Remote peer's candidates
-	SSHPort    int      `json:"ssh_port"`   // Remote SSH port (for room)
-	StartTime  int64    `json:"start_time"` // Unix timestamp to sync start
+	Candidates []string `json:"candidates"`  // Remote peer's candidates
+	SSHPort    int      `json:"ssh_port"`    // Remote SSH port (for room)
+	PublicKeys []string `json:"public_keys"` // Remote peer's public keys
+	StartTime  int64    `json:"start_time"`  // Unix timestamp to sync start
 }
 
 // NewMessage creates a new message with the given type and payload

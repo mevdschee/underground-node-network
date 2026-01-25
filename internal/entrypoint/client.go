@@ -22,12 +22,17 @@ type Client struct {
 }
 
 // NewClient creates a new entry point client
-func NewClient(address, username string) *Client {
+func NewClient(address, username string, signer ssh.Signer) *Client {
+	authMethods := []ssh.AuthMethod{}
+	if signer != nil {
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	}
+
 	return &Client{
 		address: address,
 		sshConfig: &ssh.ClientConfig{
 			User:            username,
-			Auth:            []ssh.AuthMethod{},
+			Auth:            authMethods,
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		},
 		rooms: make([]protocol.RoomInfo, 0),
@@ -89,7 +94,7 @@ func (c *Client) Close() error {
 }
 
 // Register registers this node with the entry point
-func (c *Client) Register(roomName string, doors []string, sshPort int) error {
+func (c *Client) Register(roomName string, doors []string, sshPort int, publicKeys []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -100,6 +105,7 @@ func (c *Client) Register(roomName string, doors []string, sshPort int) error {
 		Doors:      doors,
 		Candidates: candidates,
 		SSHPort:    sshPort,
+		PublicKeys: publicKeys,
 	}
 
 	msg, err := protocol.NewMessage(protocol.MsgTypeRegister, payload)
@@ -117,7 +123,7 @@ func (c *Client) Register(roomName string, doors []string, sshPort int) error {
 }
 
 // ListenForMessages starts listening for messages from the entry point
-func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), sshPort int, candidates []string) {
+func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), onError func(error), sshPort int, candidates []string) {
 	decoder := json.NewDecoder(c.channel)
 	encoder := json.NewEncoder(c.channel)
 
@@ -139,8 +145,16 @@ func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), sshPort
 				}
 			}
 
+		case protocol.MsgTypeError:
+			var payload protocol.ErrorPayload
+			if err := msg.ParsePayload(&payload); err == nil {
+				if onError != nil {
+					onError(fmt.Errorf(payload.Message))
+				}
+			}
+
 		case protocol.MsgTypePunchOffer:
-			// Visitor wants to connect - send back our candidates
+			// ... (rest of function)
 			var offerPayload protocol.PunchOfferPayload
 			if err := msg.ParsePayload(&offerPayload); err != nil {
 				continue

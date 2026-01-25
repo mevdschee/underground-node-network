@@ -11,3 +11,11 @@ Each user’s node is ephemeral, appearing only while they are connected. When a
 UNN is designed to feel like a clandestine hacker‑den ecosystem:
 a shifting constellation of personal machines, each offering unique capabilities, all connected through a shared SSH‑based fabric. It is a programmable world, a social computing experiment, and a collaborative underground network—built entirely from text, terminals, and imagination.
 
+## Connecting
+
+You can connect to the network using the `unn-ssh.sh` wrapper script for a seamless experience:
+```bash
+./unn-ssh.sh ssh://localhost:44322/roomname
+```
+See [docs/SSH_WRAPPER.md](docs/SSH_WRAPPER.md) for more details.
+
