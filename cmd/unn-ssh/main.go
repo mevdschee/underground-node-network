@@ -23,31 +23,14 @@ import (
 
 type StdinProxy struct {
 	mu     sync.Mutex
-	cond   *sync.Cond
 	writer io.Writer
 	active bool
-	paused bool
 }
 
 func (p *StdinProxy) SetWriter(w io.Writer) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.writer = w
-}
-
-func (p *StdinProxy) Pause() {
-	p.mu.Lock()
-	p.paused = true
-	p.mu.Unlock()
-}
-
-func (p *StdinProxy) Resume() {
-	p.mu.Lock()
-	p.paused = false
-	if p.cond != nil {
-		p.cond.Broadcast()
-	}
-	p.mu.Unlock()
 }
 
 func (p *StdinProxy) Start() {
@@ -57,18 +40,11 @@ func (p *StdinProxy) Start() {
 		return
 	}
 	p.active = true
-	p.cond = sync.NewCond(&p.mu)
 	p.mu.Unlock()
 
 	go func() {
 		buf := make([]byte, 1024)
 		for {
-			p.mu.Lock()
-			for p.paused {
-				p.cond.Wait()
-			}
-			p.mu.Unlock()
-
 			n, err := os.Stdin.Read(buf)
 			if err != nil {
 				return
@@ -105,6 +81,8 @@ func main() {
 	}
 
 	sshURL := flag.Arg(0)
+	// Ignore SIGINT so we don't exit when the user presses Ctrl+C in a session
+	signal.Ignore(os.Interrupt)
 	if err := teleport(sshURL, *identity, *verbose); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
@@ -192,6 +170,13 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		Timeout:         10 * time.Second,
 	}
 
+	// Set terminal to raw mode for the entire duration
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
+	if err == nil {
+		defer term.Restore(fd, oldState)
+	}
+
 	// Loop for persistent entry point session
 	currentRoom := roomName
 	for {
@@ -228,7 +213,6 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		}
 
 		// Request PTY
-		fd := int(os.Stdin.Fd())
 		width, height, err := term.GetSize(fd)
 		if err != nil {
 			width, height = 80, 24
@@ -243,13 +227,18 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		// Handle window size changes
 		winch := make(chan os.Signal, 1)
 		signal.Notify(winch, syscall.SIGWINCH)
-		defer signal.Stop(winch)
+		stopWinch := make(chan bool)
 
 		go func() {
-			for range winch {
-				width, height, err := term.GetSize(fd)
-				if err == nil {
-					session.WindowChange(height, width)
+			for {
+				select {
+				case <-winch:
+					width, height, err := term.GetSize(fd)
+					if err == nil {
+						session.WindowChange(height, width)
+					}
+				case <-stopWinch:
+					return
 				}
 			}
 		}()
@@ -269,9 +258,6 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			done       = make(chan bool)
 			userExited = make(chan bool)
 		)
-
-		// Set terminal to raw mode for interaction
-		oldState, _ := term.MakeRaw(fd)
 
 		// Monitor output for connection data and echo to user
 		go func() {
@@ -355,19 +341,15 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		case <-userExited:
 			shouldConnect = false
 		case <-time.After(5 * time.Minute):
-			if oldState != nil {
-				term.Restore(fd, oldState)
-			}
 			return fmt.Errorf("timeout waiting for connection info")
 		}
 
 		// Restore terminal before closing EP session
-		if oldState != nil {
-			term.Restore(fd, oldState)
-		}
+		// No longer restoring here, as we stay in raw mode and use defer
+		close(stopWinch)
+		signal.Stop(winch)
 
 		globalProxy.SetWriter(nil)
-		globalProxy.Pause()
 		session.Close()
 		client.Close()
 
@@ -375,8 +357,11 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			return nil // User exited manually
 		}
 
-		// Connect to room...
-		if err := runRoomSSH(candidates, sshPort, hostKeys, verbose); err != nil {
+		// Connect to room using a pipe for stdin
+		pr, pw := io.Pipe()
+		globalProxy.SetWriter(pw)
+
+		if err := runRoomSSH(pr, candidates, sshPort, hostKeys, verbose); err != nil {
 			if _, ok := err.(*exec.ExitError); ok {
 				// SSH exited with non-zero status, which is common when the server
 				// closes a BBS-style session. We'll treat it as a normal session end.
@@ -385,12 +370,13 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 				time.Sleep(2 * time.Second)
 			}
 		}
-		globalProxy.Resume()
+		pw.Close()
+		globalProxy.SetWriter(nil)
 		// Loop back to entry point
 	}
 }
 
-func runRoomSSH(candidates []string, sshPort int, hostKeys []string, verbose bool) error {
+func runRoomSSH(stdin io.Reader, candidates []string, sshPort int, hostKeys []string, verbose bool) error {
 	if verbose {
 		log.Printf("Got connection info: candidates=%v port=%d keys=%d", candidates, sshPort, len(hostKeys))
 	}
@@ -434,6 +420,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, verbose boo
 
 		finalHost, finalPort, _ := net.SplitHostPort(target)
 		sshArgs := []string{
+			"-tt", // Force TTY allocation as we are piping stdin
 			"-p", finalPort,
 			"-o", fmt.Sprintf("UserKnownHostsFile=%s", knownHostsFile.Name()),
 			"-o", "StrictHostKeyChecking=yes",
@@ -442,7 +429,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, verbose boo
 		}
 
 		cmd := exec.Command("ssh", sshArgs...)
-		cmd.Stdin = os.Stdin
+		cmd.Stdin = stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 

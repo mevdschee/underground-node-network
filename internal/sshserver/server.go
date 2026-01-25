@@ -210,7 +210,7 @@ func (s *Server) handleRoomSubsystem(newChannel ssh.NewChannel, username string)
 func (s *Server) sendWelcome(w io.Writer, username string) {
 	fmt.Fprintf(w, "\r\n")
 	fmt.Fprintf(w, "╔═══════════════════════════════════════════════════════════════╗\r\n")
-	fmt.Fprintf(w, "║  Welcome to %s's room                                    ║\r\n", s.roomName)
+	fmt.Fprintf(w, "║  Welcome to %-50s║\r\n", s.roomName+"'s room")
 	fmt.Fprintf(w, "║  Underground Node Network                                     ║\r\n")
 	fmt.Fprintf(w, "╚═══════════════════════════════════════════════════════════════╝\r\n")
 	fmt.Fprintf(w, "\r\n")
