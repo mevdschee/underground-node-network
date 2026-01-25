@@ -573,10 +573,12 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 
 		fmt.Fprintf(channel, "\r\nOr connect directly:\r\n")
 		var fingerprint string
+		var algo string
 		if len(startPayload.PublicKeys) > 0 {
 			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(startPayload.PublicKeys[0]))
 			if err == nil {
 				fingerprint = ssh.FingerprintSHA256(pubKey)
+				algo = strings.ToUpper(strings.TrimPrefix(pubKey.Type(), "ssh-"))
 			}
 		}
 
@@ -593,7 +595,7 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 			fmt.Fprintf(channel, "  ssh -p %d %s@%s\r\n", startPayload.SSHPort, username, ip)
 		}
 		if fingerprint != "" {
-			fmt.Fprintf(channel, "ED25519 key fingerprint is %s.\r\n", fingerprint)
+			fmt.Fprintf(channel, "%s key fingerprint is %s.\r\n", algo, fingerprint)
 		}
 
 	case <-time.After(30 * time.Second):
