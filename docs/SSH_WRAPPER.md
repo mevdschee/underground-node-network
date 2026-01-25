@@ -87,3 +87,8 @@ go build -o unn-ssh-bin ./cmd/unn-ssh
 - **Authentication**: Uses public key authentication.
 - **Host Keys**: Automatically handles room host keys by creating a temporary `known_hosts` file, ensuring you are connecting to the intended room operator.
 - **Raw Mode**: Temporarily sets your local terminal to raw mode for a responsive BBS experience, restoring it on exit or room transition.
+
+## Terminal Features
+
+- **Window Resizing**: Supports `SIGWINCH` signals, meaning the entry point shell and room sessions will correctly resize when you resize your terminal window.
+- **Improved Input Handling**: Uses a managed stdin proxy to prevent input competition between the wrapper and the system SSH client, ensuring no characters are lost during transitions.

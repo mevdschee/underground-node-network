@@ -21,4 +21,11 @@ The entry point provides an interactive shell for visitors:
 - **Hole-Punching Bridge**: When a visitor selects a room, the entry point sends a `[CONNECTION_DATA]` block containing P2P candidates and host keys.
 - **Auto-Return**: The `unn-ssh` wrapper is designed to return the user to the entry point shell after they finish their session in a room, allowing for persistent network navigation.
 
+## Advanced Terminal Handling
+
+To ensure a high-quality user experience, the system implements:
+- **StdinProxy (Wrapper)**: A managed stdin reader that avoids competition between the Go wrapper and the standard SSH client. It can pause and resume itself during SSH handoffs.
+- **SIGWINCH Support**: Both the wrapper and the entry point server handle window change signals to ensure the PTY is correctly resized.
+- **Async Door Execution**: Room doors are executed in separate goroutines, allowing the main interaction loop to remain responsive and intercept **Ctrl+C** to kill the door subprocess if requested.
+
 

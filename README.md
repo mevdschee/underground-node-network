@@ -31,7 +31,7 @@ From here you can:
 - Teleport by simply typing a room name
 
 ### Persistent Navigation
-The wrapper is persistent—when you exit a room (via `/exit`), you are automatically returned to the entry point shell, allowing you to jump between nodes without restarting.
+The wrapper is persistent—when you exit a room (via `/exit`), you are automatically returned to the entry point shell, allowing you to jump between nodes without restarting. It also supports **window resizing** and **Ctrl+C interruption** for doors.
 
 ## Hosting a Node
 
