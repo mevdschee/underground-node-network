@@ -186,11 +186,12 @@ func (s *Server) handleChannel(newChannel ssh.NewChannel, username string) {
 }
 
 func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
-	channel, requests, err := newChannel.Accept()
+	rawChannel, requests, err := newChannel.Accept()
 	if err != nil {
 		log.Printf("Could not accept session: %v", err)
 		return
 	}
+	channel := NewThrottledChannel(rawChannel, 115200)
 	defer channel.Close()
 
 	// Handle session requests
