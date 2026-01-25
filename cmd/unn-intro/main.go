@@ -156,6 +156,14 @@ func typeLine(p *Panel, text string) {
 	p.SetLine(len(p.lines)-1, fullText)
 }
 
+func fillBackground(s tcell.Screen, w, h int, style tcell.Style) {
+	for x := 0; x < w; x++ {
+		for y := 0; y < h; y++ {
+			s.SetContent(x, y, ' ', nil, style)
+		}
+	}
+}
+
 func applyGlitch(s tcell.Screen, w, h int) {
 	if rand.Float64() < 0.5 {
 		row := rand.Intn(h)
@@ -267,6 +275,8 @@ func main() {
 				mu.Lock()
 				st := currentState
 				mu.Unlock()
+
+				fillBackground(s, sw, sh, baseStyle)
 
 				if st == StateRain {
 					// Draw Rain
