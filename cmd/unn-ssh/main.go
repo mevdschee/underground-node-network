@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,7 +21,44 @@ import (
 	"golang.org/x/term"
 )
 
-// Removed StdinProxy as it's no longer needed with native SSH clients.
+type StdinManager struct {
+	mu     sync.Mutex
+	writer io.Writer
+	active bool
+}
+
+func (m *StdinManager) SetWriter(w io.Writer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.writer = w
+}
+
+func (m *StdinManager) Start() {
+	m.mu.Lock()
+	if m.active {
+		m.mu.Unlock()
+		return
+	}
+	m.active = true
+	m.mu.Unlock()
+
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				return
+			}
+			m.mu.Lock()
+			if m.writer != nil {
+				m.writer.Write(buf[:n])
+			}
+			m.mu.Unlock()
+		}
+	}()
+}
+
+var globalStdinManager StdinManager
 
 func main() {
 	flag.Usage = func() {
@@ -43,6 +81,8 @@ func main() {
 	}
 
 	sshURL := flag.Arg(0)
+	// Ignore SIGINT so it's passed as a byte to the SSH sessions
+	signal.Ignore(os.Interrupt)
 	if err := teleport(sshURL, *identity, *verbose); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
@@ -281,10 +321,9 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			}
 		}()
 
-		// Proxy stdin
-		go func() {
-			io.Copy(stdinPipe, os.Stdin)
-		}()
+		// Proxy stdin using the global manager
+		globalStdinManager.Start()
+		globalStdinManager.SetWriter(stdinPipe)
 
 		// If room name was provided, send it immediately
 		if currentRoom != "" {
@@ -308,6 +347,7 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		close(stopWinch)
 		signal.Stop(winch)
 
+		globalStdinManager.SetWriter(nil)
 		session.Close()
 		client.Close()
 
@@ -424,11 +464,8 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		}
 
 		// Proxy I/O
-		errChan := make(chan error, 3)
-		go func() {
-			_, err := io.Copy(stdin, os.Stdin)
-			errChan <- err
-		}()
+		globalStdinManager.SetWriter(stdin)
+		errChan := make(chan error, 2)
 		go func() {
 			_, err := io.Copy(os.Stdout, stdout)
 			errChan <- err
@@ -440,6 +477,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 
 		// Wait for session to end
 		session.Wait()
+		globalStdinManager.SetWriter(nil)
 		return nil
 	}
 
