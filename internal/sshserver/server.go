@@ -372,16 +372,12 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 	command := parts[0]
 
 	switch command {
-	case "exit":
-		channel.Close()
-		return nil, nil
 	case "help":
 		fmt.Fprintf(channel, "\rCommands:\r\n")
 		fmt.Fprintf(channel, "  /help     - Show this help\r\n")
 		fmt.Fprintf(channel, "  /who      - List visitors in room\r\n")
 		fmt.Fprintf(channel, "  /doors    - List available doors\r\n")
 		fmt.Fprintf(channel, "  /<door>   - Enter a door\r\n")
-		fmt.Fprintf(channel, "  /exit     - Exit room\r\n")
 		fmt.Fprintf(channel, "  Ctrl+C    - Exit room\r\n")
 		return nil, nil
 	case "who":

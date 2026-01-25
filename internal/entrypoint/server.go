@@ -460,15 +460,11 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, username string, inpu
 			fmt.Fprintf(channel, "\rCommands:\r\n")
 			fmt.Fprintf(channel, "  /rooms           - List active rooms\r\n")
 			fmt.Fprintf(channel, "  /register <key>  - Register your public key\r\n")
-			fmt.Fprintf(channel, "  /exit            - Exit the network\r\n")
 			fmt.Fprintf(channel, "  /help            - Show this help\r\n")
 			fmt.Fprintf(channel, "  <room>           - Connect to a room\r\n")
 			fmt.Fprintf(channel, "  Ctrl+C           - Exit\r\n")
 		case "rooms":
 			s.showRooms(channel)
-		case "exit":
-			channel.Close()
-			return
 		case "register":
 			if len(parts) < 2 {
 				fmt.Fprintf(channel, "\rUsage: /register <public_key>\r\n")

@@ -54,7 +54,7 @@ If no room name is specified in the URL, `unn-ssh` will:
 
 The wrapper is designed for seamless navigation:
 1. When you "teleport" to a room from the entry point shell, the wrapper handles the P2P connection automatically.
-2. When you exit the room (via `/exit` or terminating the session), the wrapper automatically reconnects you to the entry point shell.
+2. When you exit the room (via **Ctrl+C** or terminating the session), the wrapper automatically reconnects you to the entry point shell.
 3. This allows you to jump between rooms without restarting the wrapper.
 
 ## How It Works
