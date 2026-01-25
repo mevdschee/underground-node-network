@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -13,154 +12,160 @@ import (
 )
 
 const (
-	tickerRate = 50 * time.Millisecond
-	nodeCount  = 8
-	linkProb   = 0.4
+	tickerRate   = 50 * time.Millisecond
+	rainDuration = 5 * time.Second
+	chars        = "0123456789ABCDEF!@#$%^&*()_+-=[]{}|;':,./<>?"
 )
 
-type Node struct {
-	Name   string
-	X, Y   float64
-	VX, VY float64
+type State int
+
+const (
+	StateRain State = iota
+	StateTransition
+	StateLogo
+)
+
+var logoLines = []string{
+	`  _   _ _  _ ___  ____ ____ ____ ____ ____ _  _ _  _ ___  `,
+	`  |   | |\ | |  \ |___ |__/ | __ |__/ |  | |  | |\ | |  \ `,
+	`  |___| | \| |__/ |___ |  \ |__] |  \ |__| |__| | \| |__/ `,
+	``,
+	`              _  _ ____ ___  ____ `,
+	`              |\ | |  | |  \ |___ `,
+	`              | \| |__| |__/ |___ `,
+	``,
+	`      _  _ ____ ___ _  _ ____ ____ _  _ `,
+	`      |\ | |___  |  |  | |  | |__/ |_/  `,
+	`      | \| |___  |  \__/ |__| |  \ | \  `,
 }
 
-type Link struct {
-	A, B *Node
+var logoColors = []string{
+	"\033[1;35m", // Magenta
+	"\033[1;36m", // Cyan
+	"\033[1;33m", // Yellow
+}
+
+type Drop struct {
+	x, y   int
+	speed  int
+	length int
 }
 
 type Viz struct {
 	width, height int
-	nodes         []*Node
-	links         []Link
+	state         State
 	startTime     time.Time
+	drops         []*Drop
 }
 
 func NewViz(w, h int) *Viz {
-	names := []string{"XENON", "NEON", "ARGON", "KRYPTON", "RADON", "HELIUM", "PROXY", "VOID"}
-	nodes := make([]*Node, nodeCount)
-	for i := 0; i < nodeCount; i++ {
-		nodes[i] = &Node{
-			Name: names[i%len(names)],
-			X:    rand.Float64() * float64(w),
-			Y:    rand.Float64() * float64(h),
-			VX:   (rand.Float64() - 0.5) * 2,
-			VY:   (rand.Float64() - 0.5) * 2,
-		}
-	}
-
-	links := []Link{}
-	for i := 0; i < nodeCount; i++ {
-		for j := i + 1; j < nodeCount; j++ {
-			if rand.Float64() < linkProb {
-				links = append(links, Link{A: nodes[i], B: nodes[j]})
-			}
+	drops := make([]*Drop, w)
+	for i := 0; i < w; i++ {
+		drops[i] = &Drop{
+			x:      i,
+			y:      rand.Intn(h),
+			speed:  rand.Intn(2) + 1,
+			length: rand.Intn(h/2) + 5,
 		}
 	}
 
 	return &Viz{
 		width:     w,
 		height:    h,
-		nodes:     nodes,
-		links:     links,
+		state:     StateRain,
 		startTime: time.Now(),
+		drops:     drops,
 	}
 }
 
 func (v *Viz) Update() {
-	for _, n := range v.nodes {
-		// Update position
-		n.X += n.VX
-		n.Y += n.VY
+	elapsed := time.Since(v.startTime)
 
-		// Bounce off walls
-		if n.X < 2 || n.X > float64(v.width)-15 {
-			n.VX *= -1
-		}
-		if n.Y < 2 || n.Y > float64(v.height)-2 {
-			n.VY *= -1
-		}
-
-		// Add some jitter
-		n.VX += (rand.Float64() - 0.5) * 0.1
-		n.VY += (rand.Float64() - 0.5) * 0.1
-
-		// Limit speed
-		n.VX = math.Max(-1.5, math.Min(1.5, n.VX))
-		n.VY = math.Max(-1.5, math.Min(1.5, n.VY))
-	}
-}
-
-func (v *Viz) Draw() {
-	// Clear screen and move cursor to top-left
-	fmt.Print("\033[H\033[J")
-
-	// Draw links first (background)
-	t := time.Since(v.startTime).Seconds()
-	for _, l := range v.links {
-		v.drawLink(l.A.X, l.A.Y, l.B.X, l.B.Y, t)
+	if v.state == StateRain && elapsed > rainDuration {
+		v.state = StateTransition
 	}
 
-	// Draw nodes (foreground)
-	for _, n := range v.nodes {
-		v.drawNode(n.X, n.Y, n.Name)
-	}
-
-	// Add some decorative noise
-	if rand.Float64() < 0.05 {
-		v.drawNoise()
-	}
-}
-
-func (v *Viz) drawNode(x, y float64, name string) {
-	ix, iy := int(x), int(y)
-	if ix < 0 || iy < 0 || ix >= v.width || iy >= v.height {
-		return
-	}
-	// Glowing green phosphor
-	fmt.Printf("\033[%d;%dH\033[1;36m▚ \033[1;32m%s \033[1;36m▞\033[0m", iy, ix, name)
-}
-
-func (v *Viz) drawLink(x1, y1, x2, y2 float64, t float64) {
-	// Simple character-based line drawing
-	steps := 15
-	dx := (x2 - x1) / float64(steps)
-	dy := (y2 - y1) / float64(steps)
-
-	for i := 0; i <= steps; i++ {
-		px := x1 + float64(i)*dx
-		py := y1 + float64(i)*dy
-		ix, iy := int(px), int(py)
-
-		if ix >= 0 && iy >= 0 && ix < v.width && iy < v.height {
-			// Pulsing intensity based on time and position
-			pulse := math.Sin(t*3 + float64(i)*0.5)
-			if pulse > 0.5 {
-				fmt.Printf("\033[%d;%dH\033[2;32m⠿\033[0m", iy, ix)
-			} else if pulse > -0.5 {
-				fmt.Printf("\033[%d;%dH\033[2;32m⠶\033[0m", iy, ix)
-			} else {
-				fmt.Printf("\033[%d;%dH\033[2;32m.\033[0m", iy, ix)
+	if v.state == StateRain {
+		for _, d := range v.drops {
+			d.y += d.speed
+			if d.y-d.length > v.height {
+				d.y = 0
+				d.length = rand.Intn(v.height/2) + 5
 			}
 		}
 	}
 }
 
-func (v *Viz) drawNoise() {
-	x := rand.Intn(v.width)
-	y := rand.Intn(v.height)
-	codes := []string{"0xAF", "0x2D", "0xFE", "SYS_INT", "PKT_LOST"}
-	code := codes[rand.Intn(len(codes))]
-	fmt.Printf("\033[%d;%dH\033[2;32m%s\033[0m", y, x, code)
+func (v *Viz) Draw() {
+	if v.state == StateRain {
+		v.drawRain()
+	} else if v.state == StateTransition {
+		fmt.Print("\033[H\033[J") // Clear screen
+		v.state = StateLogo
+	} else if v.state == StateLogo {
+		v.drawLogo()
+	}
+}
+
+func (v *Viz) drawRain() {
+	// We don't clear the screen fully to keep the "trails" feel if we used it,
+	// but here we clear everything to match the request "green on black" strictly.
+	fmt.Print("\033[H\033[J")
+
+	for _, d := range v.drops {
+		for i := 0; i < d.length; i++ {
+			y := d.y - i
+			if y >= 0 && y < v.height {
+				char := chars[rand.Intn(len(chars))]
+				if i == 0 {
+					// Bright head
+					fmt.Printf("\033[%d;%dH\033[1;37m%c\033[0m", y+1, d.x+1, char)
+				} else {
+					// Fading tail
+					opacity := 2 // Persistent green
+					if i > d.length/2 {
+						opacity = 22 // Dimmer green (faint)
+					}
+					fmt.Printf("\033[%d;%dH\033[%d;32m%c\033[0m", y+1, d.x+1, opacity, char)
+				}
+			}
+		}
+	}
+}
+
+func (v *Viz) drawLogo() {
+	// Re-draw logo centered
+	logoH := len(logoLines)
+	logoW := 0
+	for _, l := range logoLines {
+		if len(l) > logoW {
+			logoW = len(l)
+		}
+	}
+
+	startY := (v.height - logoH) / 2
+	startX := (v.width - logoW) / 2
+
+	if startY < 0 {
+		startY = 0
+	}
+	if startX < 0 {
+		startX = 0
+	}
+
+	for i, line := range logoLines {
+		color := logoColors[i/4%len(logoColors)]
+		fmt.Printf("\033[%d;%dH%s%s\033[0m", startY+i+1, startX+1, color, line)
+	}
 }
 
 func main() {
-	// Set terminal to raw mode to handle input and suppress echo
+	// Set terminal to raw mode
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err == nil {
 		defer term.Restore(int(os.Stdin.Fd()), oldState)
 	}
 
-	// Trap exit signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -180,11 +185,11 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			// Re-check size occasionally
 			if curW, curH, err := term.GetSize(int(os.Stdout.Fd())); err == nil && (curW != w || curH != h) {
 				w, h = curW, curH
 				viz.width = w
 				viz.height = h
+				// Recenter logic will handle it during Draw
 			}
 			viz.Update()
 			viz.Draw()
