@@ -348,6 +348,7 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 					fmt.Fprintf(channel, "\b \b")
 				}
 			case 3: // Ctrl+C
+				fmt.Fprintf(channel, "\r\n[Exit]\r\n")
 				return
 			default:
 				line = append(line, b)

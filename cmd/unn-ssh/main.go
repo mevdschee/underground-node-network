@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -8,12 +9,10 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -21,44 +20,7 @@ import (
 	"golang.org/x/term"
 )
 
-type StdinProxy struct {
-	mu     sync.Mutex
-	writer io.Writer
-	active bool
-}
-
-func (p *StdinProxy) SetWriter(w io.Writer) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.writer = w
-}
-
-func (p *StdinProxy) Start() {
-	p.mu.Lock()
-	if p.active {
-		p.mu.Unlock()
-		return
-	}
-	p.active = true
-	p.mu.Unlock()
-
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
-				return
-			}
-			p.mu.Lock()
-			if p.writer != nil {
-				p.writer.Write(buf[:n])
-			}
-			p.mu.Unlock()
-		}
-	}()
-}
-
-var globalProxy StdinProxy
+// Removed StdinProxy as it's no longer needed with native SSH clients.
 
 func main() {
 	flag.Usage = func() {
@@ -81,8 +43,6 @@ func main() {
 	}
 
 	sshURL := flag.Arg(0)
-	// Ignore SIGINT so we don't exit when the user presses Ctrl+C in a session
-	signal.Ignore(os.Interrupt)
 	if err := teleport(sshURL, *identity, *verbose); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
@@ -321,9 +281,10 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			}
 		}()
 
-		// Proxy stdin using the global proxy to avoid competition
-		globalProxy.Start()
-		globalProxy.SetWriter(stdinPipe)
+		// Proxy stdin
+		go func() {
+			io.Copy(stdinPipe, os.Stdin)
+		}()
 
 		// If room name was provided, send it immediately
 		if currentRoom != "" {
@@ -344,12 +305,9 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			return fmt.Errorf("timeout waiting for connection info")
 		}
 
-		// Restore terminal before closing EP session
-		// No longer restoring here, as we stay in raw mode and use defer
 		close(stopWinch)
 		signal.Stop(winch)
 
-		globalProxy.SetWriter(nil)
 		session.Close()
 		client.Close()
 
@@ -357,36 +315,46 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			return nil // User exited manually
 		}
 
-		// Connect to room using a pipe for stdin
-		pr, pw := io.Pipe()
-		globalProxy.SetWriter(pw)
-
-		if err := runRoomSSH(pr, candidates, sshPort, hostKeys, verbose); err != nil {
-			if _, ok := err.(*exec.ExitError); ok {
-				// SSH exited with non-zero status, which is common when the server
-				// closes a BBS-style session. We'll treat it as a normal session end.
-			} else {
-				fmt.Fprintf(os.Stderr, "Error connecting to room: %v\n", err)
-				time.Sleep(2 * time.Second)
-			}
+		// Connect to room using native SSH client
+		if err := runRoomSSH(candidates, sshPort, hostKeys, config, verbose); err != nil {
+			fmt.Fprintf(os.Stderr, "Error connecting to room: %v\n", err)
+			time.Sleep(2 * time.Second)
 		}
-		pw.Close()
-		globalProxy.SetWriter(nil)
 		// Loop back to entry point
 	}
 }
 
-func runRoomSSH(stdin io.Reader, candidates []string, sshPort int, hostKeys []string, verbose bool) error {
+func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointConfig *ssh.ClientConfig, verbose bool) error {
 	if verbose {
 		log.Printf("Got connection info: candidates=%v port=%d keys=%d", candidates, sshPort, len(hostKeys))
 	}
 
-	// Create temp known_hosts file
-	knownHostsFile, err := os.CreateTemp("", "unn_known_hosts")
-	if err != nil {
-		return fmt.Errorf("failed to create temp known_hosts: %w", err)
+	// Prepare host key callback
+	parsedHostKeys := make([]ssh.PublicKey, 0, len(hostKeys))
+	for _, keyStr := range hostKeys {
+		pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyStr))
+		if err == nil {
+			parsedHostKeys = append(parsedHostKeys, pubKey)
+		}
 	}
-	defer os.Remove(knownHostsFile.Name())
+
+	hostKeyCallback := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		keyBytes := key.Marshal()
+		for _, hk := range parsedHostKeys {
+			if bytes.Equal(hk.Marshal(), keyBytes) {
+				return nil
+			}
+		}
+		return fmt.Errorf("host key mismatch")
+	}
+
+	// Use the same auth as the entrypoint
+	config := &ssh.ClientConfig{
+		User:            entrypointConfig.User,
+		Auth:            entrypointConfig.Auth,
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         10 * time.Second,
+	}
 
 	// Try each candidate
 	var lastErr error
@@ -401,39 +369,78 @@ func runRoomSSH(stdin io.Reader, candidates []string, sshPort int, hostKeys []st
 			target = net.JoinHostPort(candidate, strconv.Itoa(sshPort))
 		}
 
-		conn, err := net.DialTimeout("tcp", target, 2*time.Second)
+		client, err := ssh.Dial("tcp", target, config)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		conn.Close()
+		defer client.Close()
 
-		host, port, _ := net.SplitHostPort(target)
-		for _, key := range hostKeys {
-			parts := strings.Fields(key)
-			if len(parts) >= 2 {
-				entry := fmt.Sprintf("[%s]:%s %s %s\n", host, port, parts[0], parts[1])
-				knownHostsFile.WriteString(entry)
+		session, err := client.NewSession()
+		if err != nil {
+			return fmt.Errorf("failed to create session: %w", err)
+		}
+		defer session.Close()
+
+		// Request PTY
+		fd := int(os.Stdin.Fd())
+		width, height, err := term.GetSize(fd)
+		if err != nil {
+			width, height = 80, 24
+		}
+
+		if err := session.RequestPty("xterm", height, width, ssh.TerminalModes{}); err != nil {
+			return fmt.Errorf("failed to request PTY: %w", err)
+		}
+
+		// Handle window size changes
+		winch := make(chan os.Signal, 1)
+		signal.Notify(winch, syscall.SIGWINCH)
+		stopWinch := make(chan bool)
+		go func() {
+			for {
+				select {
+				case <-winch:
+					width, height, err := term.GetSize(fd)
+					if err == nil {
+						session.WindowChange(height, width)
+					}
+				case <-stopWinch:
+					return
+				}
 			}
+		}()
+		defer func() {
+			close(stopWinch)
+			signal.Stop(winch)
+		}()
+
+		stdin, _ := session.StdinPipe()
+		stdout, _ := session.StdoutPipe()
+		stderr, _ := session.StderrPipe()
+
+		if err := session.Shell(); err != nil {
+			return fmt.Errorf("failed to start shell: %w", err)
 		}
-		knownHostsFile.Close()
 
-		finalHost, finalPort, _ := net.SplitHostPort(target)
-		sshArgs := []string{
-			"-tt", // Force TTY allocation as we are piping stdin
-			"-p", finalPort,
-			"-o", fmt.Sprintf("UserKnownHostsFile=%s", knownHostsFile.Name()),
-			"-o", "StrictHostKeyChecking=yes",
-			"-o", "LogLevel=ERROR",
-			finalHost,
-		}
+		// Proxy I/O
+		errChan := make(chan error, 3)
+		go func() {
+			_, err := io.Copy(stdin, os.Stdin)
+			errChan <- err
+		}()
+		go func() {
+			_, err := io.Copy(os.Stdout, stdout)
+			errChan <- err
+		}()
+		go func() {
+			_, err := io.Copy(os.Stderr, stderr)
+			errChan <- err
+		}()
 
-		cmd := exec.Command("ssh", sshArgs...)
-		cmd.Stdin = stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		return cmd.Run()
+		// Wait for session to end
+		session.Wait()
+		return nil
 	}
 
 	if lastErr != nil {
