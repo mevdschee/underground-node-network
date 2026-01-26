@@ -673,9 +673,9 @@ func (s *Server) showTeleportInfo(v *Visitor) {
 
 	// The wrapper looks for these markers to capture connection info
 	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
-	fmt.Fprintf(v.Bus, "  [CONNECTION DATA]\r\n")
+	fmt.Fprintf(v.Bus, "[CONNECTION DATA]\r\n")
 	fmt.Fprintf(v.Bus, "%s", yamlStr)
-	fmt.Fprintf(v.Bus, "  [/CONNECTION DATA]\r\n")
+	fmt.Fprintf(v.Bus, "[/CONNECTION DATA]\r\n")
 	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
 
 	fmt.Fprintf(v.Bus, "\033[1;32mUNN TELEPORTATION READY\033[0m\r\n\r\n")
