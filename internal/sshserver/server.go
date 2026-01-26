@@ -306,38 +306,6 @@ func (s *Server) handleRoomSubsystem(newChannel ssh.NewChannel, username string)
 	fmt.Fprintf(channel, "UNN Room Control Channel\n")
 }
 
-func (s *Server) sendWelcome(w io.Writer, username string) {
-	fmt.Fprintf(w, "\r\n")
-	// Try to load custom banner
-	bannerPath := s.roomName + ".asc"
-	if b, err := os.ReadFile(bannerPath); err == nil {
-		lines := strings.Split(string(b), "\n")
-		for _, line := range lines {
-			fmt.Fprintf(w, "%s\r\n", strings.TrimRight(line, "\r\n"))
-		}
-	} else {
-		fmt.Fprintf(w, "╔═══════════════════════════════════════════════════════════════╗\r\n")
-		fmt.Fprintf(w, "║  Welcome to %-50s║\r\n", s.roomName+"'s room")
-		fmt.Fprintf(w, "║  Underground Node Network                                     ║\r\n")
-		fmt.Fprintf(w, "╚═══════════════════════════════════════════════════════════════╝\r\n")
-		fmt.Fprintf(w, "\r\nType /help for commands.\r\n\r\n")
-	}
-	fmt.Fprintf(w, "\r\n")
-	fmt.Fprintf(w, "Hello, %s! You have entered the room.\r\n", username)
-	fmt.Fprintf(w, "\r\n")
-
-	// List available doors
-	doorList := s.doorManager.List()
-	if len(doorList) > 0 {
-		fmt.Fprintf(w, "Available doors:\r\n")
-		for _, door := range doorList {
-			fmt.Fprintf(w, "  /%s\r\n", door)
-		}
-	} else {
-		fmt.Fprintf(w, "No doors available.\r\n")
-	}
-}
-
 func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	var v *Visitor
 	s.mu.RLock()
