@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -22,9 +23,11 @@ type ChatUI struct {
 	onExit     func()
 	onClose    func()
 	onCmd      func(string) bool
+	drawChan   chan struct{}
 	closeChan  chan struct{}
 	pendingCmd string
 	success    bool
+	firstDraw  bool
 }
 
 func NewChatUI(screen tcell.Screen) *ChatUI {
@@ -32,6 +35,7 @@ func NewChatUI(screen tcell.Screen) *ChatUI {
 		screen:    screen,
 		messages:  make([]string, 0),
 		visitors:  make([]string, 0),
+		drawChan:  make(chan struct{}, 1),
 		closeChan: make(chan struct{}, 1),
 	}
 }
@@ -85,6 +89,12 @@ func (ui *ChatUI) SetVisitors(visitors []string) {
 	if screen != nil {
 		screen.PostEvent(&tcell.EventInterrupt{})
 	}
+
+	// Trigger redraw
+	select {
+	case ui.drawChan <- struct{}{}:
+	default:
+	}
 }
 
 func (ui *ChatUI) Close(success bool) {
@@ -113,13 +123,16 @@ func (ui *ChatUI) Close(success bool) {
 }
 
 func (ui *ChatUI) Reset() {
+	log.Printf("[DEBUG] ChatUI.Reset() called")
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 	ui.closeChan = make(chan struct{}, 1)
+	ui.pendingCmd = ""
+	ui.firstDraw = true
 }
 
 func (ui *ChatUI) Run() string {
-	drawChan := make(chan struct{}, 1)
+	log.Printf("[DEBUG] ChatUI.Run() starting")
 	stopChan := make(chan struct{}) // Internal stop signal for THIS run
 
 	// Capture the current close channel and screen to avoid data races
@@ -129,6 +142,7 @@ func (ui *ChatUI) Run() string {
 	ui.mu.Unlock()
 
 	if screen == nil {
+		log.Printf("[DEBUG] ChatUI.Run(): No screen set, returning early")
 		return ""
 	}
 
@@ -141,25 +155,30 @@ func (ui *ChatUI) Run() string {
 	screen.Sync()
 	screen.Fill(' ', blackStyle)
 	screen.Show()
-	drawChan <- struct{}{}
+
+	// Capture draw channel
+	ui.mu.Lock()
+	drawChan := ui.drawChan
+	ui.mu.Unlock()
+
+	// Initial redraw
+	select {
+	case drawChan <- struct{}{}:
+	default:
+	}
 
 	// Event loop
 	go func() {
 		defer wg.Done()
-		defer screen.PostEvent(&tcell.EventInterrupt{}) // Wake up redraw loop on exit
+		if screen != nil { // Added nil check
+			defer screen.PostEvent(&tcell.EventInterrupt{}) // Wake up redraw loop on exit
+		}
 		for {
 			ev := screen.PollEvent()
-
-			// Priority exit check
-			select {
-			case <-closeChan:
-				return
-			case <-stopChan:
-				return
-			default:
-			}
+			log.Printf("[DEBUG] ChatUI event loop: PollEvent returned %T", ev)
 
 			if ev == nil {
+				log.Printf("[DEBUG] ChatUI event loop: PollEvent returned nil, exiting goroutine")
 				return
 			}
 
@@ -193,8 +212,10 @@ func (ui *ChatUI) Run() string {
 				}
 				ui.handleKey(ev)
 			case *tcell.EventResize:
-				ui.screen.Sync()
-				ui.screen.Fill(' ', blackStyle)
+				if ui.screen != nil { // Added nil check
+					ui.screen.Sync()
+					ui.screen.Fill(' ', blackStyle)
+				}
 			case *tcell.EventInterrupt:
 				// Pulse received, check exit conditions
 			}
@@ -223,9 +244,14 @@ outer:
 	}
 
 	// Signal event loop to stop if it hasn't already
+	log.Printf("[DEBUG] ChatUI.Run(): Signaling event loop to stop")
 	close(stopChan)
-	ui.screen.PostEvent(&tcell.EventInterrupt{})
+	if ui.screen != nil { // Added nil check
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
+	log.Printf("[DEBUG] ChatUI.Run(): Waiting for event loop goroutine to finish")
 	wg.Wait() // Ensure goroutine is dead
+	log.Printf("[DEBUG] ChatUI.Run(): Event loop finished, returning %q", result)
 
 	return result
 }
@@ -239,16 +265,29 @@ func (ui *ChatUI) AddMessage(msg string) {
 	if screen != nil {
 		screen.PostEvent(&tcell.EventInterrupt{})
 	}
+
+	// Trigger redraw
+	select {
+	case ui.drawChan <- struct{}{}:
+	default:
+	}
 }
 
 func (ui *ChatUI) Draw() {
 	ui.mu.Lock()
-	defer ui.mu.Unlock()
-
 	s := ui.screen
+	first := ui.firstDraw
+	ui.firstDraw = false
+	ui.mu.Unlock()
+
 	if s == nil {
 		return
 	}
+
+	if first {
+		s.Sync()
+	}
+
 	w, h := s.Size()
 
 	blackStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorWhite)
@@ -345,6 +384,7 @@ func (ui *ChatUI) Draw() {
 }
 
 func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
+	log.Printf("[DEBUG] ChatUI.handleKey: Key=%v Rune=%q", ev.Key(), ev.Rune())
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 
@@ -375,21 +415,35 @@ func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
 }
 
 func (ui *ChatUI) drawText(x, y int, text string, width int, style tcell.Style) {
+	ui.mu.Lock()
+	s := ui.screen
+	ui.mu.Unlock()
+	if s == nil {
+		return
+	}
+
 	runes := []rune(text)
 	for i := 0; i < width; i++ {
 		r := ' '
 		if i < len(runes) {
 			r = runes[i]
 		}
-		ui.screen.SetContent(x+i, y, r, nil, style)
+		s.SetContent(x+i, y, r, nil, style)
 	}
 }
 
 // FillRegion clears a rectangular area with a specific character and style
 func (ui *ChatUI) fillRegion(x, y, w, h int, r rune, style tcell.Style) {
+	ui.mu.Lock()
+	s := ui.screen
+	ui.mu.Unlock()
+	if s == nil {
+		return
+	}
+
 	for row := 0; row < h; row++ {
 		for col := 0; col < w; col++ {
-			ui.screen.SetContent(x+col, y+row, r, nil, style)
+			s.SetContent(x+col, y+row, r, nil, style)
 		}
 	}
 }
