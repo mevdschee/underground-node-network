@@ -308,10 +308,20 @@ func (s *Server) handleRoomSubsystem(newChannel ssh.NewChannel, username string)
 
 func (s *Server) sendWelcome(w io.Writer, username string) {
 	fmt.Fprintf(w, "\r\n")
-	fmt.Fprintf(w, "╔═══════════════════════════════════════════════════════════════╗\r\n")
-	fmt.Fprintf(w, "║  Welcome to %-50s║\r\n", s.roomName+"'s room")
-	fmt.Fprintf(w, "║  Underground Node Network                                     ║\r\n")
-	fmt.Fprintf(w, "╚═══════════════════════════════════════════════════════════════╝\r\n")
+	// Try to load custom banner
+	bannerPath := s.roomName + ".asc"
+	if b, err := os.ReadFile(bannerPath); err == nil {
+		lines := strings.Split(string(b), "\n")
+		for _, line := range lines {
+			fmt.Fprintf(w, "%s\r\n", strings.TrimRight(line, "\r\n"))
+		}
+	} else {
+		fmt.Fprintf(w, "╔═══════════════════════════════════════════════════════════════╗\r\n")
+		fmt.Fprintf(w, "║  Welcome to %-50s║\r\n", s.roomName+"'s room")
+		fmt.Fprintf(w, "║  Underground Node Network                                     ║\r\n")
+		fmt.Fprintf(w, "╚═══════════════════════════════════════════════════════════════╝\r\n")
+		fmt.Fprintf(w, "\r\nType /help for commands.\r\n\r\n")
+	}
 	fmt.Fprintf(w, "\r\n")
 	fmt.Fprintf(w, "Hello, %s! You have entered the room.\r\n", username)
 	fmt.Fprintf(w, "\r\n")
@@ -326,7 +336,6 @@ func (s *Server) sendWelcome(w io.Writer, username string) {
 	} else {
 		fmt.Fprintf(w, "No doors available.\r\n")
 	}
-	fmt.Fprintf(w, "\r\nType /help for commands.\r\n\r\n")
 }
 
 func (s *Server) handleInteraction(channel ssh.Channel, username string) {
@@ -389,8 +398,16 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	})
 
 	// Add welcome message initially
-	chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username))
-	chatUI.AddMessage("*** Type /help for commands ***")
+	bannerPath := s.roomName + ".asc"
+	if b, err := os.ReadFile(bannerPath); err == nil {
+		lines := strings.Split(string(b), "\n")
+		for _, line := range lines {
+			chatUI.AddMessage(strings.TrimRight(line, "\r\n"))
+		}
+	} else {
+		chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username))
+		chatUI.AddMessage("*** Type /help for commands ***")
+	}
 
 	for {
 		// Reset bus and UI for each TUI run
