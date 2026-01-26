@@ -58,6 +58,7 @@ type Server struct {
 	banner        []string
 	mu            sync.RWMutex
 	listener      net.Listener
+	filesDir      string
 }
 
 // NewServer creates a new entry point server
@@ -116,6 +117,7 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		rooms:         make(map[string]*Room),
 		visitors:      make(map[string]*Visitor),
 		punchSessions: make(map[string]*PunchSession),
+		filesDir:      "./files",
 	}
 
 	// Load banner if it exists
@@ -246,6 +248,14 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 			} else {
 				req.Reply(false, nil)
 			}
+		case "exec":
+			command := string(req.Payload[4:])
+			if strings.HasPrefix(command, "scp ") && strings.Contains(command, " -f") {
+				req.Reply(true, nil)
+				s.handleSCPSend(channel, command)
+				return
+			}
+			req.Reply(false, nil)
 		case "shell", "pty-req":
 			// Captured initial size if any
 			var initialW, initialH uint32 = 80, 24
@@ -494,6 +504,8 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 			v.UI.ShowMessage("/help               - Show this help message")
 			v.UI.ShowMessage("/rooms              - List all active rooms")
 			v.UI.ShowMessage("/register <pubkey>  - Register your SSH public key")
+			v.UI.ShowMessage("/files              - List downloadable files")
+			v.UI.ShowMessage("/download <file>    - Download a file")
 			v.UI.ShowMessage("<room_name>         - Join a room by name")
 			v.UI.ShowMessage("Ctrl+C              - Exit")
 		case "rooms":
@@ -524,6 +536,14 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 			} else {
 				v.UI.ShowMessage("Successfully registered.")
 			}
+		case "files":
+			s.showFiles(v)
+		case "download":
+			if len(parts) < 2 {
+				v.UI.ShowMessage("Usage: /download <filename>")
+				return
+			}
+			s.showDownloadInstructions(v, parts[1])
 		default:
 			v.UI.ShowMessage(fmt.Sprintf("Unknown command: %s", command))
 		}
@@ -726,4 +746,81 @@ func (s *Server) calculateSHA256Fingerprint(keyStr string) string {
 	hash := sha256.Sum256(pubKey.Marshal())
 	fingerprint := "SHA256:" + base64.StdEncoding.WithPadding(base64.NoPadding).EncodeToString(hash[:])
 	return fmt.Sprintf("%s key fingerprint is %s.", algo, fingerprint)
+}
+
+func (s *Server) showFiles(v *Visitor) {
+	entries, err := os.ReadDir(s.filesDir)
+	if err != nil {
+		v.UI.ShowMessage(fmt.Sprintf("\033[1;31mError listing files: %v\033[0m", err))
+		return
+	}
+
+	v.UI.ShowMessage("--- Available Files ---")
+	found := false
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		found = true
+		size := formatSize(info.Size())
+		modTime := info.ModTime().Format("2006-01-02 15:04")
+		v.UI.ShowMessage(fmt.Sprintf(" %-24s %10s  %s", entry.Name(), size, modTime))
+	}
+
+	if !found {
+		v.UI.ShowMessage("No files available.")
+	}
+	v.UI.ShowMessage("-----------------------")
+}
+
+func (s *Server) showDownloadInstructions(v *Visitor, filename string) {
+	// Sanitize
+	filename = filepath.Base(filename)
+	path := filepath.Join(s.filesDir, filename)
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		v.UI.ShowMessage(fmt.Sprintf("\033[1;31mFile not found: %s\033[0m", filename))
+		return
+	}
+
+	v.UI.ShowMessage("")
+	v.UI.ShowMessage(" \033[1;32m✔ Preparing download for " + filename + "...\033[0m")
+	v.UI.ShowMessage("")
+
+	// 1. Send the [DOWNLOAD FILE] block for the wrapper
+	fmt.Fprintf(v.Bus, "\r\n[DOWNLOAD FILE]%s[/DOWNLOAD FILE]\r\n", filename)
+
+	// 2. Provide manual instructions
+	v.UI.ShowMessage("For manual download, run this from your local terminal:")
+	v.UI.ShowMessage("")
+
+	// Try to get public address
+	host, port, _ := net.SplitHostPort(s.address)
+	if host == "0.0.0.0" || host == "" {
+		host = "localhost" // Fallback for local testing
+	}
+
+	v.UI.ShowMessage(fmt.Sprintf("  \033[1;36mscp -P %s %s@%s:%s .\033[0m", port, v.Username, host, filename))
+	v.UI.ShowMessage("")
+	v.UI.ShowMessage("Disconnecting to allow the transfer...")
+
+	// Break the TUI loop and close connection
+	v.UI.Close(true)
+}
+
+func formatSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
