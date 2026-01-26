@@ -12,9 +12,15 @@ The UNN Room Client doesn’t change SSH. It simply adds a hidden layer beneath 
 
 When you are connected you can idle in your room. The room server provides a interactive environment:
 - **Room Chat**: Talk to visitors or bots.
-- **Enhanced Interaction**: Supports command history (arrow keys) and smooth terminal handling.
+- **Enhanced Interaction**: Supports command history (arrow keys).
 - **Door Access**: Use commands starting with `/` to enter doors or run applications.
 - **Interruption**: You can press **Ctrl+C** to interrupt a running door and return to the room prompt without being disconnected.
+
+### Snappy Interactive Logic
+The room handles transitions and UI redraws with specialized low-level signaling:
+- **Zero-Lag Transitions**: When a door exits, the room server immediately signals its input channel to detach, allowing an instant return to the chat UI without waiting for an extra keystroke.
+- **Asynchronous Redraws**: The TUI screen updates instantly when new messages or visitors arrive, even if you aren't currently typing.
+- **Persistence**: Using a custom I/O bridge ensures that your first keystroke after leaving a door is correctly captured by the room chat.
 
 The client has two types of doors: 
 1. Applications: These are doors that are run locally on the client. When a user enters your room they can start an application, the applications has an entry in the room chat (prefixed with slash) and shows the number of people that are currently using the application. The application can be started by typing /appname. The application starts fullscreen and can be interrupted by **Ctrl+C**. 

@@ -30,5 +30,13 @@ All coordination happens over an `unn-control` SSH subsystem using JSON messages
 - `punch_answer`: Operator candidates and SSH port.
 - `punch_start`: Final sync message to trigger hole-punching.
 
-### Stdin Management
-To ensure a smooth "teleport" experience, the `unn-ssh` wrapper implements an asynchronous stdin manager. This manager can be paused during handle-off to the system SSH client, preventing the wrapper from "eating" characters intended for the room session.
+### Stdin Management & Signaling
+To ensure a smooth transition between the Chat UI and external "Doors," the UNN implement its own I/O bridging layer:
+
+1. **InputBridge**: An asynchronous "pump" that reads raw bytes from the SSH channel and distributes them to a single active consumer via a Go channel. This decouples the network read from the TUI's internal event loop.
+2. **SSHBus**: A specialized implementation of `tcell.Tty` that consumes from the `InputBridge`.
+   - **Prioritized Signaling**: It checks for an internal `doneChan` signal before every read operation. This allows the system to interrupt a blocked read the exact moment a door exits or the TUI is suspended.
+   - **Reset Capability**: The bus can be reset between transitions, clearing old "stop" signals and allowing consecutive programs (e.g., exiting one door and entering another) to receive a fresh input stream.
+
+### Asynchronous Redraws
+The Chat UI implements a decoupled drawing mechanism. UI updates (messages, visitor list changes) are pushed to a dedicated `drawChan`, which triggers a screen refresh independently of the TUI's event loop. This prevents the UI from "freezing" when waiting for user input.
