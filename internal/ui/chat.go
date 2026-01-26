@@ -299,7 +299,7 @@ func (ui *ChatUI) Draw() {
 	// Draw Header (Single Line)
 	title := ui.title
 	if title == "" {
-		title = "UNN Room Interaction"
+		title = "UNN Room"
 	}
 	ui.drawText(2, 0, title, mainW-4, blackStyle.Foreground(tcell.ColorLightCyan).Bold(true))
 
