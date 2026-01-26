@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,7 +94,6 @@ func (m *Manager) Execute(name string, stdin io.Reader, stdout, stderr io.Writer
 	cmd := exec.Command(door.Path)
 
 	// Start the command with a pty
-	log.Printf("[DEBUG] Starting door program: %s", door.Path)
 	f, err := pty.Start(cmd)
 	if err != nil {
 		return err
@@ -105,44 +103,21 @@ func (m *Manager) Execute(name string, stdin io.Reader, stdout, stderr io.Writer
 	// Copy stdin to the pty
 	stdinDone := make(chan struct{})
 	go func() {
-		log.Printf("[DEBUG] Starting stdin copier for door %s", name)
-		buf := make([]byte, 1024)
-		for {
-			log.Printf("[DEBUG] Stdin copier for %s: Calling Read", name)
-			n, err := stdin.Read(buf)
-			log.Printf("[DEBUG] Stdin copier for %s: Read returned n=%d err=%v", name, n, err)
-			if n > 0 {
-				log.Printf("[DEBUG] Stdin copier for %s: Calling Write", name)
-				_, werr := f.Write(buf[:n])
-				log.Printf("[DEBUG] Stdin copier for %s: Write returned err=%v", name, werr)
-				if werr != nil {
-					break
-				}
-			}
-			if err != nil {
-				break
-			}
-		}
-		log.Printf("[DEBUG] Stdin copier finished for door %s", name)
+		io.Copy(f, stdin)
 		close(stdinDone)
 	}()
 
-	log.Printf("[DEBUG] Starting stdout copy for door %s", name)
 	_, err = io.Copy(stdout, f)
-	log.Printf("[DEBUG] Stdout copy finished for door %s (err: %v)", name, err)
 
 	// Ensure the pty is closed to unblock the stdin goroutine if it's waiting on write
 	f.Close()
 
 	// If the stdin reader can be signaled to stop, do it now
 	if se, ok := stdin.(interface{ SignalExit() }); ok {
-		log.Printf("[DEBUG] Signaling stdin reader to exit for door %s", name)
 		se.SignalExit()
 	}
 
-	log.Printf("[DEBUG] Waiting for stdin copier to finish for door %s", name)
 	<-stdinDone // Wait for stdin copier to truly finish
-	log.Printf("[DEBUG] Door %s Execute returning", name)
 
 	if err != nil && (errors.Is(err, syscall.EIO) || strings.Contains(err.Error(), "input/output error")) {
 		// Suppress EIO error on Linux when PTY slave is closed (process exit)
