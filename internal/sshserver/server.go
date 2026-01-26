@@ -297,7 +297,7 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 
 	chatUI := ui.NewChatUI(nil) // Screen will be set in loop
 	chatUI.SetUsername(username)
-	chatUI.SetTitle(fmt.Sprintf("UNN Room: %s", s.roomName))
+	chatUI.SetTitle(fmt.Sprintf("Underground Node Network - Room: %s", s.roomName))
 	v.ChatUI = chatUI
 
 	chatUI.OnSend(func(msg string) {
