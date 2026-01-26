@@ -3,7 +3,6 @@ package ui
 import (
 	"io"
 	"sync"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"golang.org/x/crypto/ssh"
@@ -97,7 +96,6 @@ type SSHBus struct {
 	mu       sync.Mutex
 	cb       func()
 	doneChan chan struct{}
-	baudRate int
 }
 
 func NewSSHBus(bridge *InputBridge, width, height int) *SSHBus {
@@ -158,33 +156,7 @@ func (b *SSHBus) Read(p []byte) (int, error) {
 }
 
 func (b *SSHBus) Write(p []byte) (int, error) {
-	if b.baudRate <= 0 {
-		return b.bridge.channel.Write(p)
-	}
-
-	// Throttle based on baud rate (roughly 10 bits per byte)
-	bytesPerSec := b.baudRate / 10
-	if bytesPerSec <= 0 {
-		bytesPerSec = 1
-	}
-	delayPerByte := time.Second / time.Duration(bytesPerSec)
-
-	total := 0
-	for _, c := range p {
-		n, err := b.bridge.channel.Write([]byte{c})
-		total += n
-		if err != nil {
-			return total, err
-		}
-		time.Sleep(delayPerByte)
-	}
-	return total, nil
-}
-
-func (b *SSHBus) SetBaudRate(baud int) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.baudRate = baud
+	return b.bridge.channel.Write(p)
 }
 
 func (b *SSHBus) Close() error {

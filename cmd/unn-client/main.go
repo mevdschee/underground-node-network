@@ -28,8 +28,6 @@ func main() {
 	identity := flag.String("identity", "", "Path to user private key for authentication (defaults to ~/.unn/user_key)")
 	hostKey := flag.String("hostkey", "", "Path to SSH host key (auto-generated if not specified)")
 	entryPointAddr := flag.String("entrypoint", "", "Entry point address (e.g., localhost:44322)")
-	baudRate := flag.Int("baud", 115200, "SSH output baud rate per line")
-	maxLines := flag.Int("lines", 8, "Maximum concurrent SSH connections (lines)")
 	flag.Parse()
 
 	// Set default host key path to ephemeral file
@@ -59,7 +57,7 @@ func main() {
 
 	// Create and start SSH server
 	address := fmt.Sprintf("%s:%d", *bind, *port)
-	server, err := sshserver.NewServer(address, *hostKey, *roomName, doorManager, *baudRate, *maxLines)
+	server, err := sshserver.NewServer(address, *hostKey, *roomName, doorManager)
 	if err != nil {
 		log.Fatalf("Failed to create SSH server: %v", err)
 	}
