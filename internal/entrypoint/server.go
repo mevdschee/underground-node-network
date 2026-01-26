@@ -490,7 +490,23 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 
 		switch command {
 		case "help":
-			v.UI.ShowMessage("Commands: /register <key>, /help")
+			v.UI.ShowMessage("--- Available Commands ---")
+			v.UI.ShowMessage("/help               - Show this help message")
+			v.UI.ShowMessage("/rooms              - List all active rooms")
+			v.UI.ShowMessage("/register <pubkey>  - Register your SSH public key")
+			v.UI.ShowMessage("<room_name>         - Join a room by name")
+			v.UI.ShowMessage("Ctrl+C              - Exit")
+		case "rooms":
+			s.mu.RLock()
+			if len(s.rooms) == 0 {
+				v.UI.ShowMessage("No active rooms.")
+			} else {
+				v.UI.ShowMessage("Active Rooms:")
+				for _, room := range s.rooms {
+					v.UI.ShowMessage(fmt.Sprintf(" - %s (owned by %s)", room.Info.Name, room.Info.Owner))
+				}
+			}
+			s.mu.RUnlock()
 		case "register":
 			if len(parts) < 2 {
 				v.UI.ShowMessage("Usage: /register <public_key>")

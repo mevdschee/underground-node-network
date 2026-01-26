@@ -18,7 +18,6 @@ type EntryUI struct {
 	screen    tcell.Screen
 	rooms     []RoomInfo
 	logs      []string
-	banner    []string
 	input     string
 	username  string
 	addr      string
@@ -37,7 +36,6 @@ func NewEntryUI(screen tcell.Screen, username, addr string) *EntryUI {
 		addr:      addr,
 		rooms:     make([]RoomInfo, 0),
 		logs:      make([]string, 0),
-		banner:    make([]string, 0),
 		closeChan: make(chan struct{}, 1),
 	}
 }
@@ -77,7 +75,9 @@ func (ui *EntryUI) SetRooms(rooms []RoomInfo) {
 
 func (ui *EntryUI) SetBanner(banner []string) {
 	ui.mu.Lock()
-	ui.banner = banner
+	// Clear existing logs and set banner as the initial content
+	ui.logs = make([]string, len(banner))
+	copy(ui.logs, banner)
 	ui.mu.Unlock()
 	ui.screen.PostEvent(&tcell.EventInterrupt{})
 }
@@ -250,40 +250,29 @@ func (ui *EntryUI) Draw() {
 		}
 	}
 
-	// Draw Main Pane (Left) - Banner + Messages
-	currentY := contentStartY
-
-	// Banner in Main Pane
-	if len(ui.banner) > 0 {
-		for _, line := range ui.banner {
-			if currentY >= h-2 {
-				break
-			}
-			ui.drawText(2, currentY, truncateString(line, mainW-2), mainW-2, headerStyle)
-			currentY++
-		}
-		currentY++ // Space after banner
-	}
-
-	// Messages follow banner in Main Pane
-	if currentY < h-2 {
-		logH := h - 2 - currentY
+	// Draw Main Pane (Left) - Messages (including Banner)
+	logH := h - 2 - contentStartY
+	if logH > 0 {
 		logStart := 0
 		if len(ui.logs) > logH {
 			logStart = len(ui.logs) - logH
 		}
-		logCount := 0
 		for i, logMsg := range ui.logs[logStart:] {
-			if currentY+i >= h-2 {
+			if contentStartY+i >= h-2 {
 				break
 			}
-			ui.drawText(2, currentY+i, truncateString(logMsg, mainW-4), mainW-4, logStyle)
-			logCount++
+			// Use headerStyle if it looks like ASCII art (e.g., contains box drawing or many symbols)
+			style := logStyle
+			if strings.ContainsAny(logMsg, "╔╗╚╝║═█▀▄▌▐") {
+				style = headerStyle
+			}
+			ui.drawText(2, contentStartY+i, truncateString(logMsg, mainW-4), mainW-4, style)
 		}
 		// Clear rest of main pane
-		mainRemaining := h - 2 - (currentY + logCount)
+		logCount := len(ui.logs[logStart:])
+		mainRemaining := h - 2 - (contentStartY + logCount)
 		if mainRemaining > 0 {
-			ui.fillRegion(1, currentY+logCount, mainW-1, mainRemaining, ' ', blackStyle)
+			ui.fillRegion(1, contentStartY+logCount, mainW-1, mainRemaining, ' ', blackStyle)
 		}
 	}
 

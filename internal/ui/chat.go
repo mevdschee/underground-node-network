@@ -314,7 +314,7 @@ func (ui *ChatUI) Draw() {
 
 	// Content start
 	contentY := 2
-	mainH := h - 3 // Reclaim space for input and header
+	mainH := h - 4 // Reclaim space for input (1), separator (1), header (1), and header separator (1)
 
 	// Draw messages (Main Pane)
 	start := 0
