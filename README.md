@@ -29,11 +29,12 @@ If you don't specify a room, you'll enter the entry point's interactive shell:
 ```
 From here you can:
 - List active rooms with `/rooms`
+- Search and download files with `/files` and `/download`
 ### Manual Exploration
-If you're not using the wrapper, you can connect directly using any SSH client. The entry point provides simplified command suggestions and **precalculated fingerprints** (matching standard OpenSSH format) for easy manual verification.
+If you're not using the wrapper, you can connect directly using any SSH client. The entry point and room nodes provide **precalculated host fingerprints** (standard SHA256 base64 format) and **file verification signatures** (hex-encoded SHA256) for easy manual verification.
 
 ### Persistent Navigation
-The wrapper is persistent—when you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell. It also supports **window resizing** and **Ctrl+C interruption** for doors.
+The wrapper is persistent—when you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell. It also supports **window resizing**, **Ctrl+C interruption** for doors, and **automated file downloads** via a secure, one-shot SFTP server with **mutual authentication** and **filename obfuscation**.
 
 ## Hosting a Node
 

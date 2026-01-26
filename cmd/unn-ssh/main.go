@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mevdschee/underground-node-network/internal/protocol"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -354,6 +355,9 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		case <-userExited:
 			// Server closed connection, hopefully after printing data and instructions
 			shouldConnect = len(candidates) > 0
+		case <-done:
+			// Captured connection data, jump to room immediately
+			shouldConnect = true
 		case <-time.After(timeout):
 			return fmt.Errorf("timeout waiting for connection info")
 		}
@@ -372,16 +376,25 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			return nil // User exited manually
 		}
 
-		// Connect to room using native SSH client
-		if err := runRoomSSH(candidates, sshPort, hostKeys, config, verbose); err != nil {
-			fmt.Fprintf(os.Stderr, "Error connecting to room: %v\n", err)
-			time.Sleep(2 * time.Second)
+		// Connect to room using native SSH client - stay in room if download triggered
+		for {
+			downloaded, err := runRoomSSH(candidates, sshPort, hostKeys, config, verbose)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error connecting to room: %v\n", err)
+				time.Sleep(2 * time.Second)
+				break
+			}
+			if !downloaded {
+				break // Exit back to entry point
+			}
+			if verbose {
+				log.Printf("Reconnecting to room after automatic download...")
+			}
 		}
-		// Loop back to entry point
 	}
 }
 
-func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointConfig *ssh.ClientConfig, verbose bool) error {
+func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointConfig *ssh.ClientConfig, verbose bool) (bool, error) {
 	if verbose {
 		log.Printf("Got connection info: candidates=%v port=%d keys=%d", candidates, sshPort, len(hostKeys))
 	}
@@ -435,11 +448,9 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 
 		session, err := client.NewSession()
 		if err != nil {
-			return fmt.Errorf("failed to create session: %w", err)
+			return false, fmt.Errorf("failed to create session: %w", err)
 		}
 		defer session.Close()
-
-		var downloadFilename string
 
 		// Request PTY
 		fd := int(os.Stdin.Fd())
@@ -449,7 +460,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		}
 
 		if err := session.RequestPty("xterm", height, width, ssh.TerminalModes{}); err != nil {
-			return fmt.Errorf("failed to request PTY: %w", err)
+			return false, fmt.Errorf("failed to request PTY: %w", err)
 		}
 
 		// Handle window size changes
@@ -479,20 +490,25 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		stderr, _ := session.StderrPipe()
 
 		if err := session.Shell(); err != nil {
-			return fmt.Errorf("failed to start shell: %w", err)
+			return false, fmt.Errorf("failed to start shell: %w", err)
 		}
 
 		// Proxy I/O
 		globalStdinManager.SetWriter(stdin)
 		errChan := make(chan error, 2)
+		var downloadFilename string
+		var downloadPort int
+		var downloadTransferID string
+		stdoutDone := make(chan struct{})
 		go func() {
+			defer close(stdoutDone)
 			var currentLine strings.Builder
+			var inData bool
 			var lastByte byte
 			buf := make([]byte, 1024)
 			for {
 				n, err := stdout.Read(buf)
 				if err != nil {
-					errChan <- err
 					return
 				}
 
@@ -513,8 +529,32 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 						cleanLine := stripANSI(rawLine)
 						line := strings.TrimSpace(cleanLine)
 
-						if strings.HasPrefix(line, "[DOWNLOAD FILE]") && strings.HasSuffix(line, "[/DOWNLOAD FILE]") {
-							downloadFilename = strings.TrimSuffix(strings.TrimPrefix(line, "[DOWNLOAD FILE]"), "[/DOWNLOAD FILE]")
+						if verbose && strings.Contains(line, "DOWNLOAD") {
+							log.Printf("DEBUG: saw line: %q", line)
+						}
+
+						if strings.Contains(line, "[DOWNLOAD FILE]") {
+							inData = true
+							downloadFilename = ""
+							downloadPort = 0
+							downloadTransferID = ""
+							if verbose {
+								log.Printf("DEBUG: Triggered download data capture")
+							}
+						} else if inData {
+							if strings.Contains(line, "[/DOWNLOAD FILE]") {
+								inData = false
+								if verbose {
+									log.Printf("Parsed download: %s on port %d (uuid: %s)", downloadFilename, downloadPort, downloadTransferID)
+								}
+							} else if downloadFilename == "" {
+								downloadFilename = strings.TrimSpace(line)
+							} else if downloadPort == 0 {
+								p, _ := strconv.Atoi(strings.TrimSpace(line))
+								downloadPort = p
+							} else {
+								downloadTransferID = strings.TrimSpace(line)
+							}
 						}
 					} else {
 						currentLine.WriteByte(b)
@@ -531,22 +571,29 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		session.Wait()
 		globalStdinManager.SetWriter(nil)
 
+		// Wait for stdout to be fully processed
+		<-stdoutDone
+
+		downloaded := false
 		if downloadFilename != "" {
 			if verbose {
-				log.Printf("Automatic download triggered: %s", downloadFilename)
+				log.Printf("Automatic download triggered: %s (port: %d, uuid: %s)", downloadFilename, downloadPort, downloadTransferID)
 			}
-			if err := downloadFile(client, downloadFilename, verbose); err != nil {
+			// Use the existing room connection to tunnel to the one-shot server
+			if err := downloadFile(client, downloadPort, downloadTransferID, config, downloadFilename, verbose); err != nil {
 				fmt.Fprintf(os.Stderr, "\r\nError during automatic download: %v\r\n", err)
+			} else {
+				downloaded = true
 			}
 		}
 
-		return nil
+		return downloaded, nil
 	}
 
 	if lastErr != nil {
-		return fmt.Errorf("failed to connect to any candidate: %w", lastErr)
+		return false, fmt.Errorf("failed to connect to any candidate: %w", lastErr)
 	}
-	return fmt.Errorf("no candidates available")
+	return false, fmt.Errorf("no candidates available")
 }
 
 func loadKey(path string) (ssh.Signer, error) {
@@ -563,7 +610,7 @@ func stripANSI(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
 }
 
-func downloadFile(client *ssh.Client, filename string, verbose bool) error {
+func downloadFile(client *ssh.Client, port int, transferID string, config *ssh.ClientConfig, filename string, verbose bool) error {
 	// 1. Determine destination path (~/Downloads)
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -576,71 +623,58 @@ func downloadFile(client *ssh.Client, filename string, verbose bool) error {
 	destPath := getUniquePath(filepath.Join(destDir, filepath.Base(filename)))
 
 	if verbose {
-		log.Printf("Downloading to: %s", destPath)
+		log.Printf("Downloading to: %s (requesting %s via tunnel)", destPath, transferID)
 	}
 
 	fmt.Fprintf(os.Stderr, "\033[1;32mDownloading %s to %s...\033[0m\r\n", filename, destPath)
 
-	// 2. Open session for SCP
-	session, err := client.NewSession()
+	// 2. Connect to the one-shot server via tunnel
+	tunnelAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	if verbose {
+		log.Printf("Dialing one-shot SFTP via tunnel @ %s", tunnelAddr)
+	}
+
+	// Dial the one-shot server THROUGH the existing room connection (direct-tcpip)
+	conn, err := client.Dial("tcp", tunnelAddr)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open tunnel for SFTP: %w", err)
 	}
-	defer session.Close()
+	defer conn.Close()
 
-	stdout, _ := session.StdoutPipe()
-	stdin, _ := session.StdinPipe()
-
-	// 3. Run scp in "sink" mode (to receive)
-	// scp -v -f <filename> (remote scp -f is used for sending)
-	if err := session.Start("scp -f " + filename); err != nil {
-		return err
-	}
-
-	// 4. Implement SCP sink side (receiving)
-	// Send initial null byte to start
-	stdin.Write([]byte{0})
-
-	// Read C header
-	buf := make([]byte, 1024)
-	n, err := stdout.Read(buf)
+	// Wrap the tunneled connection in a new SSH client (with mutual auth)
+	ncc, chans, reqs, err := ssh.NewClientConn(conn, tunnelAddr, config)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed SSH handshake over tunnel: %w", err)
 	}
-	header := string(buf[:n])
-	if !strings.HasPrefix(header, "C") {
-		return fmt.Errorf("unexpected SCP header: %s", header)
-	}
+	sftpSshClient := ssh.NewClient(ncc, chans, reqs)
+	defer sftpSshClient.Close()
 
-	// Parse header: C0644 22 filename\n
-	parts := strings.Fields(header)
-	if len(parts) < 3 {
-		return fmt.Errorf("invalid SCP header: %s", header)
-	}
-	size, err := strconv.ParseInt(parts[1], 10, 64)
+	// 3. Create SFTP client
+	sftpClient, err := sftp.NewClient(sftpSshClient)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create SFTP client: %w", err)
 	}
+	defer sftpClient.Close()
 
-	// Acknowledge header
-	stdin.Write([]byte{0})
-
-	// Open local file
-	f, err := os.Create(destPath)
+	// 4. Open remote file by transferID
+	remoteFile, err := sftpClient.Open(transferID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open remote file (uuid: %s): %w", transferID, err)
 	}
-	defer f.Close()
+	defer remoteFile.Close()
 
-	// Receive file data
-	if _, err := io.CopyN(f, stdout, size); err != nil {
-		return err
+	// 4. Create local file
+	localFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create local file: %w", err)
 	}
+	defer localFile.Close()
 
-	// Read final null byte
-	stdout.Read(buf[:1])
-	// Send final null byte
-	stdin.Write([]byte{0})
+	// 5. Transfer data
+	_, err = io.Copy(localFile, remoteFile)
+	if err != nil {
+		return fmt.Errorf("failed during data transfer: %w", err)
+	}
 
 	fmt.Fprintf(os.Stderr, "\033[1;32mTransfer complete!\033[0m\r\n")
 	return nil

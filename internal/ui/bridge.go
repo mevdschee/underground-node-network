@@ -130,8 +130,9 @@ func (b *SSHBus) Read(p []byte) (int, error) {
 		case data, ok := <-b.bridge.dataChan:
 			if !ok {
 				b.bridge.mu.Lock()
-				defer b.bridge.mu.Unlock()
-				return 0, b.bridge.err
+				err := b.bridge.err
+				b.bridge.mu.Unlock()
+				return 0, err
 			}
 			p[0] = data
 			n := 1

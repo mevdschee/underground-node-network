@@ -15,6 +15,10 @@ When you are connected you can idle in your room. The room server provides a int
 - **Enhanced Interaction**: Supports command history (arrow keys).
 - **Door Access**: Use commands starting with `/` to enter doors or run applications.
 - **Interruption**: You can press **Ctrl+C** to interrupt a running door and return to the room prompt without being disconnected.
+- **File Discovery & Download**: Browse the node's shared files using `/files` and download them with `/download <filename>`.
+- **Untangled SFTP**: The room server uses a **one-shot SFTP server** model. For every download request, a separate SSH server is spawned on a random port. This server is "jailed" to serve exactly one file and enforces **mutual authentication** (verifying your key against the one used to join the room).
+- **Filename Obfuscation**: To prevent protocol analysis from capturing shared filenames, the room server generates a random **UUIDv4** for the transfer. The actual filename is never sent during the SFTP session; the wrapper automatically resolves the UUID back to the original name upon local storage.
+- **Configurable Window**: You can configure the download window (default 60s) using the `-timeout` flag on the client.
 
 ### Snappy Interactive Logic
 The room handles transitions and UI redraws with specialized low-level signaling:

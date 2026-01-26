@@ -1,6 +1,8 @@
 package sshserver
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -10,9 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/google/uuid"
 	"github.com/mevdschee/underground-node-network/internal/doors"
+	"github.com/mevdschee/underground-node-network/internal/fileserver"
 	"github.com/mevdschee/underground-node-network/internal/ui"
 	"golang.org/x/crypto/ssh"
 )
@@ -25,28 +30,33 @@ type Visitor struct {
 	Bus             *ui.SSHBus
 	Bridge          *ui.InputBridge
 	PendingDownload string
+	PubKey          ssh.PublicKey // The specific key used for auth
 }
 
 type Server struct {
-	address        string
-	config         *ssh.ServerConfig
-	doorManager    *doors.Manager
-	roomName       string
-	visitors       map[string]*Visitor
-	authorizedKeys map[string]bool // Marshaled pubkey -> true
-	filesDir       string
-	mu             sync.RWMutex
-	listener       net.Listener
+	address         string
+	config          *ssh.ServerConfig
+	doorManager     *doors.Manager
+	roomName        string
+	visitors        map[string]*Visitor
+	authorizedKeys  map[string]bool // Marshaled pubkey -> true
+	filesDir        string
+	hostKey         ssh.Signer
+	downloadTimeout time.Duration
+	mu              sync.RWMutex
+	listener        net.Listener
+	headless        bool
 }
 
 func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doors.Manager) (*Server, error) {
 	s := &Server{
-		address:        address,
-		doorManager:    doorManager,
-		roomName:       roomName,
-		filesDir:       filesDir,
-		visitors:       make(map[string]*Visitor),
-		authorizedKeys: make(map[string]bool),
+		address:         address,
+		doorManager:     doorManager,
+		roomName:        roomName,
+		filesDir:        filesDir,
+		visitors:        make(map[string]*Visitor),
+		authorizedKeys:  make(map[string]bool),
+		downloadTimeout: 60 * time.Second,
 	}
 
 	config := &ssh.ServerConfig{
@@ -62,7 +72,11 @@ func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doo
 			return nil, fmt.Errorf("public key not authorized for this room")
 		}
 
-		return nil, nil
+		return &ssh.Permissions{
+			Extensions: map[string]string{
+				"pubkey": base64.StdEncoding.EncodeToString(marshaled),
+			},
+		}, nil
 	}
 
 	// Load or generate host key
@@ -71,17 +85,28 @@ func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doo
 		return nil, fmt.Errorf("failed to load host key: %w", err)
 	}
 	config.AddHostKey(hostKey)
+	s.hostKey = hostKey
 
 	s.config = config
 	return s, nil
 }
 
-// AuthorizeKey registers a public key that is allowed to connect to this room
+func (s *Server) SetHeadless(headless bool) {
+	s.headless = headless
+}
+
 func (s *Server) AuthorizeKey(pubKey ssh.PublicKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.authorizedKeys[string(pubKey.Marshal())] = true
 	log.Printf("Authorized key for visitor")
+}
+
+// SetDownloadTimeout sets the timeout for one-shot SFTP download servers
+func (s *Server) SetDownloadTimeout(timeout time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.downloadTimeout = timeout
 }
 
 // Start begins listening for SSH connections
@@ -191,11 +216,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 	username := sshConn.User()
 	log.Printf("Visitor connected: %s", username)
 
+	var pubKey ssh.PublicKey
+	if b64, ok := sshConn.Permissions.Extensions["pubkey"]; ok {
+		marshaled, _ := base64.StdEncoding.DecodeString(b64)
+		pubKey, _ = ssh.ParsePublicKey(marshaled)
+	}
+
 	// Register visitor
 	s.mu.Lock()
 	v := &Visitor{
 		Username: username,
 		Conn:     sshConn,
+		PubKey:   pubKey,
 	}
 	s.visitors[username] = v
 	s.mu.Unlock()
@@ -226,9 +258,56 @@ func (s *Server) handleChannel(newChannel ssh.NewChannel, username string) {
 		s.handleSession(newChannel, username)
 	case "unn-room":
 		s.handleRoomSubsystem(newChannel, username)
+	case "direct-tcpip":
+		s.handleDirectTcpip(newChannel)
 	default:
 		newChannel.Reject(ssh.UnknownChannelType, fmt.Sprintf("unknown channel type: %s", channelType))
 	}
+}
+
+func (s *Server) handleDirectTcpip(newChannel ssh.NewChannel) {
+	type directTcpipData struct {
+		DestAddr   string
+		DestPort   uint32
+		OriginAddr string
+		OriginPort uint32
+	}
+
+	var data directTcpipData
+	if err := ssh.Unmarshal(newChannel.ExtraData(), &data); err != nil {
+		newChannel.Reject(ssh.ConnectionFailed, "error parsing direct-tcpip data")
+		return
+	}
+
+	if data.DestAddr != "127.0.0.1" && data.DestAddr != "localhost" {
+		newChannel.Reject(ssh.Prohibited, "only localhost forwarding allowed")
+		return
+	}
+
+	dest := fmt.Sprintf("%s:%d", data.DestAddr, data.DestPort)
+	conn, err := net.Dial("tcp", dest)
+	if err != nil {
+		newChannel.Reject(ssh.ConnectionFailed, err.Error())
+		return
+	}
+
+	channel, requests, err := newChannel.Accept()
+	if err != nil {
+		conn.Close()
+		return
+	}
+	go ssh.DiscardRequests(requests)
+
+	go func() {
+		defer channel.Close()
+		defer conn.Close()
+		io.Copy(channel, conn)
+	}()
+	go func() {
+		defer channel.Close()
+		defer conn.Close()
+		io.Copy(conn, channel)
+	}()
 }
 
 func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
@@ -247,42 +326,65 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 	if v == nil {
 		return
 	}
-	// Create UI bus
-	v.Bridge = ui.NewInputBridge(rawChannel)
-	v.Bus = ui.NewSSHBus(v.Bridge, 80, 24)
 
-	// Handle session requests
-	go func() {
-		for req := range requests {
-			switch req.Type {
-			case "exec":
-				command := string(req.Payload[4:])
-				if strings.HasPrefix(command, "scp ") && strings.Contains(command, " -f") {
-					req.Reply(true, nil)
-					s.handleSCPSend(rawChannel, command)
-					return
-				}
-				req.Reply(false, nil)
-			case "pty-req":
-				if w, h, ok := ui.ParsePtyRequest(req.Payload); ok {
-					v.Bus.Resize(int(w), int(h))
-				}
-				req.Reply(true, nil)
-			case "window-change":
-				if w, h, ok := ui.ParseWindowChange(req.Payload); ok {
-					v.Bus.Resize(int(w), int(h))
-				}
-				req.Reply(true, nil)
-			case "shell":
-				req.Reply(true, nil)
-			default:
-				req.Reply(false, nil)
+	var initialW, initialH uint32 = 80, 24
+
+	// Process requests to determine session type (shell vs exec scp)
+	for req := range requests {
+		switch req.Type {
+		case "exec":
+			req.Reply(false, nil)
+			return
+		case "pty-req":
+			if w, h, ok := ui.ParsePtyRequest(req.Payload); ok {
+				initialW, initialH = w, h
 			}
-		}
-	}()
+			req.Reply(true, nil)
+		case "shell":
+			req.Reply(true, nil)
 
-	// Main interaction loop
-	s.handleInteraction(rawChannel, username)
+			// Shell session - init TUI and start interaction
+			v.Bridge = ui.NewInputBridge(rawChannel)
+			v.Bus = ui.NewSSHBus(v.Bridge, int(initialW), int(initialH))
+
+			// Handle remaining requests in background (e.g., resize)
+			go func() {
+				for r := range requests {
+					switch r.Type {
+					case "pty-req":
+						if w, h, ok := ui.ParsePtyRequest(r.Payload); ok {
+							v.Bus.Resize(int(w), int(h))
+						}
+						r.Reply(true, nil)
+					case "window-change":
+						if w, h, ok := ui.ParseWindowChange(r.Payload); ok {
+							v.Bus.Resize(int(w), int(h))
+						}
+						r.Reply(true, nil)
+					default:
+						r.Reply(false, nil)
+					}
+				}
+			}()
+
+			// Main interaction loop
+			s.handleInteraction(rawChannel, username)
+
+			// Ensure channel close after visitor done
+			v.Bus.ForceClose()
+			return
+		case "subsystem":
+			subsystem := string(req.Payload[4:])
+			if subsystem == "sftp" {
+				req.Reply(false, nil)
+				return
+			}
+			req.Reply(false, nil)
+			return
+		default:
+			req.Reply(false, nil)
+		}
+	}
 }
 
 func (s *Server) handleRoomSubsystem(newChannel ssh.NewChannel, username string) {
@@ -310,6 +412,8 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	chatUI := ui.NewChatUI(nil) // Screen will be set in loop
 	chatUI.SetUsername(username)
 	chatUI.SetTitle(fmt.Sprintf("Underground Node Network - Room: %s", s.roomName))
+	chatUI.Headless = s.headless
+	chatUI.Input = v.Bus
 	v.ChatUI = chatUI
 
 	chatUI.OnSend(func(msg string) {
@@ -321,51 +425,7 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	})
 
 	chatUI.OnCmd(func(cmd string) bool {
-		if strings.HasPrefix(cmd, "/") {
-			// Echo the command in the chat history
-			chatUI.AddMessage(fmt.Sprintf("<%s> %s", username, cmd))
-
-			parts := strings.SplitN(strings.TrimPrefix(cmd, "/"), " ", 2)
-			command := parts[0]
-
-			switch command {
-			case "help":
-				chatUI.AddMessage("--- Available Commands ---")
-				chatUI.AddMessage("/help     - Show this help")
-				chatUI.AddMessage("/who      - List visitors in room")
-				chatUI.AddMessage("/doors    - List available doors")
-				chatUI.AddMessage("/files    - List available files")
-				chatUI.AddMessage("/download - Download a file")
-				chatUI.AddMessage("/<door>   - Enter a door")
-				chatUI.AddMessage("Ctrl+C    - Exit room")
-				return true
-			case "who":
-				visitors := s.GetVisitors()
-				chatUI.AddMessage("--- Visitors in room ---")
-				for _, name := range visitors {
-					chatUI.AddMessage("• " + name)
-				}
-				return true
-			case "doors":
-				doorList := s.doorManager.List()
-				chatUI.AddMessage("--- Available doors ---")
-				for _, door := range doorList {
-					chatUI.AddMessage("/" + door)
-				}
-				return true
-			case "files":
-				s.showFiles(chatUI)
-				return true
-			case "download":
-				if len(parts) < 2 {
-					chatUI.AddMessage("Usage: /download <filename>")
-					return true
-				}
-				s.showDownloadInstructions(v, parts[1])
-				return true
-			}
-		}
-		return false // Not handled internally, exit Run() to check if it's a door
+		return s.handleInternalCommand(v, cmd)
 	})
 
 	// Add welcome message initially
@@ -386,27 +446,33 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 		chatUI.Reset()
 
 		// Create a fresh screen for each run to avoid "already engaged" errors
-		screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
-		if err != nil {
-			log.Printf("Failed to create screen: %v", err)
-			return
-		}
+		if !s.headless {
+			screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
+			if err != nil {
+				log.Printf("Failed to create screen: %v", err)
+				return
+			}
 
-		if err := screen.Init(); err != nil {
-			log.Printf("Failed to init screen: %v", err)
-			return
+			if err := screen.Init(); err != nil {
+				log.Printf("Failed to init screen: %v", err)
+				return
+			}
+			chatUI.SetScreen(screen)
 		}
-
-		// Update ChatUI with the new screen
-		chatUI.SetScreen(screen)
 
 		// Update visitors list
 		s.updateVisitorList(v)
 
 		cmd := chatUI.Run()
-		screen.Fini() // Suspend tcell immediately after Run
 
-		if cmd == "" {
+		// Explicitly finalize screen immediately after Run() to restore terminal state
+		s.mu.RLock()
+		if !s.headless && chatUI.GetScreen() != nil {
+			chatUI.GetScreen().Fini()
+		}
+		s.mu.RUnlock()
+
+		if cmd == "" && v.PendingDownload == "" {
 			v.Conn.Close() // Force immediate disconnect
 			return         // User exited
 		}
@@ -432,6 +498,9 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	// Post-TUI exit download info (mirroring teleport flow)
 	if v.PendingDownload != "" {
 		s.showDownloadInfo(v)
+	} else {
+		// Clear screen on manual exit - first reset colors to avoid black background spill
+		fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
 	}
 }
 
@@ -476,6 +545,55 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 	return nil
 }
 
+func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
+	if strings.HasPrefix(cmd, "/") {
+		log.Printf("Internal command from %s: %s", v.Username, cmd)
+		// Echo the command in the chat history
+		v.ChatUI.AddMessage(fmt.Sprintf("<%s> %s", v.Username, cmd))
+
+		parts := strings.SplitN(strings.TrimPrefix(cmd, "/"), " ", 2)
+		command := parts[0]
+
+		switch command {
+		case "help":
+			v.ChatUI.AddMessage("--- Available Commands ---")
+			v.ChatUI.AddMessage("/help     - Show this help")
+			v.ChatUI.AddMessage("/who      - List visitors in room")
+			v.ChatUI.AddMessage("/doors    - List available doors")
+			v.ChatUI.AddMessage("/files    - List available files")
+			v.ChatUI.AddMessage("/download - Download a file")
+			v.ChatUI.AddMessage("/<door>   - Enter a door")
+			v.ChatUI.AddMessage("Ctrl+C    - Exit room")
+			return true
+		case "who":
+			visitors := s.GetVisitors()
+			v.ChatUI.AddMessage("--- Visitors in room ---")
+			for _, name := range visitors {
+				v.ChatUI.AddMessage("• " + name)
+			}
+			return true
+		case "doors":
+			doorList := s.doorManager.List()
+			v.ChatUI.AddMessage("--- Available doors ---")
+			for _, door := range doorList {
+				v.ChatUI.AddMessage("/" + door)
+			}
+			return true
+		case "files":
+			s.showFiles(v.ChatUI)
+			return true
+		case "download":
+			if len(parts) < 2 {
+				v.ChatUI.AddMessage("Usage: /download <filename>")
+				return true
+			}
+			s.showDownloadInstructions(v, parts[1])
+			return true
+		}
+	}
+	return false // Not handled internally, exit Run() to check if it's a door
+}
+
 func loadOrGenerateHostKey(path string) (ssh.Signer, error) {
 	// Try to load existing key
 	keyBytes, err := os.ReadFile(path)
@@ -516,7 +634,8 @@ func (s *Server) showFiles(chatUI *ui.ChatUI) {
 			return nil
 		}
 
-		rel, err := filepath.Rel(s.filesDir, path)
+		var rel string
+		rel, err = filepath.Rel(s.filesDir, path)
 		if err != nil {
 			return nil
 		}
@@ -575,33 +694,92 @@ func (s *Server) showDownloadInfo(v *Visitor) {
 		return
 	}
 
-	// Clear screen for a clean terminal output
-	fmt.Fprint(v.Bus, "\033[2J\033[H")
+	transferID := uuid.New().String()
 
-	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
-	fmt.Fprintf(v.Bus, "\033[1;32m✔ Preparing download for %s...\033[0m\r\n", filename)
-	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
+	// Start one-shot server
+	s.mu.RLock()
+	dt := s.downloadTimeout
+	s.mu.RUnlock()
 
-	// 1. Send the [DOWNLOAD FILE] block for the wrapper
-	fmt.Fprintf(v.Bus, "[DOWNLOAD FILE]%s[/DOWNLOAD FILE]\r\n\r\n", filename)
-
-	// 2. Provide manual instructions
-	fmt.Fprintf(v.Bus, "For manual download, run this from your local terminal:\r\n\r\n")
-
-	// Try to get public address
-	host, port, _ := net.SplitHostPort(s.address)
-	if host == "127.0.0.1" || host == "localhost" || host == "0.0.0.0" {
-		host = "localhost" // Fallback for testing/local
+	filePort, err := fileserver.StartOneShot(fileserver.Options{
+		HostKey:    s.hostKey,
+		ClientKey:  v.PubKey,
+		Filename:   filename,
+		BaseDir:    s.filesDir,
+		TransferID: transferID,
+		Timeout:    dt,
+	})
+	if err != nil {
+		fmt.Fprintf(v.Bus, "\033[1;31mFailed to start download server: %v\033[0m\r\n", err)
+		return
 	}
 
-	fmt.Fprintf(v.Bus, "  \033[1;36mscp -P %s %s:%s .\033[0m\r\n\r\n", port, host, filename)
+	// Always clear screen before showing download info
+	// First reset colors to avoid the black background from sticking around
+	fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
+
+	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
+	fmt.Fprintf(v.Bus, "[DOWNLOAD FILE]\r\n%s\r\n%d\r\n%s\r\n[/DOWNLOAD FILE]\r\n", filename, filePort, transferID)
+	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
+
+	fmt.Fprintf(v.Bus, "\033[1;32mUNN DOWNLOAD READY\033[0m\r\n\r\n")
+	fmt.Fprintf(v.Bus, "The wrapper is automatically downloading the file to your Downloads folder.\r\n")
+
+	fmt.Fprintf(v.Bus, "\033[1;33mNote: The transfer must start within %d seconds.\033[0m\r\n", int(dt.Seconds()))
+
+	fmt.Fprintf(v.Bus, "If the wrapper fails, you can download manually using:\r\n\r\n")
+
+	// Get actual address for manual instruction
+	host, _, _ := net.SplitHostPort(s.address)
+	if host == "" || host == "0.0.0.0" || host == "127.0.0.1" || host == "::" {
+		host = "localhost"
+	}
+
+	fmt.Fprintf(v.Bus, "  \033[1;36mscp -P %d %s:%s ~/Downloads/%s\033[0m\r\n\r\n", filePort, host, transferID, filepath.Base(filename))
+
+	// Display the host key fingerprint so the user can verify it
+	fingerprint := s.calculateHostKeyFingerprint()
+	fmt.Fprintf(v.Bus, "\033[1mHost Verification Fingerprint (tunnel):\033[0m\r\n")
+	fmt.Fprintf(v.Bus, "\033[1;36m%s\033[0m\r\n\r\n", fingerprint)
+
+	// Calculate and show file signature (matching entrypoint style)
+	cleanTarget := filepath.Clean(filename)
+	absPath := filepath.Join(s.filesDir, cleanTarget)
+	sig := s.calculateFileSHA256(absPath)
+	fmt.Fprintf(v.Bus, "\033[1mFile Verification Signature:\033[0m\r\n")
+	fmt.Fprintf(v.Bus, "\033[1;36m%s  %s\033[0m\r\n\r\n", sig, filename)
+
 	fmt.Fprintf(v.Bus, "Disconnecting to allow the transfer...\r\n")
 
 	// Consume the data
 	v.PendingDownload = ""
 
-	// Ensure immediate disconnect
-	v.Conn.Close()
+	// Give the wrapper documentation and time to start the download.
+	// The connection will stay open until the visitor disconnects.
+}
+
+func (s *Server) calculateFileSHA256(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return "error"
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "error"
+	}
+	hash := h.Sum(nil)
+	fingerprint := fmt.Sprintf("%x", hash)
+	return fingerprint
+}
+
+func (s *Server) calculateHostKeyFingerprint() string {
+	pubKey := s.hostKey.PublicKey()
+	algo := strings.ToUpper(strings.TrimPrefix(pubKey.Type(), "ssh-"))
+	hash := sha256.Sum256(pubKey.Marshal())
+	fingerprint := "SHA256:" + base64.StdEncoding.WithPadding(base64.NoPadding).EncodeToString(hash[:])
+	return fmt.Sprintf("%s key fingerprint is %s.", algo, fingerprint)
 }
 
 func formatSize(b int64) string {

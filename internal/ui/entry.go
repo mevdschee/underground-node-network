@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -27,6 +29,8 @@ type EntryUI struct {
 	onClose   func()
 	closeChan chan struct{}
 	success   bool
+	Headless  bool
+	Input     io.ReadWriter
 }
 
 func NewEntryUI(screen tcell.Screen, username, addr string) *EntryUI {
@@ -58,6 +62,18 @@ func (ui *EntryUI) OnClose(cb func()) {
 	ui.mu.Unlock()
 }
 
+func (ui *EntryUI) SetScreen(screen tcell.Screen) {
+	ui.mu.Lock()
+	ui.screen = screen
+	ui.mu.Unlock()
+}
+
+func (ui *EntryUI) GetScreen() tcell.Screen {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	return ui.screen
+}
+
 func (ui *EntryUI) Lock() {
 	ui.mu.Lock()
 }
@@ -70,7 +86,9 @@ func (ui *EntryUI) SetRooms(rooms []RoomInfo) {
 	ui.mu.Lock()
 	ui.rooms = rooms
 	ui.mu.Unlock()
-	ui.screen.PostEvent(&tcell.EventInterrupt{})
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
 }
 
 func (ui *EntryUI) SetBanner(banner []string) {
@@ -79,7 +97,9 @@ func (ui *EntryUI) SetBanner(banner []string) {
 	ui.logs = make([]string, len(banner))
 	copy(ui.logs, banner)
 	ui.mu.Unlock()
-	ui.screen.PostEvent(&tcell.EventInterrupt{})
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
 }
 
 func (ui *EntryUI) ShowMessage(msg string) {
@@ -89,7 +109,20 @@ func (ui *EntryUI) ShowMessage(msg string) {
 		ui.logs = ui.logs[1:]
 	}
 	ui.mu.Unlock()
-	ui.screen.PostEvent(&tcell.EventInterrupt{})
+	if ui.Headless && ui.Input != nil {
+		fmt.Fprintf(ui.Input, "%s\r\n", msg)
+	}
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
+}
+
+func (ui *EntryUI) GetLogs() []string {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	res := make([]string, len(ui.logs))
+	copy(res, ui.logs)
+	return res
 }
 
 func (ui *EntryUI) Close(success bool) {
@@ -111,10 +144,32 @@ func (ui *EntryUI) Close(success bool) {
 	}
 
 	// Wake up the PollEvent goroutine
-	ui.screen.PostEvent(&tcell.EventInterrupt{})
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
 }
 
 func (ui *EntryUI) Run() bool {
+	if ui.Headless {
+		if ui.Input != nil {
+			go func() {
+				scanner := bufio.NewScanner(ui.Input)
+				for scanner.Scan() {
+					cmd := scanner.Text()
+					ui.mu.Lock()
+					onCmd := ui.onCmd
+					ui.mu.Unlock()
+					if onCmd != nil {
+						onCmd(cmd)
+					}
+				}
+				ui.Close(false)
+			}()
+		}
+		<-ui.closeChan
+		return ui.success
+	}
+
 	exitChan := make(chan bool, 1)
 	drawChan := make(chan struct{}, 1)
 
@@ -178,6 +233,9 @@ func (ui *EntryUI) Run() bool {
 }
 
 func (ui *EntryUI) Draw() {
+	if ui.screen == nil {
+		return
+	}
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 

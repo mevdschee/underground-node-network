@@ -48,6 +48,7 @@ The wrapper is designed for seamless navigation:
 1. When you "teleport" to a room, the wrapper handles the P2P transition automatically.
 2. When you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell.
 3. This allows you to jump between rooms without restarting the wrapper.
+4. During automatic downloads, the connection is kept alive to allow the SFTP-over-tunnel transfer to finish seamlessly before you return to the entry point.
 
 ## Security & Identity
 
@@ -60,3 +61,10 @@ The wrapper is designed for seamless navigation:
 - **Window Resizing**: Supports `SIGWINCH` for correct PTY sizing.
 - **Managed Input**: Uses a managed stdin proxy to ensure `Ctrl+C` behavior is consistent and no characters are lost during transitions.
 - **Native Implementation**: Uses the native Go SSH library for the wrapper logic, falling back to system `ssh` only for the final room session.
+- **Automated Downloads**: Monitors room output for secure `[DOWNLOAD FILE]` signals. When triggered, the wrapper:
+    1. Extracts the one-shot port and transfer UUID.
+    2. Establishes a second SSH connection to the room's one-shot server using your existing identity.
+    3. Verifies the room's host key (using the signature displayed by the room server).
+    4. Downloads the file using the obfuscated UUID to prevent protocol analysis.
+    5. Saves the file to `~/Downloads` using its original filename, with smart conflict resolution.
+    6. Displays the **hex-encoded SHA256** file signature for local manual verification with `sha256sum`.

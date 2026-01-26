@@ -31,6 +31,8 @@ func main() {
 	hostKey := flag.String("hostkey", "", "Path to SSH host key (auto-generated if not specified)")
 	entryPointAddr := flag.String("entrypoint", "", "Entry point address (e.g., localhost:44322)")
 	filesDir := flag.String("files", "./files", "Directory to serve files from")
+	downloadTimeout := flag.Int("timeout", 60, "Timeout for one-shot SFTP download in seconds")
+	headless := flag.Bool("headless", false, "Disable TUI (headless mode)")
 	flag.Parse()
 
 	// Set default host key path to ephemeral file
@@ -73,6 +75,8 @@ func main() {
 	if err := server.Start(); err != nil {
 		log.Fatalf("Failed to start SSH server: %v", err)
 	}
+	server.SetHeadless(*headless)
+	server.SetDownloadTimeout(time.Duration(*downloadTimeout) * time.Second)
 
 	// Get actual port (important when port 0 is used for random port)
 	actualPort := server.GetPort()

@@ -40,3 +40,17 @@ To ensure a smooth transition between the Chat UI and external "Doors," the UNN 
 
 ### Asynchronous Redraws
 The Chat UI implements a decoupled drawing mechanism. UI updates (messages, visitor list changes) are pushed to a dedicated `drawChan`, which triggers a screen refresh independently of the TUI's event loop. This prevents the UI from "freezing" when waiting for user input.
+
+## Advanced Features
+
+### One-Shot SFTP Server & Obfuscated Transfer
+
+UNN implements a highly secure file transfer mechanism designed to be resilient against protocol analysis and unauthorized metadata collection:
+
+1. **Orchestration**: When a visitor types `/download <file>`, the room server generates a random **UUIDv4** and starts an internal one-shot SSH server on a random port.
+2. **Signaling**: The room server outputs a hidden `[DOWNLOAD FILE]` block containing the original filename, the one-shot port, and the transfer UUID.
+3. **Mutual Auth**: The one-shot server is configured to *only* accept the authenticated public key of that specific visitor. Both sides verify host keys to ensure a trusted channel.
+4. **Obfuscation**: During the SFTP session, the client *only* requests the UUID. The server's SFTP handler (from `internal/fileserver`) maps this UUID back to the real file on disk. Any protocol sniffer will only see a request for a random UUID string, never the actual filename or path.
+6. **Graceful Teardown**: The one-shot server signals success with an `exit-status` of 0. It then waits a brief period (100ms) to ensure the client receives all termination packets before closing the local listener.
+7. **Connection Persistence**: The main room connection remains open until the visitor explicitly disconnects. This ensures that the wrapper has sufficient time to complete the SFTP transfer through the existing tunnel.
+8. **Automatic Cleanup**: The one-shot SFTP server shuts down immediately after the transfer completes or after a configurable timeout (default 60s).

@@ -16,6 +16,8 @@ func main() {
 	port := flag.Int("port", 44322, "SSH server port")
 	bind := flag.String("bind", "0.0.0.0", "Address to bind to")
 	hostKey := flag.String("hostkey", "", "Path to SSH host key")
+	usersDir := flag.String("users", "", "Path to users directory (defaults to <hostkey_dir>/users)")
+	headless := flag.Bool("headless", false, "Disable TUI (headless mode)")
 	flag.Parse()
 
 	// Set default host key path
@@ -31,12 +33,15 @@ func main() {
 		}
 	}
 
-	usersDir := filepath.Join(filepath.Dir(*hostKey), "users")
+	if *usersDir == "" {
+		*usersDir = filepath.Join(filepath.Dir(*hostKey), "users")
+	}
 	address := fmt.Sprintf("%s:%d", *bind, *port)
-	server, err := entrypoint.NewServer(address, *hostKey, usersDir)
+	server, err := entrypoint.NewServer(address, *hostKey, *usersDir)
 	if err != nil {
 		log.Fatalf("Failed to create entry point: %v", err)
 	}
+	server.SetHeadless(*headless)
 
 	if err := server.Start(); err != nil {
 		log.Fatalf("Failed to start entry point: %v", err)

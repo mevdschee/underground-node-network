@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -27,6 +29,8 @@ type ChatUI struct {
 	pendingCmd string
 	success    bool
 	firstDraw  bool
+	Headless   bool
+	Input      io.ReadWriter
 }
 
 func NewChatUI(screen tcell.Screen) *ChatUI {
@@ -55,6 +59,12 @@ func (ui *ChatUI) SetScreen(screen tcell.Screen) {
 	ui.mu.Lock()
 	ui.screen = screen
 	ui.mu.Unlock()
+}
+
+func (ui *ChatUI) GetScreen() tcell.Screen {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	return ui.screen
 }
 
 func (ui *ChatUI) OnSend(cb func(string)) {
@@ -96,6 +106,14 @@ func (ui *ChatUI) SetVisitors(visitors []string) {
 	}
 }
 
+func (ui *ChatUI) GetMessages() []string {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	res := make([]string, len(ui.messages))
+	copy(res, ui.messages)
+	return res
+}
+
 func (ui *ChatUI) Close(success bool) {
 	ui.mu.Lock()
 	onClose := ui.onClose
@@ -130,6 +148,42 @@ func (ui *ChatUI) Reset() {
 }
 
 func (ui *ChatUI) Run() string {
+	if ui.Headless {
+		if ui.Input != nil {
+			go func() {
+				scanner := bufio.NewScanner(ui.Input)
+				for scanner.Scan() {
+					msg := scanner.Text()
+					if strings.HasPrefix(msg, "/") {
+						handled := false
+						ui.mu.Lock()
+						onCmd := ui.onCmd
+						ui.mu.Unlock()
+						if onCmd != nil {
+							handled = onCmd(msg)
+						}
+						if !handled {
+							ui.mu.Lock()
+							ui.pendingCmd = msg
+							ui.mu.Unlock()
+							ui.Close(true)
+							return
+						}
+					} else if ui.onSend != nil {
+						ui.onSend(msg)
+					}
+				}
+				ui.Close(false)
+			}()
+		}
+		<-ui.closeChan
+		ui.mu.Lock()
+		res := ui.pendingCmd
+		ui.pendingCmd = ""
+		ui.mu.Unlock()
+		return res
+	}
+
 	stopChan := make(chan struct{}) // Internal stop signal for THIS run
 
 	// Capture the current close channel and screen to avoid data races
@@ -170,9 +224,17 @@ func (ui *ChatUI) Run() string {
 			defer screen.PostEvent(&tcell.EventInterrupt{}) // Wake up redraw loop on exit
 		}
 		for {
+			// Check if we should exit after being unblocked
+			select {
+			case <-closeChan:
+				return
+			default:
+			}
+
 			ev := screen.PollEvent()
 
 			if ev == nil {
+				go ui.Close(false)
 				return
 			}
 
@@ -211,7 +273,6 @@ func (ui *ChatUI) Run() string {
 					ui.screen.Fill(' ', blackStyle)
 				}
 			case *tcell.EventInterrupt:
-				// Pulse received, check exit conditions
 			}
 			// Trigger redraw after any event
 			select {
@@ -253,6 +314,9 @@ func (ui *ChatUI) AddMessage(msg string) {
 	screen := ui.screen
 	ui.mu.Unlock()
 
+	if ui.Headless && ui.Input != nil {
+		fmt.Fprintf(ui.Input, "%s\r\n", msg)
+	}
 	if screen != nil {
 		screen.PostEvent(&tcell.EventInterrupt{})
 	}
@@ -265,6 +329,9 @@ func (ui *ChatUI) AddMessage(msg string) {
 }
 
 func (ui *ChatUI) Draw() {
+	if ui.screen == nil {
+		return
+	}
 	ui.mu.Lock()
 	s := ui.screen
 	first := ui.firstDraw
@@ -314,12 +381,17 @@ func (ui *ChatUI) Draw() {
 
 	// Content start
 	contentY := 2
-	mainH := h - 4 // Reclaim space for input (1), separator (1), header (1), and header separator (1)
-
+	mainH := h - 4
+	if mainH < 0 {
+		mainH = 0
+	}
 	// Draw messages (Main Pane)
 	start := 0
 	if len(ui.messages) > mainH {
 		start = len(ui.messages) - mainH
+	}
+	if start < 0 {
+		start = 0
 	}
 	for i, msg := range ui.messages[start:] {
 		if i >= mainH {

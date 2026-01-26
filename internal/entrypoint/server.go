@@ -58,6 +58,7 @@ type Server struct {
 	banner        []string
 	mu            sync.RWMutex
 	listener      net.Listener
+	headless      bool
 }
 
 // NewServer creates a new entry point server
@@ -131,6 +132,10 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+func (s *Server) SetHeadless(headless bool) {
+	s.headless = headless
 }
 
 // Start begins listening for SSH connections
@@ -268,6 +273,9 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 					Bridge:    bridge,
 					Bus:       ui.NewSSHBus(bridge, int(initialW), int(initialH)),
 				}
+				v.UI = ui.NewEntryUI(nil, v.Username, s.address)
+				v.UI.Headless = s.headless
+				v.UI.Input = v.Bus
 				s.mu.Lock()
 				s.visitors[sessionID] = v
 				s.mu.Unlock()
@@ -408,17 +416,20 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 }
 
 func (s *Server) handleVisitor(v *Visitor, conn *ssh.ServerConn) {
-	screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
-	if err != nil {
-		log.Printf("Failed to create screen for %s: %v", v.Username, err)
-		return
+	entryUI := v.UI
+
+	if !s.headless {
+		screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
+		if err != nil {
+			log.Printf("Failed to create screen for %s: %v", v.Username, err)
+			return
+		}
+		if err := screen.Init(); err != nil {
+			log.Printf("Failed to init screen for %s: %v", v.Username, err)
+			return
+		}
+		entryUI.SetScreen(screen)
 	}
-	if err := screen.Init(); err != nil {
-		log.Printf("Failed to init screen for %s: %v", v.Username, err)
-		return
-	}
-	entryUI := ui.NewEntryUI(screen, v.Username, s.address)
-	v.UI = entryUI
 
 	if len(s.banner) > 0 {
 		entryUI.SetBanner(s.banner)
@@ -437,7 +448,15 @@ func (s *Server) handleVisitor(v *Visitor, conn *ssh.ServerConn) {
 	s.updateVisitorRooms(v)
 
 	success := entryUI.Run()
-	screen.Fini() // Important: close tcell before printing to raw bus
+
+	// Explicitly finalize screen immediately after Run() to restore terminal state
+	s.mu.RLock()
+	if !s.headless && entryUI.GetScreen() != nil {
+		entryUI.GetScreen().Fini()
+		// Send ANSI reset to ensure the terminal background is restored
+		fmt.Fprint(v.Bus, "\033[m")
+	}
+	s.mu.RUnlock()
 
 	// Now that we've exited the TUI and restored terminal state:
 	// Only show teleport info if we actually joined a room (success=true)
@@ -445,7 +464,8 @@ func (s *Server) handleVisitor(v *Visitor, conn *ssh.ServerConn) {
 		s.showTeleportInfo(v)
 	} else {
 		// Clear screen only on manual exit to clean up the TUI artifacts
-		fmt.Fprint(v.Bus, "\033[2J\033[H")
+		// First reset colors to avoid black background spill
+		fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
 	}
 
 	conn.Close() // Ensure immediate disconnect
@@ -684,7 +704,8 @@ func (s *Server) showTeleportInfo(v *Visitor) {
 	}
 
 	// Always clear screen before showing teleport info
-	fmt.Fprint(v.Bus, "\033[2J\033[H")
+	// First reset colors to avoid the black background from sticking around
+	fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
 
 	// Use yaml library for robust formatting
 	yamlData, _ := yaml.Marshal(data)
