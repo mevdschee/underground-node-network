@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -18,11 +19,12 @@ import (
 
 // Visitor represents a connected visitor
 type Visitor struct {
-	Username string
-	Conn     ssh.Conn
-	ChatUI   *ui.ChatUI
-	Bus      *ui.SSHBus
-	Bridge   *ui.InputBridge
+	Username        string
+	Conn            ssh.Conn
+	ChatUI          *ui.ChatUI
+	Bus             *ui.SSHBus
+	Bridge          *ui.InputBridge
+	PendingDownload string
 }
 
 type Server struct {
@@ -32,15 +34,17 @@ type Server struct {
 	roomName       string
 	visitors       map[string]*Visitor
 	authorizedKeys map[string]bool // Marshaled pubkey -> true
+	filesDir       string
 	mu             sync.RWMutex
 	listener       net.Listener
 }
 
-func NewServer(address, hostKeyPath, roomName string, doorManager *doors.Manager) (*Server, error) {
+func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doors.Manager) (*Server, error) {
 	s := &Server{
 		address:        address,
 		doorManager:    doorManager,
 		roomName:       roomName,
+		filesDir:       filesDir,
 		visitors:       make(map[string]*Visitor),
 		authorizedKeys: make(map[string]bool),
 	}
@@ -251,6 +255,14 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 	go func() {
 		for req := range requests {
 			switch req.Type {
+			case "exec":
+				command := string(req.Payload[4:])
+				if strings.HasPrefix(command, "scp ") && strings.Contains(command, " -f") {
+					req.Reply(true, nil)
+					s.handleSCPSend(rawChannel, command)
+					return
+				}
+				req.Reply(false, nil)
 			case "pty-req":
 				if w, h, ok := ui.ParsePtyRequest(req.Payload); ok {
 					v.Bus.Resize(int(w), int(h))
@@ -322,6 +334,8 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 				chatUI.AddMessage("/help     - Show this help")
 				chatUI.AddMessage("/who      - List visitors in room")
 				chatUI.AddMessage("/doors    - List available doors")
+				chatUI.AddMessage("/files    - List available files")
+				chatUI.AddMessage("/download - Download a file")
 				chatUI.AddMessage("/<door>   - Enter a door")
 				chatUI.AddMessage("Ctrl+C    - Exit room")
 				return true
@@ -338,6 +352,16 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 				for _, door := range doorList {
 					chatUI.AddMessage("/" + door)
 				}
+				return true
+			case "files":
+				s.showFiles(chatUI)
+				return true
+			case "download":
+				if len(parts) < 2 {
+					chatUI.AddMessage("Usage: /download <filename>")
+					return true
+				}
+				s.showDownloadInstructions(v, parts[1])
 				return true
 			}
 		}
@@ -398,6 +422,16 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 			// Force the stdin goroutine to exit
 			v.Bus.SignalExit()
 		}
+
+		// If a download was requested, exit the loop to show info in plain terminal
+		if v.PendingDownload != "" {
+			break
+		}
+	}
+
+	// Post-TUI exit download info (mirroring teleport flow)
+	if v.PendingDownload != "" {
+		s.showDownloadInfo(v)
 	}
 }
 
@@ -468,4 +502,117 @@ func generateHostKey(path string) (ssh.Signer, error) {
 	}
 
 	return ssh.ParsePrivateKey(keyBytes)
+}
+
+func (s *Server) showFiles(chatUI *ui.ChatUI) {
+	chatUI.AddMessage("--- Available Files ---")
+	found := false
+
+	err := filepath.WalkDir(s.filesDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		rel, err := filepath.Rel(s.filesDir, path)
+		if err != nil {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+
+		found = true
+		size := formatSize(info.Size())
+		modTime := info.ModTime().Format("2006-01-02 15:04")
+		chatUI.AddMessage(fmt.Sprintf(" %-24s %10s  %s", rel, size, modTime))
+		return nil
+	})
+
+	if err != nil {
+		chatUI.AddMessage(fmt.Sprintf("\033[1;31mError listing files: %v\033[0m", err))
+		return
+	}
+
+	if !found {
+		chatUI.AddMessage("No files available.")
+	}
+	chatUI.AddMessage("-----------------------")
+}
+
+func (s *Server) showDownloadInstructions(v *Visitor, filename string) {
+	// Sanitize and prevent path traversal
+	cleanTarget := filepath.Clean(filename)
+	path := filepath.Join(s.filesDir, cleanTarget)
+
+	// Ensure the path is within s.filesDir
+	absBase, _ := filepath.Abs(s.filesDir)
+	absPath, _ := filepath.Abs(path)
+	if !strings.HasPrefix(absPath, absBase) {
+		v.ChatUI.AddMessage(fmt.Sprintf("\033[1;31mAccess denied: %s\033[0m", filename))
+		return
+	}
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		v.ChatUI.AddMessage(fmt.Sprintf("\033[1;31mFile not found: %s\033[0m", filename))
+		return
+	}
+
+	// Capture for post-TUI display
+	v.PendingDownload = cleanTarget
+
+	// Break the TUI loop
+	v.ChatUI.Close(true)
+}
+
+func (s *Server) showDownloadInfo(v *Visitor) {
+	filename := v.PendingDownload
+	if filename == "" {
+		return
+	}
+
+	// Clear screen for a clean terminal output
+	fmt.Fprint(v.Bus, "\033[2J\033[H")
+
+	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
+	fmt.Fprintf(v.Bus, "\033[1;32m✔ Preparing download for %s...\033[0m\r\n", filename)
+	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
+
+	// 1. Send the [DOWNLOAD FILE] block for the wrapper
+	fmt.Fprintf(v.Bus, "[DOWNLOAD FILE]%s[/DOWNLOAD FILE]\r\n\r\n", filename)
+
+	// 2. Provide manual instructions
+	fmt.Fprintf(v.Bus, "For manual download, run this from your local terminal:\r\n\r\n")
+
+	// Try to get public address
+	host, port, _ := net.SplitHostPort(s.address)
+	if host == "127.0.0.1" || host == "localhost" || host == "0.0.0.0" {
+		host = "localhost" // Fallback for testing/local
+	}
+
+	fmt.Fprintf(v.Bus, "  \033[1;36mscp -P %s %s:%s .\033[0m\r\n\r\n", port, host, filename)
+	fmt.Fprintf(v.Bus, "Disconnecting to allow the transfer...\r\n")
+
+	// Consume the data
+	v.PendingDownload = ""
+
+	// Ensure immediate disconnect
+	v.Conn.Close()
+}
+
+func formatSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }

@@ -1,4 +1,4 @@
-package entrypoint
+package sshserver
 
 import (
 	"fmt"
@@ -15,7 +15,6 @@ func (s *Server) handleSCPSend(channel ssh.Channel, command string) {
 	defer channel.Close()
 
 	// Parse filename from command: "scp -f filename"
-	// Note: Standard SCP might include other flags (-v, -p, etc.)
 	args := parseSCPArgs(command)
 	if len(args) == 0 {
 		return
@@ -24,6 +23,10 @@ func (s *Server) handleSCPSend(channel ssh.Channel, command string) {
 
 	// Sanitize and prevent path traversal
 	cleanTarget := filepath.Clean(filename)
+	// If the user requested ".", scp will send "scp -f .", we need to handle this
+	// but for simplicity we assume the user provides a specific filename since
+	// our /download command provides it.
+
 	path := filepath.Join(s.filesDir, cleanTarget)
 
 	// Ensure the path is within s.filesDir
@@ -52,8 +55,8 @@ func (s *Server) handleSCPSend(channel ssh.Channel, command string) {
 		return
 	}
 
-	// 2. Send file header: C<mode> <size> <name>\n
-	header := fmt.Sprintf("C%04o %d %s\n", info.Mode()&0777, info.Size(), filename)
+	// 2. Send file header: C<mode> <size> <base_name>\n
+	header := fmt.Sprintf("C%04o %d %s\n", info.Mode()&0777, info.Size(), filepath.Base(cleanTarget))
 	if _, err := fmt.Fprint(channel, header); err != nil {
 		return
 	}
@@ -82,7 +85,6 @@ func parseSCPArgs(command string) []string {
 	for i, part := range parts {
 		if part == "-f" && i+1 < len(parts) {
 			// In SCP "source" mode (-f), everything after -f is the path(s)
-			// For simplicity, we join the rest as one filename (handling spaces)
 			return []string{strings.Join(parts[i+1:], " ")}
 		}
 	}

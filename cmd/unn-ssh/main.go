@@ -439,6 +439,8 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		}
 		defer session.Close()
 
+		var downloadFilename string
+
 		// Request PTY
 		fd := int(os.Stdin.Fd())
 		width, height, err := term.GetSize(fd)
@@ -484,8 +486,41 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		globalStdinManager.SetWriter(stdin)
 		errChan := make(chan error, 2)
 		go func() {
-			_, err := io.Copy(os.Stdout, stdout)
-			errChan <- err
+			var currentLine strings.Builder
+			var lastByte byte
+			buf := make([]byte, 1024)
+			for {
+				n, err := stdout.Read(buf)
+				if err != nil {
+					errChan <- err
+					return
+				}
+
+				for i := 0; i < n; i++ {
+					b := buf[i]
+					os.Stdout.Write([]byte{b})
+
+					if b == '\n' || b == '\r' {
+						rawLine := currentLine.String()
+						currentLine.Reset()
+
+						if b == '\n' && lastByte == '\r' {
+							lastByte = b
+							continue
+						}
+						lastByte = b
+
+						cleanLine := stripANSI(rawLine)
+						line := strings.TrimSpace(cleanLine)
+
+						if strings.HasPrefix(line, "[DOWNLOAD FILE]") && strings.HasSuffix(line, "[/DOWNLOAD FILE]") {
+							downloadFilename = strings.TrimSuffix(strings.TrimPrefix(line, "[DOWNLOAD FILE]"), "[/DOWNLOAD FILE]")
+						}
+					} else {
+						currentLine.WriteByte(b)
+					}
+				}
+			}
 		}()
 		go func() {
 			_, err := io.Copy(os.Stderr, stderr)
@@ -495,6 +530,16 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		// Wait for session to end
 		session.Wait()
 		globalStdinManager.SetWriter(nil)
+
+		if downloadFilename != "" {
+			if verbose {
+				log.Printf("Automatic download triggered: %s", downloadFilename)
+			}
+			if err := downloadFile(client, downloadFilename, verbose); err != nil {
+				fmt.Fprintf(os.Stderr, "\r\nError during automatic download: %v\r\n", err)
+			}
+		}
+
 		return nil
 	}
 
@@ -516,4 +561,104 @@ var ansiRegex = regexp.MustCompile(`\x1b(\[([0-9;]*[a-zA-Z])|c|\[\?[0-9]+[hl])`)
 
 func stripANSI(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
+}
+
+func downloadFile(client *ssh.Client, filename string, verbose bool) error {
+	// 1. Determine destination path (~/Downloads)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	destDir := filepath.Join(home, "Downloads")
+	// Make sure it exists
+	os.MkdirAll(destDir, 0755)
+
+	destPath := getUniquePath(filepath.Join(destDir, filepath.Base(filename)))
+
+	if verbose {
+		log.Printf("Downloading to: %s", destPath)
+	}
+
+	fmt.Fprintf(os.Stderr, "\033[1;32mDownloading %s to %s...\033[0m\r\n", filename, destPath)
+
+	// 2. Open session for SCP
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	stdout, _ := session.StdoutPipe()
+	stdin, _ := session.StdinPipe()
+
+	// 3. Run scp in "sink" mode (to receive)
+	// scp -v -f <filename> (remote scp -f is used for sending)
+	if err := session.Start("scp -f " + filename); err != nil {
+		return err
+	}
+
+	// 4. Implement SCP sink side (receiving)
+	// Send initial null byte to start
+	stdin.Write([]byte{0})
+
+	// Read C header
+	buf := make([]byte, 1024)
+	n, err := stdout.Read(buf)
+	if err != nil {
+		return err
+	}
+	header := string(buf[:n])
+	if !strings.HasPrefix(header, "C") {
+		return fmt.Errorf("unexpected SCP header: %s", header)
+	}
+
+	// Parse header: C0644 22 filename\n
+	parts := strings.Fields(header)
+	if len(parts) < 3 {
+		return fmt.Errorf("invalid SCP header: %s", header)
+	}
+	size, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return err
+	}
+
+	// Acknowledge header
+	stdin.Write([]byte{0})
+
+	// Open local file
+	f, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Receive file data
+	if _, err := io.CopyN(f, stdout, size); err != nil {
+		return err
+	}
+
+	// Read final null byte
+	stdout.Read(buf[:1])
+	// Send final null byte
+	stdin.Write([]byte{0})
+
+	fmt.Fprintf(os.Stderr, "\033[1;32mTransfer complete!\033[0m\r\n")
+	return nil
+}
+
+func getUniquePath(path string) string {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path
+	}
+
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+	counter := 1
+	for {
+		newPath := fmt.Sprintf("%s (%d)%s", base, counter, ext)
+		if _, err := os.Stat(newPath); os.IsNotExist(err) {
+			return newPath
+		}
+		counter++
+	}
 }

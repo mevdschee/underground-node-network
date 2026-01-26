@@ -30,6 +30,7 @@ func main() {
 	identity := flag.String("identity", "", "Path to user private key for authentication (defaults to ~/.unn/user_key)")
 	hostKey := flag.String("hostkey", "", "Path to SSH host key (auto-generated if not specified)")
 	entryPointAddr := flag.String("entrypoint", "", "Entry point address (e.g., localhost:44322)")
+	filesDir := flag.String("files", "./files", "Directory to serve files from")
 	flag.Parse()
 
 	// Set default host key path to ephemeral file
@@ -57,9 +58,14 @@ func main() {
 		log.Printf("No doors found in %s", *doorsDir)
 	}
 
+	// Initialize doors and files
+	if err := os.MkdirAll(*filesDir, 0700); err != nil {
+		log.Printf("Warning: Could not create files directory: %v", err)
+	}
+
 	// Create and start SSH server
 	address := fmt.Sprintf("%s:%d", *bind, *port)
-	server, err := sshserver.NewServer(address, *hostKey, *roomName, doorManager)
+	server, err := sshserver.NewServer(address, *hostKey, *roomName, *filesDir, doorManager)
 	if err != nil {
 		log.Fatalf("Failed to create SSH server: %v", err)
 	}
