@@ -90,6 +90,7 @@ type PunchAnswerPayload struct {
 
 // PunchStartPayload tells both sides to start hole-punching
 type PunchStartPayload struct {
+	RoomName   string   `json:"room_name"`
 	Candidates []string `json:"candidates"`  // Remote peer's candidates
 	SSHPort    int      `json:"ssh_port"`    // Remote SSH port (for room)
 	PublicKeys []string `json:"public_keys"` // Remote peer's public keys

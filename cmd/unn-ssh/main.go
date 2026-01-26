@@ -11,14 +11,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
 
 type StdinManager struct {
@@ -62,13 +65,12 @@ var globalStdinManager StdinManager
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] ssh://[user@]entrypoint[:port]/roomname\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] ssh://entrypoint[:port]/roomname\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nTeleport to a UNN room via SSH.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  %s ssh://localhost:44322/myroom\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s ssh://alice@unn.example.com/hackerspace\n", os.Args[0])
 	}
 
 	verbose := flag.Bool("v", false, "Verbose output")
@@ -180,6 +182,13 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 	// Loop for persistent entry point session
 	currentRoom := roomName
 	for {
+		// Reset connection variables for each entry point session
+		var (
+			candidates []string
+			hostKeys   []string
+			sshPort    int
+		)
+
 		// Connect to entry point
 		client, err := ssh.Dial("tcp", entrypoint, config)
 		if err != nil {
@@ -252,9 +261,6 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 
 		// Variables for connection info
 		var (
-			candidates []string
-			hostKeys   []string
-			sshPort    int
 			done       = make(chan bool)
 			userExited = make(chan bool)
 		)
@@ -263,7 +269,9 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		go func() {
 			var currentLine strings.Builder
 			var inData bool
+			var lastByte byte
 			buf := make([]byte, 1024)
+			var yamlBuffer strings.Builder
 			for {
 				n, err := stdoutPipe.Read(buf)
 				if err != nil {
@@ -274,48 +282,51 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 				for i := 0; i < n; i++ {
 					b := buf[i]
 
+					// RELAY: Always relay every byte to human RAW to avoid corrupting TUI data.
+					// The server is responsible for sending \r\n for regular text.
+					os.Stdout.Write([]byte{b})
+
+					// ACCUMULATE: Build line buffer for line-based data capture
 					if b == '\n' || b == '\r' {
-						line := strings.TrimSpace(currentLine.String())
-
-						if line == "[CONNECTION_DATA]" {
-							inData = true
-							currentLine.Reset()
-							continue
-						}
-						if inData {
-							if line == "[/CONNECTION_DATA]" {
-								close(done)
-								return
-							}
-							if strings.HasPrefix(line, "Candidates: ") {
-								val := strings.TrimPrefix(line, "Candidates: ")
-								candidates = strings.Split(val, ",")
-								for i := range candidates {
-									candidates[i] = strings.TrimSpace(candidates[i])
-								}
-							} else if strings.HasPrefix(line, "SSHPort: ") {
-								val := strings.TrimPrefix(line, "SSHPort: ")
-								sshPort, _ = strconv.Atoi(strings.TrimSpace(val))
-							} else if strings.HasPrefix(line, "HostKey: ") {
-								key := strings.TrimPrefix(line, "HostKey: ")
-								hostKeys = append(hostKeys, strings.TrimSpace(key))
-							}
-							currentLine.Reset()
-							continue
-						}
-
-						// Print accumulated character
-						os.Stdout.Write([]byte{b})
-						// Convert \n to \r\n for raw terminal if needed
-						if b == '\n' && !strings.HasSuffix(currentLine.String(), "\r") {
-							os.Stdout.Write([]byte{'\r'})
-						}
+						rawLine := currentLine.String()
 						currentLine.Reset()
-					} else {
-						currentLine.WriteByte(b)
-						if !inData {
-							os.Stdout.Write([]byte{b})
+
+						// Skip the \n if we just processed \r from a \r\n pair (already handled the line)
+						if b == '\n' && lastByte == '\r' {
+							lastByte = b
+							continue
 						}
+						lastByte = b
+
+						cleanLine := stripANSI(rawLine)
+						line := strings.TrimSpace(cleanLine)
+
+						if line == "[CONNECTION DATA]" {
+							inData = true
+							yamlBuffer.Reset()
+						} else if inData {
+							if line == "[/CONNECTION DATA]" {
+								yamlStr := yamlBuffer.String()
+								if verbose {
+									log.Printf("Captured connection data (%d bytes)", len(yamlStr))
+								}
+								var startPayload protocol.PunchStartPayload
+								if err := yaml.Unmarshal([]byte(yamlStr), &startPayload); err == nil {
+									candidates = startPayload.Candidates
+									sshPort = startPayload.SSHPort
+									hostKeys = startPayload.PublicKeys
+								} else if verbose {
+									log.Printf("YAML unmarshal failed: %v", err)
+								}
+								inData = false
+								close(done)
+							} else {
+								yamlBuffer.WriteString(strings.TrimRight(cleanLine, "\r") + "\n")
+							}
+						}
+					} else {
+						// Non-newline byte: add to line buffer
+						currentLine.WriteByte(b)
 					}
 				}
 			}
@@ -325,27 +336,33 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		globalStdinManager.Start()
 		globalStdinManager.SetWriter(stdinPipe)
 
-		// If room name was provided, send it immediately
+		// If room name was provided, send it automatically
 		if currentRoom != "" {
+			if verbose {
+				log.Printf("Automatically selecting room: %s", currentRoom)
+			}
 			fmt.Fprintf(stdinPipe, "%s\r\n", currentRoom)
 			currentRoom = "" // Only do it once per URL invocation
 		}
 
 		// Wait for connection info or manual exit
-		var shouldConnect bool
+		var (
+			shouldConnect bool
+			timeout       = 300 * time.Second
+		)
 		select {
-		case <-done:
-			shouldConnect = true
-			// Give it a tiny moment to finish printing any trailing data
-			time.Sleep(100 * time.Millisecond)
 		case <-userExited:
-			shouldConnect = false
-		case <-time.After(5 * time.Minute):
+			// Server closed connection, hopefully after printing data and instructions
+			shouldConnect = len(candidates) > 0
+		case <-time.After(timeout):
 			return fmt.Errorf("timeout waiting for connection info")
 		}
 
-		close(stopWinch)
-		signal.Stop(winch)
+		// Ensure we've at least tried to parse the data
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+		}
 
 		globalStdinManager.SetWriter(nil)
 		session.Close()
@@ -493,4 +510,10 @@ func loadKey(path string) (ssh.Signer, error) {
 		return nil, err
 	}
 	return ssh.ParsePrivateKey(keyBytes)
+}
+
+var ansiRegex = regexp.MustCompile(`\x1b(\[([0-9;]*[a-zA-Z])|c|\[\?[0-9]+[hl])`)
+
+func stripANSI(s string) string {
+	return ansiRegex.ReplaceAllString(s, "")
 }

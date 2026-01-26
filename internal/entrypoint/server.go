@@ -2,6 +2,8 @@ package entrypoint
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,8 +16,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
+	"github.com/mevdschee/underground-node-network/internal/ui"
 	"golang.org/x/crypto/ssh"
+	"gopkg.in/yaml.v3"
 )
 
 // Room represents a registered room
@@ -33,13 +38,24 @@ type PunchSession struct {
 	VisitorChan chan *protocol.Message // Send punch_start to visitor
 }
 
+type Visitor struct {
+	SessionID    string
+	Username     string
+	TeleportData *protocol.PunchStartPayload
+	UI           *ui.EntryUI
+	Bus          *ui.SSHBus
+	Bridge       *ui.InputBridge
+}
+
 // Server is the entry point SSH server
 type Server struct {
 	address       string
 	usersDir      string
 	config        *ssh.ServerConfig
 	rooms         map[string]*Room
+	visitors      map[string]*Visitor
 	punchSessions map[string]*PunchSession // keyed by visitor ID
+	banner        []string
 	mu            sync.RWMutex
 	listener      net.Listener
 }
@@ -93,13 +109,28 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 	}
 	config.AddHostKey(hostKey)
 
-	return &Server{
+	s := &Server{
 		address:       address,
 		usersDir:      usersDir,
 		config:        config,
 		rooms:         make(map[string]*Room),
+		visitors:      make(map[string]*Visitor),
 		punchSessions: make(map[string]*PunchSession),
-	}, nil
+	}
+
+	// Load banner if it exists
+	bannerPaths := []string{
+		"banner.asc",
+	}
+
+	for _, bp := range bannerPaths {
+		if b, err := os.ReadFile(bp); err == nil {
+			s.banner = strings.Split(string(b), "\n")
+			break
+		}
+	}
+
+	return s, nil
 }
 
 // Start begins listening for SSH connections
@@ -209,27 +240,70 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 					delete(s.rooms, roomName)
 					s.mu.Unlock()
 					log.Printf("Room unregistered: %s", roomName)
+					s.updateAllVisitors()
 				}
 				return
 			} else {
 				req.Reply(false, nil)
 			}
 		case "shell", "pty-req":
+			// Captured initial size if any
+			var initialW, initialH uint32 = 80, 24
+			if req.Type == "pty-req" {
+				if w, h, ok := ui.ParsePtyRequest(req.Payload); ok {
+					initialW, initialH = w, h
+				}
+			}
 			req.Reply(true, nil)
+
 			// This is a visitor
 			if !isOperator {
 				log.Printf("Visitor connected: %s", username)
-				// Handle remaining requests in background
+
+				sessionID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
+				bridge := ui.NewInputBridge(channel)
+				v := &Visitor{
+					SessionID: sessionID,
+					Username:  username,
+					Bridge:    bridge,
+					Bus:       ui.NewSSHBus(bridge, int(initialW), int(initialH)),
+				}
+				s.mu.Lock()
+				s.visitors[sessionID] = v
+				s.mu.Unlock()
+
+				defer func() {
+					s.mu.Lock()
+					// Only delete if it's still our session
+					if current, ok := s.visitors[sessionID]; ok && current == v {
+						delete(s.visitors, sessionID)
+					}
+					s.mu.Unlock()
+				}()
+
+				// Handle remaining requests in background to capture resize
 				go func() {
 					for r := range requests {
-						if r.Type == "shell" || r.Type == "pty-req" {
+						switch r.Type {
+						case "pty-req":
+							if w, h, ok := ui.ParsePtyRequest(r.Payload); ok {
+								v.Bus.Resize(int(w), int(h))
+							}
 							r.Reply(true, nil)
-						} else {
+						case "window-change":
+							if w, h, ok := ui.ParseWindowChange(r.Payload); ok {
+								v.Bus.Resize(int(w), int(h))
+							}
+							r.Reply(true, nil)
+						case "shell":
+							r.Reply(true, nil)
+						default:
 							r.Reply(false, nil)
 						}
 					}
 				}()
-				s.handleVisitor(channel, conn, username)
+				s.handleVisitor(v, conn)
+				v.Bus.ForceClose() // Ensure channel close after visitor done
 				return
 			}
 		default:
@@ -287,6 +361,7 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 
 			// Send back room list
 			s.sendRoomList(encoder)
+			s.updateAllVisitors()
 
 		case protocol.MsgTypeUnregister:
 			if *roomName != "" {
@@ -319,6 +394,7 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 
 				// Send punch_start to visitor with room's candidates
 				startPayload := protocol.PunchStartPayload{
+					RoomName:   session.RoomName,
 					Candidates: payload.Candidates,
 					SSHPort:    payload.SSHPort,
 					PublicKeys: publicKeys,
@@ -331,125 +407,78 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 	}
 }
 
-func (s *Server) handleVisitor(channel ssh.Channel, conn *ssh.ServerConn, username string) {
-	// Welcome message
-	fmt.Fprintf(channel, "\r\n")
-	fmt.Fprintf(channel, "╔═══════════════════════════════════════════════════════════════╗\r\n")
-	fmt.Fprintf(channel, "║  Underground Node Network - Entry Point                       ║\r\n")
-	fmt.Fprintf(channel, "╚═══════════════════════════════════════════════════════════════╝\r\n")
-	fmt.Fprintf(channel, "\r\n")
-	fmt.Fprintf(channel, "Welcome, %s!\r\n\r\n", username)
-
-	s.showRooms(channel)
-	fmt.Fprintf(channel, "\r\nType a room name to connect, or /help for commands.\r\n\r\n")
-
-	// Interaction loop
-	buf := make([]byte, 1024)
-	var line []byte
-	var history []string
-	historyIndex := -1
-	currentLineBackup := ""
-	escState := 0
-
-	for {
-		n, err := channel.Read(buf)
-		if err != nil {
-			return
-		}
-
-		for i := 0; i < n; i++ {
-			b := buf[i]
-
-			// Handle ANSI escape sequences for arrow keys
-			if b == 27 {
-				escState = 1
-				continue
-			}
-			if escState == 1 && b == '[' {
-				escState = 2
-				continue
-			}
-			if escState == 2 {
-				escState = 0
-				if b == 'A' { // Arrow Up
-					if len(history) > 0 && historyIndex != 0 {
-						if historyIndex == -1 || historyIndex == len(history) {
-							currentLineBackup = string(line)
-							historyIndex = len(history)
-						}
-						historyIndex--
-						// Clear line: \r (carriage return) + \x1b[K (clear to end of line)
-						fmt.Fprintf(channel, "\r\x1b[K")
-						line = []byte(history[historyIndex])
-						channel.Write(line)
-					}
-					continue
-				} else if b == 'B' { // Arrow Down
-					if historyIndex != -1 && historyIndex < len(history) {
-						historyIndex++
-						fmt.Fprintf(channel, "\r\x1b[K")
-						if historyIndex == len(history) {
-							line = []byte(currentLineBackup)
-						} else {
-							line = []byte(history[historyIndex])
-						}
-						channel.Write(line)
-					}
-					continue
-				}
-				// Other escape sequences ignored for now
-				continue
-			}
-			escState = 0
-
-			switch b {
-			case '\r', '\n':
-				fmt.Fprintf(channel, "\r\n")
-				if len(line) > 0 {
-					cmd := string(line)
-					s.handleVisitorCommand(channel, conn, username, cmd)
-					// Add to history if it's different from the last one
-					if len(history) == 0 || history[len(history)-1] != cmd {
-						history = append(history, cmd)
-					}
-					historyIndex = len(history)
-					line = nil
-				}
-			case 127, 8: // Backspace
-				if len(line) > 0 {
-					line = line[:len(line)-1]
-					fmt.Fprintf(channel, "\b \b")
-				}
-			case 3: // Ctrl+C
-				return
-			default:
-				line = append(line, b)
-				channel.Write([]byte{b})
-			}
-		}
-	}
-}
-
-func (s *Server) showRooms(w io.Writer) {
-	rooms := s.GetRooms()
-
-	if len(rooms) == 0 {
-		fmt.Fprintf(w, "No active rooms.\r\n")
+func (s *Server) handleVisitor(v *Visitor, conn *ssh.ServerConn) {
+	screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
+	if err != nil {
+		log.Printf("Failed to create screen for %s: %v", v.Username, err)
 		return
 	}
+	if err := screen.Init(); err != nil {
+		log.Printf("Failed to init screen for %s: %v", v.Username, err)
+		return
+	}
+	entryUI := ui.NewEntryUI(screen, v.Username, s.address)
+	v.UI = entryUI
 
-	fmt.Fprintf(w, "Active rooms:\r\n")
-	for _, room := range rooms {
-		doorStr := ""
-		if len(room.Doors) > 0 {
-			doorStr = fmt.Sprintf(" [%s]", strings.Join(room.Doors, ", "))
-		}
-		fmt.Fprintf(w, "  • %s (by %s)%s\r\n", room.Name, room.Owner, doorStr)
+	if len(s.banner) > 0 {
+		entryUI.SetBanner(s.banner)
+	}
+
+	entryUI.OnCmd(func(cmd string) {
+		s.handleVisitorCommand(v, conn, cmd)
+	})
+
+	// Add OnClose callback to break terminal deadlock
+	entryUI.OnClose(func() {
+		v.Bus.SignalExit()
+	})
+
+	// Initial room list
+	s.updateVisitorRooms(v)
+
+	success := entryUI.Run()
+	screen.Fini() // Important: close tcell before printing to raw bus
+
+	// Now that we've exited the TUI and restored terminal state:
+	// Only show teleport info if we actually joined a room (success=true)
+	if success && v.TeleportData != nil {
+		s.showTeleportInfo(v)
+	} else {
+		// Clear screen only on manual exit to clean up the TUI artifacts
+		fmt.Fprint(v.Bus, "\033[2J\033[H")
+	}
+
+	conn.Close() // Ensure immediate disconnect
+}
+
+func (s *Server) updateAllVisitors() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, v := range s.visitors {
+		s.updateVisitorRooms(v)
 	}
 }
 
-func (s *Server) handleVisitorCommand(channel ssh.Channel, conn *ssh.ServerConn, username string, input string) {
+func (s *Server) updateVisitorRooms(v *Visitor) {
+	if v.UI == nil {
+		return
+	}
+	rooms := s.GetRooms()
+	uiRooms := make([]ui.RoomInfo, 0, len(rooms))
+	for _, r := range rooms {
+		uiRooms = append(uiRooms, ui.RoomInfo{
+			Name:  r.Name,
+			Owner: r.Owner,
+			Doors: r.Doors,
+		})
+	}
+	v.UI.SetRooms(uiRooms)
+}
+
+func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input string) {
+	log.Printf("Visitor %s command: %s", v.Username, input)
 	input = strings.TrimSpace(input)
+	v.UI.ShowMessage(fmt.Sprintf("> %s", input))
 
 	if strings.HasPrefix(input, "/") {
 		cmdLine := strings.TrimPrefix(input, "/")
@@ -461,43 +490,26 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, conn *ssh.ServerConn,
 
 		switch command {
 		case "help":
-			fmt.Fprintf(channel, "\rCommands:\r\n")
-			fmt.Fprintf(channel, "  /rooms           - List active rooms\r\n")
-			fmt.Fprintf(channel, "  /register <key>  - Register your public key\r\n")
-			fmt.Fprintf(channel, "  /help            - Show this help\r\n")
-			fmt.Fprintf(channel, "  <room>           - Connect to a room\r\n")
-			fmt.Fprintf(channel, "  Ctrl+C           - Exit\r\n")
-		case "rooms":
-			s.showRooms(channel)
+			v.UI.ShowMessage("Commands: /register <key>, /help")
 		case "register":
 			if len(parts) < 2 {
-				fmt.Fprintf(channel, "\rUsage: /register <public_key>\r\n")
+				v.UI.ShowMessage("Usage: /register <public_key>")
 				return
 			}
-			// Re-join the key parts (type blob [comment])
 			keyStr := strings.Join(parts[1:], " ")
-			// ParseAuthorizedKey handles "type blob comment"
 			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyStr))
 			if err != nil {
-				fmt.Fprintf(channel, "\rInvalid public key format: %v\r\n", err)
+				v.UI.ShowMessage(fmt.Sprintf("Invalid key: %v", err))
 				return
 			}
-
-			keyPath := filepath.Join(s.usersDir, username)
-			// Check if already registered?
-			// If file exists, we imply authentication passed (so we are the owner).
-			// So we allow overwrite/update.
-			// If file doesn't exist, we are claiming it.
-
+			keyPath := filepath.Join(s.usersDir, v.Username)
 			if err := registerUserKey(keyPath, pubKey); err != nil {
-				fmt.Fprintf(channel, "\rRegistration failed: %v\r\n", err)
+				v.UI.ShowMessage(fmt.Sprintf("Failed: %v", err))
 			} else {
-				fmt.Fprintf(channel, "\rSuccessfully registered user '%s'.\r\n", username)
-				log.Printf("User registered manually: %s", username)
+				v.UI.ShowMessage("Successfully registered.")
 			}
-
 		default:
-			fmt.Fprintf(channel, "\rUnknown command: %s\r\n", command)
+			v.UI.ShowMessage(fmt.Sprintf("Unknown command: %s", command))
 		}
 		return
 	}
@@ -508,14 +520,12 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, conn *ssh.ServerConn,
 	s.mu.RUnlock()
 
 	if !ok {
-		fmt.Fprintf(channel, "\rRoom not found: %s\r\n", input)
+		v.UI.ShowMessage(fmt.Sprintf("Room not found: %s", input))
 		return
 	}
 
-	// Initiate hole-punch
-
-	// Generate visitor ID for this punch session
-	visitorID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
+	// Generate visitor ID
+	visitorID := fmt.Sprintf("%s-%d", v.Username, time.Now().UnixNano())
 
 	// Create punch session
 	visitorChan := make(chan *protocol.Message, 1)
@@ -533,16 +543,14 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, conn *ssh.ServerConn,
 		s.mu.Unlock()
 	}()
 
-	// Extract visitor public key from connection extensions
 	visitorKey := ""
 	if conn.Permissions != nil {
 		visitorKey = conn.Permissions.Extensions["pubkey"]
 	}
 
-	// Send punch_offer to room operator
 	offerPayload := protocol.PunchOfferPayload{
 		VisitorID:  visitorID,
-		Candidates: []string{}, // Visitor doesn't have STUN in CLI mode
+		Candidates: []string{},
 		VisitorKey: visitorKey,
 	}
 	offerMsg, _ := protocol.NewMessage(protocol.MsgTypePunchOffer, offerPayload)
@@ -553,64 +561,25 @@ func (s *Server) handleVisitorCommand(channel ssh.Channel, conn *ssh.ServerConn,
 	}
 	s.mu.RUnlock()
 
-	// Wait for punch_start with timeout
 	select {
 	case startMsg := <-visitorChan:
 		var startPayload protocol.PunchStartPayload
 		if err := startMsg.ParsePayload(&startPayload); err != nil {
-			fmt.Fprintf(channel, "Error: %v\r\n", err)
+			v.UI.ShowMessage(fmt.Sprintf("\033[1;31mError: %v\033[0m", err))
 			return
 		}
 
-		fmt.Fprintf(channel, "\r\nConnect using unn-ssh wrapper:\r\n")
+		// Store data for capture after TUI exit
+		v.TeleportData = &startPayload
 
-		entryAddr := s.address
-		if strings.HasPrefix(entryAddr, "0.0.0.0") {
-			entryAddr = "localhost" + entryAddr[7:]
-		}
+		// Final TUI message
+		v.UI.ShowMessage("")
+		v.UI.ShowMessage(" \033[1;32m✔ Room joined! Teleporting...\033[0m")
 
-		fmt.Fprintf(channel, "  ssh://%s/%s\r\n", entryAddr, input)
-
-		fmt.Fprintf(channel, "\r\n[CONNECTION_DATA]\r\n")
-		fmt.Fprintf(channel, "Candidates: %s\r\n", strings.Join(startPayload.Candidates, ","))
-		fmt.Fprintf(channel, "SSHPort: %d\r\n", startPayload.SSHPort)
-		for _, k := range startPayload.PublicKeys {
-			// Trim to remove any trailing newlines from key files
-			fmt.Fprintf(channel, "HostKey: %s\r\n", strings.TrimSpace(k))
-		}
-		fmt.Fprintf(channel, "[/CONNECTION_DATA]\r\n")
-
-		log.Printf("Sent connection data to visitor %s for room %s", username, input)
-
-		fmt.Fprintf(channel, "\r\nOr connect directly:\r\n")
-		var fingerprint string
-		var algo string
-		if len(startPayload.PublicKeys) > 0 {
-			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(startPayload.PublicKeys[0]))
-			if err == nil {
-				fingerprint = ssh.FingerprintSHA256(pubKey)
-				algo = strings.ToUpper(strings.TrimPrefix(pubKey.Type(), "ssh-"))
-			}
-		}
-
-		for _, candidate := range startPayload.Candidates {
-			// Extract IP if it's in the old format (type:ip:port)
-			ip := candidate
-			if strings.Count(candidate, ":") >= 2 {
-				parts := strings.Split(candidate, ":")
-				if len(parts) == 3 {
-					ip = parts[1]
-				}
-			}
-
-			fmt.Fprintf(channel, "  ssh -p %d %s@%s\r\n", startPayload.SSHPort, username, ip)
-		}
-		if fingerprint != "" {
-			fmt.Fprintf(channel, "%s key fingerprint is %s.\r\n", algo, fingerprint)
-		}
-
-	case <-time.After(30 * time.Second):
-		fmt.Fprintf(channel, "Timeout waiting for room operator\r\n")
+		// Close the TUI loop immediately
+		v.UI.Close(true)
+	case <-time.After(10 * time.Second):
+		v.UI.ShowMessage("Timeout waiting for room operator.")
 	}
 }
 
@@ -687,4 +656,52 @@ func verifyUserKey(path string, offeredKey ssh.PublicKey) (bool, error) {
 	}
 
 	return bytes.Equal(storedKey.Marshal(), offeredKey.Marshal()), nil
+}
+
+func (s *Server) showTeleportInfo(v *Visitor) {
+	data := v.TeleportData
+	if data == nil {
+		return
+	}
+
+	// Always clear screen before showing teleport info
+	fmt.Fprint(v.Bus, "\033[2J\033[H")
+
+	// Use yaml library for robust formatting
+	yamlData, _ := yaml.Marshal(data)
+	yamlStr := strings.ReplaceAll(string(yamlData), "\n", "\r\n")
+
+	// The wrapper looks for these markers to capture connection info
+	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
+	fmt.Fprintf(v.Bus, "  [CONNECTION DATA]\r\n")
+	fmt.Fprintf(v.Bus, "%s", yamlStr)
+	fmt.Fprintf(v.Bus, "  [/CONNECTION DATA]\r\n")
+	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
+
+	fmt.Fprintf(v.Bus, "\033[1;32mUNN TELEPORTATION READY\033[0m\r\n\r\n")
+	fmt.Fprintf(v.Bus, "The wrapper is automatically reconnecting you to the room.\r\n")
+	fmt.Fprintf(v.Bus, "If the wrapper fails, you can connect manually using:\r\n\r\n")
+
+	for _, candidate := range data.Candidates {
+		fmt.Fprintf(v.Bus, "\033[1;36mssh -p %d %s\033[0m\r\n", data.SSHPort, candidate)
+	}
+
+	fmt.Fprintf(v.Bus, "\r\n\033[1mHost Verification Fingerprints:\033[0m\r\n")
+	for _, key := range data.PublicKeys {
+		fingerprint := s.calculateSHA256Fingerprint(key)
+		fmt.Fprintf(v.Bus, "- %s\r\n", fingerprint)
+	}
+	fmt.Fprintf(v.Bus, "\r\n")
+
+	// Consume the data so it's not shown again if we disconnect for other reasons
+	v.TeleportData = nil
+}
+
+func (s *Server) calculateSHA256Fingerprint(keyStr string) string {
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyStr))
+	if err != nil {
+		return "invalid key"
+	}
+	hash := sha256.Sum256(pubKey.Marshal())
+	return "SHA256:" + base64.StdEncoding.WithPadding(base64.NoPadding).EncodeToString(hash[:])
 }

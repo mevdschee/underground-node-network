@@ -10,7 +10,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/mevdschee/underground-node-network/internal/doors"
+	"github.com/mevdschee/underground-node-network/internal/ui"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -18,6 +20,12 @@ import (
 type Visitor struct {
 	Username string
 	Conn     ssh.Conn
+	MsgChan  chan string
+	Width    uint32
+	Height   uint32
+	ChatUI   *ui.ChatUI
+	Bus      *ui.SSHBus
+	Bridge   *ui.InputBridge
 }
 
 // Server is an ephemeral SSH server for the UNN node
@@ -126,6 +134,40 @@ func (s *Server) GetVisitors() []string {
 	return names
 }
 
+func (s *Server) updateAllVisitors() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, v := range s.visitors {
+		s.updateVisitorList(v)
+	}
+}
+
+func (s *Server) updateVisitorList(v *Visitor) {
+	if v.ChatUI == nil {
+		return
+	}
+	s.mu.RLock()
+	names := make([]string, 0, len(s.visitors))
+	for name := range s.visitors {
+		names = append(names, name)
+	}
+	s.mu.RUnlock()
+	v.ChatUI.SetVisitors(names)
+}
+
+// Broadcast sends a message to all connected visitors
+func (s *Server) Broadcast(sender, message string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	chatMsg := fmt.Sprintf("<%s> %s", sender, message)
+	for _, v := range s.visitors {
+		if v.ChatUI != nil {
+			v.ChatUI.AddMessage(chatMsg)
+		}
+	}
+}
+
 func (s *Server) acceptLoop() {
 	for {
 		conn, err := s.listener.Accept()
@@ -163,17 +205,21 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	// Register visitor
 	s.mu.Lock()
-	s.visitors[username] = &Visitor{
+	v := &Visitor{
 		Username: username,
 		Conn:     sshConn,
+		MsgChan:  make(chan string, 100),
 	}
+	s.visitors[username] = v
 	s.mu.Unlock()
+	s.updateAllVisitors()
 
 	defer func() {
 		s.mu.Lock()
 		delete(s.visitors, username)
 		s.mu.Unlock()
 		log.Printf("Visitor disconnected: %s", username)
+		s.updateAllVisitors()
 	}()
 
 	// Discard global requests
@@ -204,33 +250,48 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 		log.Printf("Could not accept session: %v", err)
 		return
 	}
-	channel := NewThrottledChannel(rawChannel, s.baudRate)
-	defer channel.Close()
+	defer rawChannel.Close()
+
+	var v *Visitor
+	s.mu.RLock()
+	v = s.visitors[username]
+	s.mu.RUnlock()
+
+	if v == nil {
+		return
+	}
+	// Create UI bus
+	v.Bridge = ui.NewInputBridge(rawChannel)
+	v.Bus = ui.NewSSHBus(v.Bridge, 80, 24)
 
 	// Handle session requests
 	go func() {
 		for req := range requests {
 			switch req.Type {
-			case "shell", "pty-req":
-				req.Reply(true, nil)
-			case "subsystem":
-				subsystem := string(req.Payload[4:])
-				if subsystem == "unn-room" {
-					req.Reply(true, nil)
-				} else {
-					req.Reply(false, nil)
+			case "pty-req":
+				if w, h, ok := ui.ParsePtyRequest(req.Payload); ok {
+					v.Width = w
+					v.Height = h
+					v.Bus.Resize(int(w), int(h))
 				}
+				req.Reply(true, nil)
+			case "window-change":
+				if w, h, ok := ui.ParseWindowChange(req.Payload); ok {
+					v.Width = w
+					v.Height = h
+					v.Bus.Resize(int(w), int(h))
+				}
+				req.Reply(true, nil)
+			case "shell":
+				req.Reply(true, nil)
 			default:
 				req.Reply(false, nil)
 			}
 		}
 	}()
 
-	// Welcome message
-	s.sendWelcome(channel, username)
-
 	// Main interaction loop
-	s.handleInteraction(channel, username)
+	s.handleInteraction(rawChannel, username)
 }
 
 func (s *Server) handleRoomSubsystem(newChannel ssh.NewChannel, username string) {
@@ -269,140 +330,76 @@ func (s *Server) sendWelcome(w io.Writer, username string) {
 }
 
 func (s *Server) handleInteraction(channel ssh.Channel, username string) {
-	buf := make([]byte, 1024)
-	var line []byte
-	var history []string
-	historyIndex := -1
-	currentLineBackup := ""
-	escState := 0
+	var v *Visitor
+	s.mu.RLock()
+	v = s.visitors[username]
+	s.mu.RUnlock()
 
-	var doorStdin io.WriteCloser
-	var doorDone chan struct{}
-	var doorMu sync.Mutex
+	if v == nil {
+		return
+	}
 
 	for {
-		n, err := channel.Read(buf)
+		// Create tcell screen from bridge
+		screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
 		if err != nil {
+			log.Printf("Failed to create screen: %v", err)
 			return
 		}
 
-		for i := 0; i < n; i++ {
-			b := buf[i]
+		if err := screen.Init(); err != nil {
+			log.Printf("Failed to init screen: %v", err)
+			return
+		}
 
-			doorMu.Lock()
-			if doorDone != nil {
-				select {
-				case <-doorDone:
-					doorStdin = nil
-					doorDone = nil
-				default:
-				}
-			}
+		chatUI := ui.NewChatUI(screen)
+		chatUI.SetUsername(username)
+		chatUI.SetTitle(fmt.Sprintf("UNN Room Interaction: %s", s.roomName))
+		v.ChatUI = chatUI
 
-			if doorStdin != nil {
-				if b == 3 { // Ctrl+C
-					fmt.Fprintf(channel, "\r\n[Interrupting door...]\r\n")
-					doorStdin.Close()
-					// doorStdin/doorDone will be cleared by the select in the next iteration
-					// or we can clear them here to be immediate.
-					doorStdin = nil
-					// We don't clear doorDone here because the goroutine still needs to finish
-					doorMu.Unlock()
-					continue
-				}
-				doorStdin.Write([]byte{b})
-				doorMu.Unlock()
-				continue
-			}
-			doorMu.Unlock()
+		chatUI.OnSend(func(msg string) {
+			s.Broadcast(username, msg)
+		})
 
-			// Handle ANSI escape sequences for arrow keys
-			if b == 27 {
-				escState = 1
-				continue
-			}
-			if escState == 1 && b == '[' {
-				escState = 2
-				continue
-			}
-			if escState == 2 {
-				escState = 0
-				if b == 'A' { // Arrow Up
-					if len(history) > 0 && historyIndex != 0 {
-						if historyIndex == -1 || historyIndex == len(history) {
-							currentLineBackup = string(line)
-							historyIndex = len(history)
-						}
-						historyIndex--
-						// Clear line: \r (carriage return) + \x1b[K (clear to end of line)
-						fmt.Fprintf(channel, "\r\x1b[K")
-						line = []byte(history[historyIndex])
-						channel.Write(line)
-					}
-					continue
-				} else if b == 'B' { // Arrow Down
-					if historyIndex != -1 && historyIndex < len(history) {
-						historyIndex++
-						fmt.Fprintf(channel, "\r\x1b[K")
-						if historyIndex == len(history) {
-							line = []byte(currentLineBackup)
-						} else {
-							line = []byte(history[historyIndex])
-						}
-						channel.Write(line)
-					}
-					continue
-				}
-				// Other escape sequences ignored for now
-				continue
-			}
-			escState = 0
+		chatUI.OnClose(func() {
+			v.Bus.SignalExit()
+		})
 
-			// Handle special characters
-			switch b {
-			case '\r', '\n':
-				fmt.Fprintf(channel, "\r\n")
-				if len(line) > 0 {
-					cmd := string(line)
-					// Special case: handleCommand might start a door
-					pw, done := s.handleCommand(channel, username, cmd)
-					if pw != nil {
-						doorMu.Lock()
-						doorStdin = pw
-						doorDone = done
-						doorMu.Unlock()
-					}
+		chatUI.OnExit(func() {
+			// Exit room
+		})
 
-					// Add to history if it's different from the last one
-					if len(history) == 0 || history[len(history)-1] != cmd {
-						history = append(history, cmd)
-					}
-					historyIndex = len(history)
-					line = nil
-				}
-			case 127, 8: // Backspace
-				if len(line) > 0 {
-					line = line[:len(line)-1]
-					fmt.Fprintf(channel, "\b \b")
-				}
-			case 3: // Ctrl+C
-				fmt.Fprintf(channel, "\r\n[Exit]\r\n")
-				return
-			default:
-				line = append(line, b)
-				channel.Write([]byte{b})
-			}
+		// Add welcome message initially
+		chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username))
+		chatUI.AddMessage("*** Type /help for commands ***")
+
+		// Initial visitors list
+		s.updateVisitorList(v)
+
+		cmd := chatUI.Run()
+		screen.Fini() // Suspend tcell
+
+		if cmd == "" {
+			v.Conn.Close() // Force immediate disconnect
+			return         // User exited
+		}
+
+		// Handle command (possibly a door)
+		done := s.handleCommand(channel, username, cmd)
+		if done != nil {
+			// Wait for door to finish
+			<-done
 		}
 	}
 }
 
-func (s *Server) handleCommand(channel ssh.Channel, username string, input string) (io.WriteCloser, chan struct{}) {
+func (s *Server) handleCommand(channel ssh.Channel, username string, input string) chan struct{} {
 	input = strings.TrimSpace(input)
 
 	if !strings.HasPrefix(input, "/") {
 		// Regular chat message
-		fmt.Fprintf(channel, "\r<%s> %s\r\n", username, input)
-		return nil, nil
+		s.Broadcast(username, input)
+		return nil
 	}
 
 	cmd := strings.TrimPrefix(input, "/")
@@ -417,40 +414,48 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 		fmt.Fprintf(channel, "  /doors    - List available doors\r\n")
 		fmt.Fprintf(channel, "  /<door>   - Enter a door\r\n")
 		fmt.Fprintf(channel, "  Ctrl+C    - Exit room\r\n")
-		return nil, nil
+		return nil
 	case "who":
 		visitors := s.GetVisitors()
 		fmt.Fprintf(channel, "\rVisitors in room:\r\n")
 		for _, v := range visitors {
 			fmt.Fprintf(channel, "  %s\r\n", v)
 		}
-		return nil, nil
+		return nil
 	case "doors":
 		doorList := s.doorManager.List()
 		fmt.Fprintf(channel, "\rAvailable doors:\r\n")
 		for _, door := range doorList {
 			fmt.Fprintf(channel, "  /%s\r\n", door)
 		}
-		return nil, nil
+		return nil
 	default:
 		// Try to execute as a door
 		if _, ok := s.doorManager.Get(command); ok {
 			fmt.Fprintf(channel, "\r[Entering door: %s]\r\n", command)
-			pr, pw := io.Pipe()
 			done := make(chan struct{})
 			go func() {
-				if err := s.doorManager.Execute(command, pr, channel, channel); err != nil {
+				// Get current visitor to access bridge
+				s.mu.RLock()
+				v := s.visitors[username]
+				s.mu.RUnlock()
+
+				var input io.Reader = channel
+				if v != nil && v.Bridge != nil {
+					input = v.Bridge
+				}
+
+				if err := s.doorManager.Execute(command, input, channel, channel); err != nil {
 					fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)
 				}
-				pw.Close()
 				fmt.Fprintf(channel, "\r[Exited door: %s]\r\n", command)
 				close(done)
 			}()
-			return pw, done
+			return done
 		} else {
 			fmt.Fprintf(channel, "\rUnknown command: %s\r\n", command)
 		}
-		return nil, nil
+		return nil
 	}
 }
 
