@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"time"
+
 	"github.com/mevdschee/underground-node-network/internal/doors"
 	"github.com/mevdschee/underground-node-network/internal/entrypoint"
 	"github.com/mevdschee/underground-node-network/internal/nat"
@@ -115,51 +117,78 @@ func main() {
 		}
 
 		log.Printf("Connecting to entry point: %s as %s", *entryPointAddr, epUser)
-		epClient = entrypoint.NewClient(*entryPointAddr, epUser, signer)
-		if err := epClient.Connect(); err != nil {
-			log.Fatalf("Failed to connect to entry point: %v", err)
-		}
 
-		// Discover NAT candidates using actual port
-		candidates := nat.GetLocalCandidates(actualPort)
-		stunCand, err := nat.DiscoverPublicAddress(actualPort) // STUN from actual port
-		if err == nil {
-			candidates = append([]nat.Candidate{*stunCand}, candidates...)
-			log.Printf("STUN discovered: %s:%d", stunCand.IP, stunCand.Port)
-		}
+		go func() {
+			backoff := 1 * time.Second
+			maxBackoff := 256 * time.Second
 
-		candidateStrs := nat.CandidatesToStrings(candidates)
+			for {
+				epClient = entrypoint.NewClient(*entryPointAddr, epUser, signer)
+				if err := epClient.Connect(); err != nil {
+					log.Printf("Failed to connect to entry point: %v. Reconnecting in %v...", err, backoff)
+					time.Sleep(backoff)
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+					continue
+				}
 
-		// Read public key
-		pubKeyPath := *hostKey + ".pub"
-		var publicKeys []string
-		pubKeyBytes, err := os.ReadFile(pubKeyPath)
-		if err != nil {
-			log.Printf("Warning: Could not read public key %s: %v", pubKeyPath, err)
-		} else {
-			publicKeys = []string{string(pubKeyBytes)}
-		}
+				// Reset backoff on successful connection
+				backoff = 1 * time.Second
 
-		// Register with entry point
-		if err := epClient.Register(*roomName, doorList, actualPort, publicKeys); err != nil {
-			log.Fatalf("Failed to register with entry point: %v", err)
-		} else {
-			log.Printf("Registered with entry point as '%s'", *roomName)
-		}
-
-		// Listen for messages in background (handles punch_offer and server errors)
-		go epClient.ListenForMessages(nil, func(offer protocol.PunchOfferPayload) {
-			if offer.VisitorKey != "" {
-				pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(offer.VisitorKey))
+				// Discover NAT candidates using actual port
+				candidates := nat.GetLocalCandidates(actualPort)
+				stunCand, err := nat.DiscoverPublicAddress(actualPort) // STUN from actual port
 				if err == nil {
-					server.AuthorizeKey(pubKey)
+					candidates = append([]nat.Candidate{*stunCand}, candidates...)
+					log.Printf("STUN discovered: %s:%d", stunCand.IP, stunCand.Port)
+				}
+
+				candidateStrs := nat.CandidatesToStrings(candidates)
+
+				// Read public key
+				pubKeyPath := *hostKey + ".pub"
+				var publicKeys []string
+				pubKeyBytes, err := os.ReadFile(pubKeyPath)
+				if err != nil {
+					log.Printf("Warning: Could not read public key %s: %v", pubKeyPath, err)
 				} else {
-					log.Printf("Warning: Failed to parse visitor public key: %v", err)
+					publicKeys = []string{string(pubKeyBytes)}
+				}
+
+				// Register with entry point
+				if err := epClient.Register(*roomName, doorList, actualPort, publicKeys); err != nil {
+					log.Printf("Failed to register with entry point: %v. Reconnecting...", err)
+					epClient.Close()
+					time.Sleep(1 * time.Second)
+					continue
+				}
+
+				log.Printf("Registered with entry point as '%s'", *roomName)
+
+				// Listen for messages (this blocks until the connection is lost)
+				err = epClient.ListenForMessages(nil, func(offer protocol.PunchOfferPayload) {
+					if offer.VisitorKey != "" {
+						pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(offer.VisitorKey))
+						if err == nil {
+							server.AuthorizeKey(pubKey)
+						} else {
+							log.Printf("Warning: Failed to parse visitor public key: %v", err)
+						}
+					}
+				}, nil, actualPort, candidateStrs)
+
+				// If we reach here, the connection was lost
+				log.Printf("Entry point connection broken: %v. Reconnecting in %v...", err, backoff)
+				epClient.Close()
+				time.Sleep(backoff)
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
 				}
 			}
-		}, func(err error) {
-			log.Fatalf("Entry point error: %v", err)
-		}, actualPort, candidateStrs)
+		}()
 	}
 
 	// Wait for shutdown signal

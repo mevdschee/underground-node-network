@@ -124,14 +124,17 @@ func (c *Client) Register(roomName string, doors []string, sshPort int, publicKe
 }
 
 // ListenForMessages starts listening for messages from the entry point
-func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), onPunchOffer func(protocol.PunchOfferPayload), onError func(error), sshPort int, candidates []string) {
+func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), onPunchOffer func(protocol.PunchOfferPayload), onError func(error), sshPort int, candidates []string) error {
 	decoder := json.NewDecoder(c.channel)
 	encoder := json.NewEncoder(c.channel)
 
 	for {
 		var msg protocol.Message
 		if err := decoder.Decode(&msg); err != nil {
-			return
+			if onError != nil {
+				onError(err)
+			}
+			return err
 		}
 
 		switch msg.Type {
@@ -149,9 +152,11 @@ func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), onPunch
 		case protocol.MsgTypeError:
 			var payload protocol.ErrorPayload
 			if err := msg.ParsePayload(&payload); err == nil {
+				errObj := errors.New(payload.Message)
 				if onError != nil {
-					onError(errors.New(payload.Message))
+					onError(errObj)
 				}
+				return errObj
 			}
 
 		case protocol.MsgTypePunchOffer:
