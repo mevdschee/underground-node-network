@@ -6,12 +6,10 @@ import (
 
 // Message types for entry point protocol
 const (
-	MsgTypeRegister    = "register"
-	MsgTypeUnregister  = "unregister"
-	MsgTypeRoomList    = "room_list"
-	MsgTypeConnect     = "connect"
-	MsgTypeConnectInfo = "connect_info"
-	MsgTypeError       = "error"
+	MsgTypeRegister   = "register"
+	MsgTypeUnregister = "unregister"
+	MsgTypeRoomList   = "room_list"
+	MsgTypeError      = "error"
 
 	// Hole-punching signaling
 	MsgTypePunchRequest = "punch_request" // Visitor requests to punch to room
@@ -48,18 +46,6 @@ type RoomInfo struct {
 // RoomListPayload contains the list of active rooms
 type RoomListPayload struct {
 	Rooms []RoomInfo `json:"rooms"`
-}
-
-// ConnectPayload is sent when a visitor wants to connect to a room
-type ConnectPayload struct {
-	RoomName string `json:"room_name"`
-}
-
-// ConnectInfoPayload is sent back with connection details
-type ConnectInfoPayload struct {
-	RoomName   string   `json:"room_name"`
-	Candidates []string `json:"candidates"`
-	SSHPort    int      `json:"ssh_port"`
 }
 
 // ErrorPayload is sent when an error occurs

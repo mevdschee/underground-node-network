@@ -584,10 +584,14 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 }
 
 func (s *Server) sendRoomList(encoder *json.Encoder) {
-	payload := protocol.RoomListPayload{
-		Rooms: s.GetRooms(),
+	s.mu.RLock()
+	rooms := make([]protocol.RoomInfo, 0, len(s.rooms))
+	for _, room := range s.rooms {
+		rooms = append(rooms, room.Info)
 	}
-	msg, _ := protocol.NewMessage(protocol.MsgTypeRoomList, payload)
+	s.mu.RUnlock()
+
+	msg, _ := protocol.NewMessage(protocol.MsgTypeRoomList, rooms)
 	encoder.Encode(msg)
 }
 

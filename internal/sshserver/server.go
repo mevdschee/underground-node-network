@@ -20,15 +20,11 @@ import (
 type Visitor struct {
 	Username string
 	Conn     ssh.Conn
-	MsgChan  chan string
-	Width    uint32
-	Height   uint32
 	ChatUI   *ui.ChatUI
 	Bus      *ui.SSHBus
 	Bridge   *ui.InputBridge
 }
 
-// Server is an ephemeral SSH server for the UNN node
 type Server struct {
 	address        string
 	config         *ssh.ServerConfig
@@ -42,7 +38,6 @@ type Server struct {
 	maxLines       int
 }
 
-// NewServer creates a new SSH server
 func NewServer(address, hostKeyPath, roomName string, doorManager *doors.Manager, baudRate, maxLines int) (*Server, error) {
 	s := &Server{
 		address:        address,
@@ -208,7 +203,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 	v := &Visitor{
 		Username: username,
 		Conn:     sshConn,
-		MsgChan:  make(chan string, 100),
 	}
 	s.visitors[username] = v
 	s.mu.Unlock()
@@ -263,6 +257,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 	// Create UI bus
 	v.Bridge = ui.NewInputBridge(rawChannel)
 	v.Bus = ui.NewSSHBus(v.Bridge, 80, 24)
+	v.Bus.SetBaudRate(s.baudRate)
 
 	// Handle session requests
 	go func() {
@@ -270,15 +265,11 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 			switch req.Type {
 			case "pty-req":
 				if w, h, ok := ui.ParsePtyRequest(req.Payload); ok {
-					v.Width = w
-					v.Height = h
 					v.Bus.Resize(int(w), int(h))
 				}
 				req.Reply(true, nil)
 			case "window-change":
 				if w, h, ok := ui.ParseWindowChange(req.Payload); ok {
-					v.Width = w
-					v.Height = h
 					v.Bus.Resize(int(w), int(h))
 				}
 				req.Reply(true, nil)
