@@ -339,8 +339,65 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 		return
 	}
 
+	chatUI := ui.NewChatUI(nil) // Screen will be set in loop
+	chatUI.SetUsername(username)
+	chatUI.SetTitle(fmt.Sprintf("UNN Room Interaction: %s", s.roomName))
+	v.ChatUI = chatUI
+
+	chatUI.OnSend(func(msg string) {
+		s.Broadcast(username, msg)
+	})
+
+	chatUI.OnClose(func() {
+		v.Bus.SignalExit()
+	})
+
+	chatUI.OnCmd(func(cmd string) bool {
+		if strings.HasPrefix(cmd, "/") {
+			// Echo the command in the chat history
+			chatUI.AddMessage(fmt.Sprintf("<%s> %s", username, cmd))
+
+			parts := strings.SplitN(strings.TrimPrefix(cmd, "/"), " ", 2)
+			command := parts[0]
+
+			switch command {
+			case "help":
+				chatUI.AddMessage("--- Available Commands ---")
+				chatUI.AddMessage("/help     - Show this help")
+				chatUI.AddMessage("/who      - List visitors in room")
+				chatUI.AddMessage("/doors    - List available doors")
+				chatUI.AddMessage("/<door>   - Enter a door")
+				chatUI.AddMessage("Ctrl+C    - Exit room")
+				return true
+			case "who":
+				visitors := s.GetVisitors()
+				chatUI.AddMessage("--- Visitors in room ---")
+				for _, name := range visitors {
+					chatUI.AddMessage("• " + name)
+				}
+				return true
+			case "doors":
+				doorList := s.doorManager.List()
+				chatUI.AddMessage("--- Available doors ---")
+				for _, door := range doorList {
+					chatUI.AddMessage("/" + door)
+				}
+				return true
+			}
+		}
+		return false // Not handled internally, exit Run() to check if it's a door
+	})
+
+	// Add welcome message initially
+	chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username))
+	chatUI.AddMessage("*** Type /help for commands ***")
+
 	for {
-		// Create tcell screen from bridge
+		// Reset bus and UI for each TUI run
+		v.Bus.Reset()
+		chatUI.Reset()
+
+		// Create a fresh screen for each run to avoid "already engaged" errors
 		screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
 		if err != nil {
 			log.Printf("Failed to create screen: %v", err)
@@ -352,39 +409,21 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 			return
 		}
 
-		chatUI := ui.NewChatUI(screen)
-		chatUI.SetUsername(username)
-		chatUI.SetTitle(fmt.Sprintf("UNN Room Interaction: %s", s.roomName))
-		v.ChatUI = chatUI
+		// Update ChatUI with the new screen
+		chatUI.SetScreen(screen)
 
-		chatUI.OnSend(func(msg string) {
-			s.Broadcast(username, msg)
-		})
-
-		chatUI.OnClose(func() {
-			v.Bus.SignalExit()
-		})
-
-		chatUI.OnExit(func() {
-			// Exit room
-		})
-
-		// Add welcome message initially
-		chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username))
-		chatUI.AddMessage("*** Type /help for commands ***")
-
-		// Initial visitors list
+		// Update visitors list
 		s.updateVisitorList(v)
 
 		cmd := chatUI.Run()
-		screen.Fini() // Suspend tcell
+		screen.Fini() // Suspend tcell immediately after Run
 
 		if cmd == "" {
 			v.Conn.Close() // Force immediate disconnect
 			return         // User exited
 		}
 
-		// Handle command (possibly a door)
+		// Handle external "door" command (anything that returned from Run)
 		done := s.handleCommand(channel, username, cmd)
 		if done != nil {
 			// Wait for door to finish
@@ -406,57 +445,32 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 	parts := strings.SplitN(cmd, " ", 2)
 	command := parts[0]
 
-	switch command {
-	case "help":
-		fmt.Fprintf(channel, "\rCommands:\r\n")
-		fmt.Fprintf(channel, "  /help     - Show this help\r\n")
-		fmt.Fprintf(channel, "  /who      - List visitors in room\r\n")
-		fmt.Fprintf(channel, "  /doors    - List available doors\r\n")
-		fmt.Fprintf(channel, "  /<door>   - Enter a door\r\n")
-		fmt.Fprintf(channel, "  Ctrl+C    - Exit room\r\n")
-		return nil
-	case "who":
-		visitors := s.GetVisitors()
-		fmt.Fprintf(channel, "\rVisitors in room:\r\n")
-		for _, v := range visitors {
-			fmt.Fprintf(channel, "  %s\r\n", v)
-		}
-		return nil
-	case "doors":
-		doorList := s.doorManager.List()
-		fmt.Fprintf(channel, "\rAvailable doors:\r\n")
-		for _, door := range doorList {
-			fmt.Fprintf(channel, "  /%s\r\n", door)
-		}
-		return nil
-	default:
-		// Try to execute as a door
-		if _, ok := s.doorManager.Get(command); ok {
-			fmt.Fprintf(channel, "\r[Entering door: %s]\r\n", command)
-			done := make(chan struct{})
-			go func() {
-				// Get current visitor to access bridge
-				s.mu.RLock()
-				v := s.visitors[username]
-				s.mu.RUnlock()
+	// Try to execute as a door
+	if _, ok := s.doorManager.Get(command); ok {
+		fmt.Fprintf(channel, "\r[Entering door: %s]\r\n", command)
+		done := make(chan struct{})
+		go func() {
+			// Get current visitor to access bridge
+			s.mu.RLock()
+			v := s.visitors[username]
+			s.mu.RUnlock()
 
-				var input io.Reader = channel
-				if v != nil && v.Bridge != nil {
-					input = v.Bridge
-				}
+			var input io.Reader = channel
+			if v != nil && v.Bridge != nil {
+				input = v.Bridge
+			}
 
-				if err := s.doorManager.Execute(command, input, channel, channel); err != nil {
-					fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)
-				}
-				fmt.Fprintf(channel, "\r[Exited door: %s]\r\n", command)
-				close(done)
-			}()
-			return done
-		} else {
-			fmt.Fprintf(channel, "\rUnknown command: %s\r\n", command)
-		}
-		return nil
+			if err := s.doorManager.Execute(command, input, channel, channel); err != nil {
+				fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)
+			}
+			fmt.Fprintf(channel, "\r[Exited door: %s]\r\n", command)
+			close(done)
+		}()
+		return done
+	} else {
+		fmt.Fprintf(channel, "\rUnknown command: %s\r\n", command)
 	}
+	return nil
 }
 
 func loadOrGenerateHostKey(path string) (ssh.Signer, error) {

@@ -159,6 +159,16 @@ func (b *SSHBus) SignalExit() {
 	}
 }
 
+func (b *SSHBus) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	select {
+	case <-b.doneChan:
+		b.doneChan = make(chan struct{})
+	default:
+	}
+}
+
 func (b *SSHBus) ForceClose() error {
 	b.SignalExit()
 	return b.bridge.channel.Close()
