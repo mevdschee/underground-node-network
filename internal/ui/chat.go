@@ -233,22 +233,25 @@ func (ui *ChatUI) Draw() {
 	// Draw Sidebar (Visitors)
 	if sidebarW > 0 {
 		// Vertical separator
-		for y := 0; y < h-2; y++ {
+		for y := 2; y < h-2; y++ {
 			s.SetContent(mainW, y, '│', nil, sepStyle)
 		}
+		// Intersection piece
+		s.SetContent(mainW, 1, '┳', nil, sepStyle)
 
-		ui.drawText(mainW+1, 0, " Visitors:      ", sidebarW, blackStyle)
+		sidebarStartY := 2
+		ui.drawText(mainW+1, sidebarStartY, " Visitors:      ", sidebarW, blackStyle)
 		for i, visitor := range ui.visitors {
-			if i+1 >= h-2 {
+			if sidebarStartY+1+i >= h-2 {
 				break
 			}
 			displayName := truncateString(visitor, sidebarW-2)
-			ui.drawText(mainW+2, i+1, "• "+displayName, sidebarW-2, sidebarStyle)
+			ui.drawText(mainW+2, sidebarStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
 		}
 		// Clear rest of sidebar
-		remaining := h - 2 - (len(ui.visitors) + 1)
+		remaining := h - 2 - (sidebarStartY + 1 + len(ui.visitors))
 		if remaining > 0 {
-			ui.fillRegion(mainW+1, len(ui.visitors)+1, sidebarW, remaining, ' ', blackStyle)
+			ui.fillRegion(mainW+1, sidebarStartY+1+len(ui.visitors), sidebarW, remaining, ' ', blackStyle)
 		}
 	}
 
