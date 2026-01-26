@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 
@@ -123,7 +122,6 @@ func (ui *ChatUI) Close(success bool) {
 }
 
 func (ui *ChatUI) Reset() {
-	log.Printf("[DEBUG] ChatUI.Reset() called")
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 	ui.closeChan = make(chan struct{}, 1)
@@ -132,7 +130,6 @@ func (ui *ChatUI) Reset() {
 }
 
 func (ui *ChatUI) Run() string {
-	log.Printf("[DEBUG] ChatUI.Run() starting")
 	stopChan := make(chan struct{}) // Internal stop signal for THIS run
 
 	// Capture the current close channel and screen to avoid data races
@@ -142,7 +139,6 @@ func (ui *ChatUI) Run() string {
 	ui.mu.Unlock()
 
 	if screen == nil {
-		log.Printf("[DEBUG] ChatUI.Run(): No screen set, returning early")
 		return ""
 	}
 
@@ -175,10 +171,8 @@ func (ui *ChatUI) Run() string {
 		}
 		for {
 			ev := screen.PollEvent()
-			log.Printf("[DEBUG] ChatUI event loop: PollEvent returned %T", ev)
 
 			if ev == nil {
-				log.Printf("[DEBUG] ChatUI event loop: PollEvent returned nil, exiting goroutine")
 				return
 			}
 
@@ -244,14 +238,11 @@ outer:
 	}
 
 	// Signal event loop to stop if it hasn't already
-	log.Printf("[DEBUG] ChatUI.Run(): Signaling event loop to stop")
 	close(stopChan)
 	if ui.screen != nil { // Added nil check
 		ui.screen.PostEvent(&tcell.EventInterrupt{})
 	}
-	log.Printf("[DEBUG] ChatUI.Run(): Waiting for event loop goroutine to finish")
 	wg.Wait() // Ensure goroutine is dead
-	log.Printf("[DEBUG] ChatUI.Run(): Event loop finished, returning %q", result)
 
 	return result
 }
@@ -384,7 +375,6 @@ func (ui *ChatUI) Draw() {
 }
 
 func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
-	log.Printf("[DEBUG] ChatUI.handleKey: Key=%v Rune=%q", ev.Key(), ev.Rune())
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 

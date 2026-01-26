@@ -2,7 +2,6 @@ package ui
 
 import (
 	"io"
-	"log"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
@@ -67,7 +66,6 @@ func (b *InputBridge) Read(p []byte) (int, error) {
 		if !ok {
 			b.mu.Lock()
 			defer b.mu.Unlock()
-			log.Printf("[DEBUG] InputBridge.Read: Closed (err: %v)", b.err)
 			return 0, b.err
 		}
 		p[0] = data
@@ -82,11 +80,9 @@ func (b *InputBridge) Read(p []byte) (int, error) {
 				p[n] = data
 				n++
 			default:
-				log.Printf("[DEBUG] InputBridge.Read: Returning %d bytes", n)
 				return n, nil
 			}
 		}
-		log.Printf("[DEBUG] InputBridge.Read: Returning %d bytes (full buffer)", n)
 		return n, nil
 	}
 }
@@ -125,19 +121,16 @@ func (b *SSHBus) Read(p []byte) (int, error) {
 	// Double select to prioritize the done signal
 	select {
 	case <-b.doneChan:
-		log.Printf("[DEBUG] SSHBus.Read: Early exit via doneChan")
 		return 0, io.EOF
 	default:
 		// Check for data but always respect doneChan
 		select {
 		case <-b.doneChan:
-			log.Printf("[DEBUG] SSHBus.Read: Exit via doneChan (priority)")
 			return 0, io.EOF
 		case data, ok := <-b.bridge.dataChan:
 			if !ok {
 				b.bridge.mu.Lock()
 				defer b.bridge.mu.Unlock()
-				log.Printf("[DEBUG] SSHBus.Read: Exit via bridge.dataChan closed (err: %v)", b.bridge.err)
 				return 0, b.bridge.err
 			}
 			p[0] = data
@@ -146,21 +139,17 @@ func (b *SSHBus) Read(p []byte) (int, error) {
 			for n < len(p) {
 				select {
 				case <-b.doneChan:
-					log.Printf("[DEBUG] SSHBus.Read: Partial return (%d bytes) via doneChan", n)
 					return n, nil
 				case data, ok := <-b.bridge.dataChan:
 					if !ok {
-						log.Printf("[DEBUG] SSHBus.Read: Partial return (%d bytes) via bridge closed", n)
 						return n, nil
 					}
 					p[n] = data
 					n++
 				default:
-					log.Printf("[DEBUG] SSHBus.Read: Returning %d bytes", n)
 					return n, nil
 				}
 			}
-			log.Printf("[DEBUG] SSHBus.Read: Returning %d bytes (full buffer)", n)
 			return n, nil
 		}
 	}
@@ -176,28 +165,22 @@ func (b *SSHBus) Close() error {
 }
 
 func (b *SSHBus) SignalExit() {
-	log.Printf("[DEBUG] SSHBus.SignalExit() called")
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	select {
 	case <-b.doneChan:
-		log.Printf("[DEBUG] SSHBus.SignalExit(): Already closed")
 	default:
 		close(b.doneChan)
-		log.Printf("[DEBUG] SSHBus.SignalExit(): Closed doneChan")
 	}
 }
 
 func (b *SSHBus) Reset() {
-	log.Printf("[DEBUG] SSHBus.Reset() called")
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	select {
 	case <-b.doneChan:
 		b.doneChan = make(chan struct{})
-		log.Printf("[DEBUG] SSHBus.Reset(): Recreated doneChan")
 	default:
-		log.Printf("[DEBUG] SSHBus.Reset(): Was not closed")
 	}
 }
 

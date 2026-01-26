@@ -393,20 +393,17 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	chatUI.AddMessage("*** Type /help for commands ***")
 
 	for {
-		log.Printf("[DEBUG] Starting interaction loop iteration for %s", username)
 		// Reset bus and UI for each TUI run
 		v.Bus.Reset()
 		chatUI.Reset()
 
 		// Create a fresh screen for each run to avoid "already engaged" errors
-		log.Printf("[DEBUG] Creating fresh screen for %s", username)
 		screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
 		if err != nil {
 			log.Printf("Failed to create screen: %v", err)
 			return
 		}
 
-		log.Printf("[DEBUG] Initializing screen for %s", username)
 		if err := screen.Init(); err != nil {
 			log.Printf("Failed to init screen: %v", err)
 			return
@@ -418,11 +415,8 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 		// Update visitors list
 		s.updateVisitorList(v)
 
-		log.Printf("[DEBUG] Calling chatUI.Run() for %s", username)
 		cmd := chatUI.Run()
-		log.Printf("[DEBUG] chatUI.Run() returned command: %q for %s", cmd, username)
 		screen.Fini() // Suspend tcell immediately after Run
-		log.Printf("[DEBUG] screen.Fini() called for %s", username)
 
 		if cmd == "" {
 			v.Conn.Close() // Force immediate disconnect
@@ -431,19 +425,14 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 
 		// Prepare bus for potential door command (since chatUI.Run signaled it to exit)
 		v.Bus.Reset()
-		log.Printf("[DEBUG] v.Bus.Reset() called before handleCommand for %s", username)
 
 		// Handle external "door" command (anything that returned from Run)
-		log.Printf("[DEBUG] Handling command %q for %s", cmd, username)
 		done := s.handleCommand(channel, username, cmd)
 		if done != nil {
-			log.Printf("[DEBUG] Waiting for door %q to finish for %s", cmd, username)
 			// Wait for door to finish
 			<-done
-			log.Printf("[DEBUG] Door %q finished for %s", cmd, username)
 			// Force the stdin goroutine to exit
 			v.Bus.SignalExit()
-			log.Printf("[DEBUG] v.Bus.SignalExit() called after door exit for %s", username)
 		}
 	}
 }
@@ -473,10 +462,7 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 
 			var input io.Reader = channel
 			if v != nil && v.Bus != nil {
-				log.Printf("[DEBUG] Using SSHBus for door input (user: %s)", username)
 				input = v.Bus
-			} else {
-				log.Printf("[DEBUG] WARNING: v.Bus is nil, using raw channel for door input (user: %s)", username)
 			}
 
 			if err := s.doorManager.Execute(command, input, channel, channel); err != nil {
