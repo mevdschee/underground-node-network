@@ -206,7 +206,8 @@ func (ui *EntryUI) Draw() {
 	ui.drawText(2, 0, title, mainW-4, headerStyle)
 
 	userStr := fmt.Sprintf("Logged in as: %s", ui.username)
-	ui.drawText(w-len(userStr)-2, 0, userStr, len(userStr), blackStyle)
+	userLen := len([]rune(userStr))
+	ui.drawText(w-userLen-2, 0, userStr, userLen, blackStyle)
 
 	// Pane separator (horizontal, below header)
 	sepY := 1
@@ -297,7 +298,7 @@ func (ui *EntryUI) Draw() {
 	// Draw input
 	prompt := "> "
 	ui.drawText(1, h-1, prompt+ui.input, w-2, promptStyle)
-	s.ShowCursor(len(prompt)+len(ui.input)+1, h-1)
+	s.ShowCursor(len([]rune(prompt))+len([]rune(ui.input))+1, h-1)
 
 	s.Show()
 }
@@ -319,8 +320,9 @@ func (ui *EntryUI) handleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 			}
 		}
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if len(ui.input) > 0 {
-			ui.input = ui.input[:len(ui.input)-1]
+		runes := []rune(ui.input)
+		if len(runes) > 0 {
+			ui.input = string(runes[:len(runes)-1])
 		}
 	case tcell.KeyRune:
 		ui.input += string(ev.Rune())

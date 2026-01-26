@@ -304,7 +304,8 @@ func (ui *ChatUI) Draw() {
 	ui.drawText(2, 0, title, mainW-4, blackStyle.Foreground(tcell.ColorLightCyan).Bold(true))
 
 	userStr := fmt.Sprintf("Logged in as: %s", ui.username)
-	ui.drawText(w-len(userStr)-2, 0, userStr, len(userStr), blackStyle)
+	userLen := len([]rune(userStr))
+	ui.drawText(w-userLen-2, 0, userStr, userLen, blackStyle)
 
 	// Header separator
 	for x := 0; x < w; x++ {
@@ -326,7 +327,7 @@ func (ui *ChatUI) Draw() {
 		}
 		// Truncate and pad
 		displayMsg := msg
-		if len(displayMsg) > mainW {
+		if len([]rune(displayMsg)) > mainW {
 			displayMsg = truncateString(displayMsg, mainW)
 		}
 		ui.drawText(1, contentY+i, displayMsg, mainW-1, blackStyle)
@@ -369,7 +370,7 @@ func (ui *ChatUI) Draw() {
 	prompt := "> "
 	fullInput := prompt + ui.input
 	ui.drawText(1, h-1, fullInput, w-2, promptStyle)
-	s.ShowCursor(len(prompt)+len(ui.input)+1, h-1)
+	s.ShowCursor(len([]rune(prompt))+len([]rune(ui.input))+1, h-1)
 
 	s.Show()
 }
@@ -382,8 +383,9 @@ func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
 	case tcell.KeyEnter:
 		// Handled in Run
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if len(ui.input) > 0 {
-			ui.input = ui.input[:len(ui.input)-1]
+		runes := []rune(ui.input)
+		if len(runes) > 0 {
+			ui.input = string(runes[:len(runes)-1])
 		}
 	case tcell.KeyUp:
 		if ui.hIndex > 0 {

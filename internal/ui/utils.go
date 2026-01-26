@@ -3,9 +3,10 @@ package ui
 import "encoding/binary"
 
 func truncateString(s string, limit int) string {
-	if len(s) > limit {
+	runes := []rune(s)
+	if len(runes) > limit {
 		if limit > 1 {
-			return s[:limit-1] + "…"
+			return string(runes[:limit-1]) + "…"
 		}
 		return "…"
 	}
