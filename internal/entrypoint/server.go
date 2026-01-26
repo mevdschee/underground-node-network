@@ -706,10 +706,10 @@ func (s *Server) showTeleportInfo(v *Visitor) {
 		fmt.Fprintf(v.Bus, "\033[1;36mssh -p %d %s\033[0m\r\n", data.SSHPort, candidate)
 	}
 
-	fmt.Fprintf(v.Bus, "\r\n\033[1mHost Verification Fingerprints:\033[0m\r\n")
+	fmt.Fprintf(v.Bus, "\r\n\033[1mHost Verification Fingerprints:\033[0m\r\n\r\n")
 	for _, key := range data.PublicKeys {
 		fingerprint := s.calculateSHA256Fingerprint(key)
-		fmt.Fprintf(v.Bus, "- %s\r\n", fingerprint)
+		fmt.Fprintf(v.Bus, "\033[1;36m%s\033[0m\r\n", fingerprint)
 	}
 	fmt.Fprintf(v.Bus, "\r\n")
 
@@ -722,6 +722,8 @@ func (s *Server) calculateSHA256Fingerprint(keyStr string) string {
 	if err != nil {
 		return "invalid key"
 	}
+	algo := strings.ToUpper(strings.TrimPrefix(pubKey.Type(), "ssh-"))
 	hash := sha256.Sum256(pubKey.Marshal())
-	return "SHA256:" + base64.StdEncoding.WithPadding(base64.NoPadding).EncodeToString(hash[:])
+	fingerprint := "SHA256:" + base64.StdEncoding.WithPadding(base64.NoPadding).EncodeToString(hash[:])
+	return fmt.Sprintf("%s key fingerprint is %s.", algo, fingerprint)
 }
