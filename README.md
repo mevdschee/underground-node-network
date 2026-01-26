@@ -1,5 +1,7 @@
 ### The Underground Node Network (UNN)
 
+![UNN screenshot](screenshot.png)
+
 The Underground Node Network (UNN) is a distributed, SSH‑based digital underworld disguised as a retro‑styled BBS. It runs entirely over standard SSH, requiring no custom client, no special terminal, and no additional software to participate at the basic level. Anyone with ssh or PuTTY can jack in.
 
 At its core, UNN is not a traditional BBS. Instead, it is a living mesh of user‑operated nodes, each one a personal “room” that comes online the moment a user connects. These rooms are not static message boards—they are computational spaces, capable of hosting interactive services, puzzles, bots, simulations, or tools. Each service behaves like a classic BBS “door,” but with a modern twist: services are executed locally by the user who hosts them, written in any programming language they choose.
@@ -10,8 +12,6 @@ Each user’s node is ephemeral, appearing only while they are connected. When a
 
 UNN is designed to feel like a clandestine hacker‑den ecosystem:
 a shifting constellation of personal machines, each offering unique capabilities, all connected through a shared SSH‑based fabric. It is a programmable world, a social computing experiment, and a collaborative underground network—built entirely from text, terminals, and imagination.
-
-![UNN screenshot](screenshot.png)
 
 ## Connecting
 
