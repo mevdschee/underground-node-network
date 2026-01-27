@@ -10,9 +10,24 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+type MessageType int
+
+const (
+	MsgChat MessageType = iota
+	MsgSelf
+	MsgCommand
+	MsgServer
+	MsgSystem
+)
+
+type Message struct {
+	Text string
+	Type MessageType
+}
+
 type ChatUI struct {
 	screen     tcell.Screen
-	messages   []string
+	messages   []Message
 	visitors   []string
 	doors      []string
 	input      string
@@ -37,7 +52,7 @@ type ChatUI struct {
 func NewChatUI(screen tcell.Screen) *ChatUI {
 	return &ChatUI{
 		screen:    screen,
-		messages:  make([]string, 0),
+		messages:  make([]Message, 0),
 		visitors:  make([]string, 0),
 		doors:     make([]string, 0),
 		drawChan:  make(chan struct{}, 1),
@@ -125,10 +140,10 @@ func (ui *ChatUI) SetDoors(doors []string) {
 	}
 }
 
-func (ui *ChatUI) GetMessages() []string {
+func (ui *ChatUI) GetMessages() []Message {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
-	res := make([]string, len(ui.messages))
+	res := make([]Message, len(ui.messages))
 	copy(res, ui.messages)
 	return res
 }
@@ -327,9 +342,9 @@ outer:
 	return result
 }
 
-func (ui *ChatUI) AddMessage(msg string) {
+func (ui *ChatUI) AddMessage(msg string, msgType MessageType) {
 	ui.mu.Lock()
-	ui.messages = append(ui.messages, msg)
+	ui.messages = append(ui.messages, Message{Text: msg, Type: msgType})
 	screen := ui.screen
 	ui.mu.Unlock()
 
@@ -417,11 +432,26 @@ func (ui *ChatUI) Draw() {
 			break
 		}
 		// Truncate and pad
-		displayMsg := msg
+		displayMsg := msg.Text
 		if len([]rune(displayMsg)) > mainW {
 			displayMsg = truncateString(displayMsg, mainW)
 		}
-		ui.drawText(1, contentY+i, displayMsg, mainW-1, blackStyle)
+
+		style := blackStyle
+		switch msg.Type {
+		case MsgSelf:
+			style = blackStyle.Foreground(tcell.ColorGreen).Bold(true)
+		case MsgCommand:
+			style = blackStyle.Foreground(tcell.ColorDimGray)
+		case MsgServer:
+			style = blackStyle.Foreground(tcell.ColorLightCyan)
+		case MsgSystem:
+			style = blackStyle.Foreground(tcell.ColorDimGray)
+		case MsgChat:
+			style = blackStyle.Foreground(tcell.ColorYellow)
+		}
+
+		ui.drawText(1, contentY+i, displayMsg, mainW-1, style)
 	}
 
 	// Draw Sidebar (Visitors)

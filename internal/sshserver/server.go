@@ -191,7 +191,11 @@ func (s *Server) Broadcast(sender, message string) {
 	chatMsg := fmt.Sprintf("<%s> %s", sender, message)
 	for _, v := range s.visitors {
 		if v.ChatUI != nil {
-			v.ChatUI.AddMessage(chatMsg)
+			msgType := ui.MsgChat
+			if v.Username == sender {
+				msgType = ui.MsgSelf
+			}
+			v.ChatUI.AddMessage(chatMsg, msgType)
 		}
 	}
 }
@@ -441,11 +445,11 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	if b, err := os.ReadFile(bannerPath); err == nil {
 		lines := strings.Split(string(b), "\n")
 		for _, line := range lines {
-			chatUI.AddMessage(strings.TrimRight(line, "\r\n"))
+			chatUI.AddMessage(strings.TrimRight(line, "\r\n"), ui.MsgSystem)
 		}
 	} else {
-		chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username))
-		chatUI.AddMessage("*** Type /help for commands ***")
+		chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username), ui.MsgSystem)
+		chatUI.AddMessage("*** Type /help for commands ***", ui.MsgSystem)
 	}
 
 	for {
@@ -576,25 +580,28 @@ func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
 
 		switch command {
 		case "help":
-			v.ChatUI.AddMessage("--- Available Commands ---")
-			v.ChatUI.AddMessage("/help       - Show this help")
-			v.ChatUI.AddMessage("/who        - List visitors in room")
-			v.ChatUI.AddMessage("/doors      - List available doors")
-			v.ChatUI.AddMessage("/files      - List available files")
-			v.ChatUI.AddMessage("/get <file> - Download a file")
-			v.ChatUI.AddMessage("/<door>     - Enter a door")
-			v.ChatUI.AddMessage("Ctrl+C      - Exit room")
+			v.ChatUI.AddMessage(cmd, ui.MsgCommand)
+			v.ChatUI.AddMessage("--- Available Commands ---", ui.MsgServer)
+			v.ChatUI.AddMessage("/help       - Show this help", ui.MsgServer)
+			v.ChatUI.AddMessage("/who        - List visitors in room", ui.MsgServer)
+			v.ChatUI.AddMessage("/doors      - List available doors", ui.MsgServer)
+			v.ChatUI.AddMessage("/files      - List available files", ui.MsgServer)
+			v.ChatUI.AddMessage("/get <file> - Download a file", ui.MsgServer)
+			v.ChatUI.AddMessage("/<door>     - Enter a door", ui.MsgServer)
+			v.ChatUI.AddMessage("Ctrl+C      - Exit room", ui.MsgServer)
 			return true
 		case "who":
+			v.ChatUI.AddMessage(cmd, ui.MsgCommand)
 			visitors := s.GetVisitors()
-			v.ChatUI.AddMessage("--- Visitors in room ---")
+			v.ChatUI.AddMessage("--- Visitors in room ---", ui.MsgServer)
 			for _, name := range visitors {
-				v.ChatUI.AddMessage("• " + name)
+				v.ChatUI.AddMessage("• "+name, ui.MsgServer)
 			}
 			return true
 		case "get":
 			if len(parts) < 2 {
-				v.ChatUI.AddMessage("Usage: /get <filename>")
+				v.ChatUI.AddMessage(cmd, ui.MsgCommand)
+				v.ChatUI.AddMessage("Usage: /get <filename>", ui.MsgServer)
 				return true
 			}
 			fname := strings.TrimSpace(parts[1])
@@ -602,13 +609,15 @@ func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
 			v.ChatUI.Close(true)
 			return true
 		case "doors":
+			v.ChatUI.AddMessage(cmd, ui.MsgCommand)
 			doorList := s.doorManager.List()
-			v.ChatUI.AddMessage("--- Available doors ---")
+			v.ChatUI.AddMessage("--- Available doors ---", ui.MsgServer)
 			for _, door := range doorList {
-				v.ChatUI.AddMessage("/" + door)
+				v.ChatUI.AddMessage("/"+door, ui.MsgServer)
 			}
 			return true
 		case "files":
+			v.ChatUI.AddMessage(cmd, ui.MsgCommand)
 			s.showFiles(v.ChatUI)
 			return true
 		default:
@@ -646,7 +655,7 @@ func generateHostKey(path string) (ssh.Signer, error) {
 }
 
 func (s *Server) showFiles(chatUI *ui.ChatUI) {
-	chatUI.AddMessage("--- Available Files ---")
+	chatUI.AddMessage("--- Available Files ---", ui.MsgServer)
 	found := false
 
 	err := filepath.WalkDir(s.filesDir, func(path string, d os.DirEntry, err error) error {
@@ -671,19 +680,19 @@ func (s *Server) showFiles(chatUI *ui.ChatUI) {
 		found = true
 		size := formatSize(info.Size())
 		modTime := info.ModTime().Format("2006-01-02 15:04")
-		chatUI.AddMessage(fmt.Sprintf(" %-24s %10s  %s", rel, size, modTime))
+		chatUI.AddMessage(fmt.Sprintf(" %-24s %10s  %s", rel, size, modTime), ui.MsgServer)
 		return nil
 	})
 
 	if err != nil {
-		chatUI.AddMessage(fmt.Sprintf("\033[1;31mError listing files: %v\033[0m", err))
+		chatUI.AddMessage(fmt.Sprintf("\033[1;31mError listing files: %v\033[0m", err), ui.MsgServer)
 		return
 	}
 
 	if !found {
-		chatUI.AddMessage("No files available.")
+		chatUI.AddMessage("No files available.", ui.MsgServer)
 	}
-	chatUI.AddMessage("-----------------------")
+	chatUI.AddMessage("-----------------------", ui.MsgServer)
 }
 
 func (s *Server) showDownloadInfo(v *Visitor, filename string) {

@@ -36,7 +36,7 @@ func TestRoomCommands(t *testing.T) {
 		msgs := v.ChatUI.GetMessages()
 		found := false
 		for _, m := range msgs {
-			if strings.Contains(m, "--- Available Commands ---") {
+			if strings.Contains(m.Text, "--- Available Commands ---") {
 				found = true
 				break
 			}
@@ -56,7 +56,7 @@ func TestRoomCommands(t *testing.T) {
 		found := false
 		for _, m := range msgs {
 			// Format is "<alice> /who" followed by "--- Visitors in room ---" then "• alice"
-			if strings.Contains(m, "• alice") {
+			if strings.Contains(m.Text, "• alice") {
 				found = true
 				break
 			}
@@ -71,7 +71,7 @@ func TestRoomCommands(t *testing.T) {
 		msgs := v.ChatUI.GetMessages()
 		found := false
 		for _, m := range msgs {
-			if strings.Contains(m, "test.txt") {
+			if strings.Contains(m.Text, "test.txt") {
 				found = true
 				break
 			}
@@ -86,7 +86,7 @@ func TestRoomCommands(t *testing.T) {
 		msgs := v.ChatUI.GetMessages()
 		found := false
 		for _, m := range msgs {
-			if strings.Contains(m, "Usage: /get <filename>") {
+			if strings.Contains(m.Text, "Usage: /get <filename>") {
 				found = true
 				break
 			}
