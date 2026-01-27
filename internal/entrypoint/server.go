@@ -498,7 +498,7 @@ func (s *Server) updateVisitorRooms(v *Visitor) {
 func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input string) {
 	log.Printf("Visitor %s command: %s", v.Username, input)
 	input = strings.TrimSpace(input)
-	v.UI.ShowMessage(fmt.Sprintf("> %s", input))
+	v.UI.ShowMessage(fmt.Sprintf("> %s", input), ui.MsgCommand)
 
 	if strings.HasPrefix(input, "/") {
 		cmdLine := strings.TrimPrefix(input, "/")
@@ -510,41 +510,41 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 
 		switch command {
 		case "help":
-			v.UI.ShowMessage("/help               - Show this help message")
-			v.UI.ShowMessage("/rooms              - List all active rooms")
-			v.UI.ShowMessage("/register <pubkey>  - Register your SSH public key")
-			v.UI.ShowMessage("<room_name>         - Join a room by name")
-			v.UI.ShowMessage("Ctrl+C              - Exit")
+			v.UI.ShowMessage("/help               - Show this help message", ui.MsgServer)
+			v.UI.ShowMessage("/rooms              - List all active rooms", ui.MsgServer)
+			v.UI.ShowMessage("/register <pubkey>  - Register your SSH public key", ui.MsgServer)
+			v.UI.ShowMessage("<room_name>         - Join a room by name", ui.MsgServer)
+			v.UI.ShowMessage("Ctrl+C              - Exit", ui.MsgServer)
 		case "rooms":
 			s.mu.RLock()
 			if len(s.rooms) == 0 {
-				v.UI.ShowMessage("No active rooms.")
+				v.UI.ShowMessage("No active rooms.", ui.MsgServer)
 			} else {
-				v.UI.ShowMessage("Active Rooms:")
+				v.UI.ShowMessage("Active Rooms:", ui.MsgServer)
 				for _, room := range s.rooms {
-					v.UI.ShowMessage(fmt.Sprintf(" - %s (owned by %s)", room.Info.Name, room.Info.Owner))
+					v.UI.ShowMessage(fmt.Sprintf(" - %s (owned by %s)", room.Info.Name, room.Info.Owner), ui.MsgServer)
 				}
 			}
 			s.mu.RUnlock()
 		case "register":
 			if len(parts) < 2 {
-				v.UI.ShowMessage("Usage: /register <public_key>")
+				v.UI.ShowMessage("Usage: /register <public_key>", ui.MsgServer)
 				return
 			}
 			keyStr := strings.Join(parts[1:], " ")
 			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyStr))
 			if err != nil {
-				v.UI.ShowMessage(fmt.Sprintf("Invalid key: %v", err))
+				v.UI.ShowMessage(fmt.Sprintf("Invalid key: %v", err), ui.MsgServer)
 				return
 			}
 			keyPath := filepath.Join(s.usersDir, v.Username)
 			if err := registerUserKey(keyPath, pubKey); err != nil {
-				v.UI.ShowMessage(fmt.Sprintf("Failed: %v", err))
+				v.UI.ShowMessage(fmt.Sprintf("Failed: %v", err), ui.MsgServer)
 			} else {
-				v.UI.ShowMessage("Successfully registered.")
+				v.UI.ShowMessage("Successfully registered.", ui.MsgServer)
 			}
 		default:
-			v.UI.ShowMessage(fmt.Sprintf("Unknown command: %s", command))
+			v.UI.ShowMessage(fmt.Sprintf("Unknown command: %s", command), ui.MsgServer)
 		}
 		return
 	}
@@ -555,7 +555,7 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 	s.mu.RUnlock()
 
 	if !ok {
-		v.UI.ShowMessage(fmt.Sprintf("Room not found: %s", input))
+		v.UI.ShowMessage(fmt.Sprintf("Room not found: %s", input), ui.MsgServer)
 		return
 	}
 
@@ -600,7 +600,7 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 	case startMsg := <-visitorChan:
 		var startPayload protocol.PunchStartPayload
 		if err := startMsg.ParsePayload(&startPayload); err != nil {
-			v.UI.ShowMessage(fmt.Sprintf("\033[1;31mError: %v\033[0m", err))
+			v.UI.ShowMessage(fmt.Sprintf("\033[1;31mError: %v\033[0m", err), ui.MsgServer)
 			return
 		}
 
@@ -608,13 +608,13 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 		v.TeleportData = &startPayload
 
 		// Final TUI message
-		v.UI.ShowMessage("")
-		v.UI.ShowMessage(" \033[1;32m✔ Room joined! Teleporting...\033[0m")
+		v.UI.ShowMessage("", ui.MsgSystem)
+		v.UI.ShowMessage(" \033[1;32m✔ Room joined! Teleporting...\033[0m", ui.MsgSystem)
 
 		// Close the TUI loop immediately
 		v.UI.Close(true)
 	case <-time.After(10 * time.Second):
-		v.UI.ShowMessage("Timeout waiting for room operator.")
+		v.UI.ShowMessage("Timeout waiting for room operator.", ui.MsgServer)
 	}
 }
 

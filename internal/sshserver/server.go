@@ -46,7 +46,8 @@ type Server struct {
 	mu              sync.RWMutex
 	listener        net.Listener
 	headless        bool
-	uploadLimit     int64 // bytes per second
+	uploadLimit     int64                   // bytes per second
+	histories       map[string][]ui.Message // keyed by pubkey hash (hex)
 }
 
 func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doors.Manager) (*Server, error) {
@@ -57,6 +58,7 @@ func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doo
 		filesDir:        filesDir,
 		visitors:        make(map[string]*Visitor),
 		authorizedKeys:  make(map[string]bool),
+		histories:       make(map[string][]ui.Message),
 		downloadTimeout: 60 * time.Second,
 	}
 
@@ -183,21 +185,45 @@ func (s *Server) updateVisitorList(v *Visitor) {
 	v.ChatUI.SetDoors(s.doorManager.List())
 }
 
-// Broadcast sends a message to all connected visitors
+// Broadcast sends a message to all connected visitors and stores it in their histories
 func (s *Server) Broadcast(sender, message string) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	chatMsg := fmt.Sprintf("<%s> %s", sender, message)
+
 	for _, v := range s.visitors {
+		msgType := ui.MsgChat
+		if v.Username == sender {
+			msgType = ui.MsgSelf
+		}
+
+		// Add to UI if available
 		if v.ChatUI != nil {
-			msgType := ui.MsgChat
-			if v.Username == sender {
-				msgType = ui.MsgSelf
-			}
 			v.ChatUI.AddMessage(chatMsg, msgType)
 		}
+
+		// Add to history (Security: only because they are connected now)
+		pubHash := s.getPubKeyHash(v.PubKey)
+		s.addMessageToHistory(pubHash, ui.Message{Text: chatMsg, Type: msgType})
 	}
+}
+
+func (s *Server) getPubKeyHash(pubKey ssh.PublicKey) string {
+	if pubKey == nil {
+		return "anonymous"
+	}
+	hash := sha256.Sum256(pubKey.Marshal())
+	return fmt.Sprintf("%x", hash)
+}
+
+func (s *Server) addMessageToHistory(pubHash string, msg ui.Message) {
+	history := s.histories[pubHash]
+	history = append(history, msg)
+	if len(history) > 200 {
+		history = history[1:]
+	}
+	s.histories[pubHash] = history
 }
 
 func (s *Server) acceptLoop() {
@@ -440,16 +466,28 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 		return s.handleInternalCommand(v, cmd)
 	})
 
-	// Add welcome message initially
-	bannerPath := s.roomName + ".asc"
-	if b, err := os.ReadFile(bannerPath); err == nil {
-		lines := strings.Split(string(b), "\n")
-		for _, line := range lines {
-			chatUI.AddMessage(strings.TrimRight(line, "\r\n"), ui.MsgSystem)
+	// REPLAY HISTORY
+	s.mu.Lock()
+	pubHash := s.getPubKeyHash(v.PubKey)
+	history := s.histories[pubHash]
+	s.mu.Unlock()
+
+	if len(history) > 0 {
+		for _, m := range history {
+			chatUI.AddMessage(m.Text, m.Type)
 		}
 	} else {
-		chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username), ui.MsgSystem)
-		chatUI.AddMessage("*** Type /help for commands ***", ui.MsgSystem)
+		// New session welcome message
+		bannerPath := s.roomName + ".asc"
+		if b, err := os.ReadFile(bannerPath); err == nil {
+			lines := strings.Split(string(b), "\n")
+			for _, line := range lines {
+				chatUI.AddMessage(strings.TrimRight(line, "\r\n"), ui.MsgServer)
+			}
+		} else {
+			chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username), ui.MsgSystem)
+			chatUI.AddMessage("*** Type /help for commands ***", ui.MsgSystem)
+		}
 	}
 
 	for {
@@ -518,6 +556,9 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 
 func (s *Server) handleCommand(channel ssh.Channel, username string, input string) chan struct{} {
 	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
 
 	if !strings.HasPrefix(input, "/") {
 		// Regular chat message
@@ -577,47 +618,62 @@ func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
 		// Echo the command in the chat history
 		parts := strings.SplitN(strings.TrimPrefix(cmd, "/"), " ", 2)
 		command := parts[0]
+		pubHash := s.getPubKeyHash(v.PubKey)
+
+		addMessage := func(text string, msgType ui.MessageType) {
+			v.ChatUI.AddMessage(text, msgType)
+			s.mu.Lock()
+			s.addMessageToHistory(pubHash, ui.Message{Text: text, Type: msgType})
+			s.mu.Unlock()
+		}
 
 		switch command {
 		case "help":
-			v.ChatUI.AddMessage(cmd, ui.MsgCommand)
-			v.ChatUI.AddMessage("--- Available Commands ---", ui.MsgServer)
-			v.ChatUI.AddMessage("/help       - Show this help", ui.MsgServer)
-			v.ChatUI.AddMessage("/who        - List visitors in room", ui.MsgServer)
-			v.ChatUI.AddMessage("/doors      - List available doors", ui.MsgServer)
-			v.ChatUI.AddMessage("/files      - List available files", ui.MsgServer)
-			v.ChatUI.AddMessage("/get <file> - Download a file", ui.MsgServer)
-			v.ChatUI.AddMessage("/<door>     - Enter a door", ui.MsgServer)
-			v.ChatUI.AddMessage("Ctrl+C      - Exit room", ui.MsgServer)
+			addMessage(cmd, ui.MsgCommand)
+			addMessage("--- Available Commands ---", ui.MsgServer)
+			addMessage("/help       - Show this help", ui.MsgServer)
+			addMessage("/who        - List visitors in room", ui.MsgServer)
+			addMessage("/doors      - List available doors", ui.MsgServer)
+			addMessage("/files      - List available files", ui.MsgServer)
+			addMessage("/get <file> - Download a file", ui.MsgServer)
+			addMessage("/clear      - Clear your chat history", ui.MsgServer)
+			addMessage("/<door>     - Enter a door", ui.MsgServer)
+			addMessage("Ctrl+C      - Exit room", ui.MsgServer)
 			return true
 		case "who":
-			v.ChatUI.AddMessage(cmd, ui.MsgCommand)
+			addMessage(cmd, ui.MsgCommand)
 			visitors := s.GetVisitors()
-			v.ChatUI.AddMessage("--- Visitors in room ---", ui.MsgServer)
+			addMessage("--- Visitors in room ---", ui.MsgServer)
 			for _, name := range visitors {
-				v.ChatUI.AddMessage("• "+name, ui.MsgServer)
+				addMessage("• "+name, ui.MsgServer)
 			}
 			return true
 		case "get":
+			addMessage(cmd, ui.MsgCommand)
 			if len(parts) < 2 {
-				v.ChatUI.AddMessage(cmd, ui.MsgCommand)
-				v.ChatUI.AddMessage("Usage: /get <filename>", ui.MsgServer)
+				addMessage("Usage: /get <filename>", ui.MsgServer)
 				return true
 			}
 			fname := strings.TrimSpace(parts[1])
 			v.PendingDownload = filepath.Clean(fname)
 			v.ChatUI.Close(true)
 			return true
+		case "clear":
+			s.mu.Lock()
+			delete(s.histories, pubHash)
+			s.mu.Unlock()
+			v.ChatUI.ClearMessages()
+			return true
 		case "doors":
-			v.ChatUI.AddMessage(cmd, ui.MsgCommand)
+			addMessage(cmd, ui.MsgCommand)
 			doorList := s.doorManager.List()
-			v.ChatUI.AddMessage("--- Available doors ---", ui.MsgServer)
+			addMessage("--- Available doors ---", ui.MsgServer)
 			for _, door := range doorList {
-				v.ChatUI.AddMessage("/"+door, ui.MsgServer)
+				addMessage("/"+door, ui.MsgServer)
 			}
 			return true
 		case "files":
-			v.ChatUI.AddMessage(cmd, ui.MsgCommand)
+			addMessage(cmd, ui.MsgCommand)
 			s.showFiles(v.ChatUI)
 			return true
 		default:
@@ -655,7 +711,27 @@ func generateHostKey(path string) (ssh.Signer, error) {
 }
 
 func (s *Server) showFiles(chatUI *ui.ChatUI) {
-	chatUI.AddMessage("--- Available Files ---", ui.MsgServer)
+	s.mu.RLock()
+	// Identify current visitor to log to history
+	var pubHash string
+	for _, v := range s.visitors {
+		if v.ChatUI == chatUI {
+			pubHash = s.getPubKeyHash(v.PubKey)
+			break
+		}
+	}
+	s.mu.RUnlock()
+
+	addMessage := func(text string, msgType ui.MessageType) {
+		chatUI.AddMessage(text, msgType)
+		if pubHash != "" {
+			s.mu.Lock()
+			s.addMessageToHistory(pubHash, ui.Message{Text: text, Type: msgType})
+			s.mu.Unlock()
+		}
+	}
+
+	addMessage("--- Available Files ---", ui.MsgServer)
 	found := false
 
 	err := filepath.WalkDir(s.filesDir, func(path string, d os.DirEntry, err error) error {
@@ -680,19 +756,19 @@ func (s *Server) showFiles(chatUI *ui.ChatUI) {
 		found = true
 		size := formatSize(info.Size())
 		modTime := info.ModTime().Format("2006-01-02 15:04")
-		chatUI.AddMessage(fmt.Sprintf(" %-24s %10s  %s", rel, size, modTime), ui.MsgServer)
+		addMessage(fmt.Sprintf(" %-24s %10s  %s", rel, size, modTime), ui.MsgServer)
 		return nil
 	})
 
 	if err != nil {
-		chatUI.AddMessage(fmt.Sprintf("\033[1;31mError listing files: %v\033[0m", err), ui.MsgServer)
+		addMessage(fmt.Sprintf("\033[1;31mError listing files: %v\033[0m", err), ui.MsgServer)
 		return
 	}
 
 	if !found {
-		chatUI.AddMessage("No files available.", ui.MsgServer)
+		addMessage("No files available.", ui.MsgServer)
 	}
-	chatUI.AddMessage("-----------------------", ui.MsgServer)
+	addMessage("-----------------------", ui.MsgServer)
 }
 
 func (s *Server) showDownloadInfo(v *Visitor, filename string) {

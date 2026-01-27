@@ -54,3 +54,13 @@ UNN implements a highly secure file transfer mechanism designed to be resilient 
 6. **Graceful Teardown**: The one-shot server signals success with an `exit-status` of 0. It then waits a brief period (100ms) to ensure the client receives all termination packets before closing the local listener.
 7. **Connection Persistence**: The main room connection remains open until the visitor explicitly disconnects. This ensures that the wrapper has sufficient time to complete the SFTP transfer through the existing tunnel.
 8. **Automatic Cleanup**: The one-shot SFTP server shuts down immediately after the transfer completes or after a configurable timeout (default 60s).
+
+### Chat History Persistence & Security
+
+The room server maintains an in-memory history to improve the experience of reconnections (e.g., after a file download or a network hiccup):
+
+1. **Identifier**: History is tracked per **Visitor Public Key** (using a SHA256 hash).
+2. **Connection-Only Logging**: To ensure security, messages are only appended to a user's history if they are **currently connected** to the room. Users can never "back-read" messages that were sent when they were offline.
+3. **Replay**: When a user reconnects, the server automatically replays their private history (up to 200 messages) to their TUI.
+4. **Volatility**: History is stored in-memory and is wiped if the room node (client) is restarted.
+5. **Wipe Command**: Users can manually purge their history and clear their screen at any time using the `/clear` command.

@@ -148,6 +148,15 @@ func (ui *ChatUI) GetMessages() []Message {
 	return res
 }
 
+func (ui *ChatUI) ClearMessages() {
+	ui.mu.Lock()
+	ui.messages = nil
+	ui.mu.Unlock()
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
+}
+
 func (ui *ChatUI) Close(success bool) {
 	ui.mu.Lock()
 	onClose := ui.onClose
@@ -444,7 +453,7 @@ func (ui *ChatUI) Draw() {
 		case MsgCommand:
 			style = blackStyle.Foreground(tcell.ColorDimGray)
 		case MsgServer:
-			style = blackStyle.Foreground(tcell.ColorLightCyan)
+			style = blackStyle.Foreground(tcell.ColorLightGray)
 		case MsgSystem:
 			style = blackStyle.Foreground(tcell.ColorDimGray)
 		case MsgChat:

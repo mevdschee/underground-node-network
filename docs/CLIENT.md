@@ -24,6 +24,9 @@ When you are connected you can idle in your room. The room server provides a int
 The room handles transitions and UI redraws with specialized low-level signaling:
 - **Zero-Lag Transitions**: When a door exits, the room server immediately signals its input channel to detach, allowing an instant return to the chat UI without waiting for an extra keystroke.
 - **Asynchronous Redraws**: The TUI screen updates instantly when new messages or visitors arrive, even if you aren't currently typing.
+- **Persistent History**: The room server automatically remembers your previous chat messages and commands if you disconnect and return.
+- **Security Logic**: You only "capture" messages in your private history if you are actually connected to the room. You can never see messages that were sent while you were away.
+- **Privacy Control**: You can wipe your server-side history and clear your local screen at any time using the `/clear` command.
 - **Persistence**: Using a custom I/O bridge ensures that your first keystroke after leaving a door is correctly captured by the room chat.
 
 The client has two types of doors: 

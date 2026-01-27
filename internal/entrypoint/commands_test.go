@@ -35,7 +35,7 @@ func TestEntrypointCommands(t *testing.T) {
 		logs := v.UI.GetLogs()
 		found := false
 		for _, l := range logs {
-			if strings.Contains(l, "/rooms") && strings.Contains(l, "List all active rooms") {
+			if strings.Contains(l.Text, "/rooms") && strings.Contains(l.Text, "List all active rooms") {
 				found = true
 				break
 			}
@@ -50,7 +50,7 @@ func TestEntrypointCommands(t *testing.T) {
 		logs := v.UI.GetLogs()
 		found := false
 		for _, l := range logs {
-			if strings.Contains(l, "No active rooms.") {
+			if strings.Contains(l.Text, "No active rooms.") {
 				found = true
 				break
 			}
@@ -71,7 +71,7 @@ func TestEntrypointCommands(t *testing.T) {
 		logs := v.UI.GetLogs()
 		found := false
 		for _, l := range logs {
-			if strings.Contains(l, "myroom") && strings.Contains(l, "alice") {
+			if strings.Contains(l.Text, "myroom") && strings.Contains(l.Text, "alice") {
 				found = true
 				break
 			}
@@ -86,7 +86,7 @@ func TestEntrypointCommands(t *testing.T) {
 		logs := v.UI.GetLogs()
 		found := false
 		for _, l := range logs {
-			if strings.Contains(l, "Room not found: nonexistent") {
+			if strings.Contains(l.Text, "Room not found: nonexistent") {
 				found = true
 				break
 			}
@@ -101,7 +101,7 @@ func TestEntrypointCommands(t *testing.T) {
 		logs := v.UI.GetLogs()
 		found := false
 		for _, l := range logs {
-			if strings.Contains(l, "Usage: /register <public_key>") {
+			if strings.Contains(l.Text, "Usage: /register <public_key>") {
 				found = true
 				break
 			}

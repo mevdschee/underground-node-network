@@ -19,7 +19,7 @@ type RoomInfo struct {
 type EntryUI struct {
 	screen    tcell.Screen
 	rooms     []RoomInfo
-	logs      []string
+	logs      []Message
 	input     string
 	username  string
 	addr      string
@@ -39,7 +39,7 @@ func NewEntryUI(screen tcell.Screen, username, addr string) *EntryUI {
 		username:  username,
 		addr:      addr,
 		rooms:     make([]RoomInfo, 0),
-		logs:      make([]string, 0),
+		logs:      make([]Message, 0),
 		closeChan: make(chan struct{}, 1),
 	}
 }
@@ -94,17 +94,19 @@ func (ui *EntryUI) SetRooms(rooms []RoomInfo) {
 func (ui *EntryUI) SetBanner(banner []string) {
 	ui.mu.Lock()
 	// Clear existing logs and set banner as the initial content
-	ui.logs = make([]string, len(banner))
-	copy(ui.logs, banner)
+	ui.logs = make([]Message, len(banner))
+	for i, b := range banner {
+		ui.logs[i] = Message{Text: b, Type: MsgServer}
+	}
 	ui.mu.Unlock()
 	if ui.screen != nil {
 		ui.screen.PostEvent(&tcell.EventInterrupt{})
 	}
 }
 
-func (ui *EntryUI) ShowMessage(msg string) {
+func (ui *EntryUI) ShowMessage(msg string, msgType MessageType) {
 	ui.mu.Lock()
-	ui.logs = append(ui.logs, msg)
+	ui.logs = append(ui.logs, Message{Text: msg, Type: msgType})
 	if len(ui.logs) > 100 {
 		ui.logs = ui.logs[1:]
 	}
@@ -117,10 +119,10 @@ func (ui *EntryUI) ShowMessage(msg string) {
 	}
 }
 
-func (ui *EntryUI) GetLogs() []string {
+func (ui *EntryUI) GetLogs() []Message {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
-	res := make([]string, len(ui.logs))
+	res := make([]Message, len(ui.logs))
 	copy(res, ui.logs)
 	return res
 }
@@ -325,12 +327,22 @@ func (ui *EntryUI) Draw() {
 			if contentStartY+i >= h-2 {
 				break
 			}
-			// Use headerStyle if it looks like ASCII art (e.g., contains box drawing or many symbols)
+
 			style := logStyle
-			if strings.ContainsAny(logMsg, "╔╗╚╝║═█▀▄▌▐") {
+			switch logMsg.Type {
+			case MsgCommand:
+				style = promptStyle.Foreground(tcell.ColorDimGray)
+			case MsgServer:
+				style = blackStyle.Foreground(tcell.ColorLightGray)
+			case MsgSystem:
+				style = headerStyle.Foreground(tcell.ColorDimGray)
+			}
+
+			// Use headerStyle if it looks like ASCII art (e.g., contains box drawing or many symbols)
+			if strings.ContainsAny(logMsg.Text, "╔╗╚╝║═█▀▄▌▐") {
 				style = headerStyle
 			}
-			ui.drawText(2, contentStartY+i, truncateString(logMsg, mainW-4), mainW-4, style)
+			ui.drawText(2, contentStartY+i, truncateString(logMsg.Text, mainW-4), mainW-4, style)
 		}
 		// Clear rest of main pane
 		logCount := len(ui.logs[logStart:])
