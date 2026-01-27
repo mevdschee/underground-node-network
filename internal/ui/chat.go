@@ -14,6 +14,7 @@ type ChatUI struct {
 	screen     tcell.Screen
 	messages   []string
 	visitors   []string
+	doors      []string
 	input      string
 	history    []string
 	hIndex     int
@@ -38,6 +39,7 @@ func NewChatUI(screen tcell.Screen) *ChatUI {
 		screen:    screen,
 		messages:  make([]string, 0),
 		visitors:  make([]string, 0),
+		doors:     make([]string, 0),
 		drawChan:  make(chan struct{}, 1),
 		closeChan: make(chan struct{}, 1),
 	}
@@ -92,6 +94,23 @@ func (ui *ChatUI) OnCmd(cb func(string) bool) {
 func (ui *ChatUI) SetVisitors(visitors []string) {
 	ui.mu.Lock()
 	ui.visitors = visitors
+	screen := ui.screen
+	ui.mu.Unlock()
+
+	if screen != nil {
+		screen.PostEvent(&tcell.EventInterrupt{})
+	}
+
+	// Trigger redraw
+	select {
+	case ui.drawChan <- struct{}{}:
+	default:
+	}
+}
+
+func (ui *ChatUI) SetDoors(doors []string) {
+	ui.mu.Lock()
+	ui.doors = doors
 	screen := ui.screen
 	ui.mu.Unlock()
 
@@ -415,19 +434,31 @@ func (ui *ChatUI) Draw() {
 		s.SetContent(mainW, 1, '┳', nil, sepStyle)
 
 		sidebarStartY := 2
-		ui.drawText(mainW+1, sidebarStartY, " Visitors:      ", sidebarW, blackStyle)
-		for i, visitor := range ui.visitors {
+		ui.drawText(mainW+1, sidebarStartY, " Doors:         ", sidebarW, blackStyle)
+		doorCount := 0
+		for i, door := range ui.doors {
 			if sidebarStartY+1+i >= h-2 {
 				break
 			}
-			displayName := truncateString(visitor, sidebarW-2)
-			ui.drawText(mainW+2, sidebarStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
+			displayName := truncateString(door, sidebarW-2)
+			ui.drawText(mainW+2, sidebarStartY+1+i, "• /"+displayName, sidebarW-2, sidebarStyle)
+			doorCount++
+		}
+
+		visitorStartY := sidebarStartY + doorCount + 1
+		if visitorStartY < h-2 {
+			ui.drawText(mainW+1, visitorStartY, " Visitors:      ", sidebarW, blackStyle)
+			for i, visitor := range ui.visitors {
+				if visitorStartY+1+i >= h-2 {
+					break
+				}
+				displayName := truncateString(visitor, sidebarW-2)
+				ui.drawText(mainW+2, visitorStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
+			}
 		}
 		// Clear rest of sidebar
-		remaining := h - 2 - (sidebarStartY + 1 + len(ui.visitors))
-		if remaining > 0 {
-			ui.fillRegion(mainW+1, sidebarStartY+1+len(ui.visitors), sidebarW, remaining, ' ', blackStyle)
-		}
+		// Note: This is a bit simplified, ideally we'd track the last drawn line
+		// But redraw will clear it anyway if we use fillRegion properly or screen.Sync
 	}
 
 	// Draw input separator

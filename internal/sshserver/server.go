@@ -180,6 +180,7 @@ func (s *Server) updateVisitorList(v *Visitor) {
 	}
 	s.mu.RUnlock()
 	v.ChatUI.SetVisitors(names)
+	v.ChatUI.SetDoors(s.doorManager.List())
 }
 
 // Broadcast sends a message to all connected visitors

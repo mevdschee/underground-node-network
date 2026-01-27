@@ -82,11 +82,11 @@ func TestRoomCommands(t *testing.T) {
 	})
 
 	t.Run("download usage", func(t *testing.T) {
-		s.handleInternalCommand(v, "/download")
+		s.handleInternalCommand(v, "/get")
 		msgs := v.ChatUI.GetMessages()
 		found := false
 		for _, m := range msgs {
-			if strings.Contains(m, "Usage: /download <filename>") {
+			if strings.Contains(m, "Usage: /get <filename>") {
 				found = true
 				break
 			}
@@ -97,7 +97,7 @@ func TestRoomCommands(t *testing.T) {
 	})
 
 	t.Run("download success", func(t *testing.T) {
-		s.handleInternalCommand(v, "/download test.txt")
+		s.handleInternalCommand(v, "/get test.txt")
 		if v.PendingDownload != "test.txt" {
 			t.Errorf("Expected PendingDownload to be 'test.txt', got '%s'", v.PendingDownload)
 		}
