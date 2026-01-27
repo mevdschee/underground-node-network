@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -19,7 +20,6 @@ import (
 	"time"
 
 	"github.com/mevdschee/underground-node-network/internal/protocol"
-	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -29,12 +29,25 @@ type StdinManager struct {
 	mu     sync.Mutex
 	writer io.Writer
 	active bool
+	paused bool
 }
 
 func (m *StdinManager) SetWriter(w io.Writer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.writer = w
+}
+
+func (m *StdinManager) Pause() {
+	m.mu.Lock()
+	m.paused = true
+	m.mu.Unlock()
+}
+
+func (m *StdinManager) Resume() {
+	m.mu.Lock()
+	m.paused = false
+	m.mu.Unlock()
 }
 
 func (m *StdinManager) Start() {
@@ -48,16 +61,38 @@ func (m *StdinManager) Start() {
 
 	go func() {
 		buf := make([]byte, 1024)
+		fd := int(os.Stdin.Fd())
 		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
+			m.mu.Lock()
+			paused := m.paused
+			m.mu.Unlock()
+
+			if paused {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+
+			// Use syscall.Select to wait for input without blocking forever
+			// This allows us to check the 'paused' flag frequently.
+			readfds := &syscall.FdSet{}
+			readfds.Bits[fd/64] |= 1 << (uint(fd) % 64)
+			timeout := &syscall.Timeval{Sec: 0, Usec: 100000} // 100ms
+
+			n, err := syscall.Select(fd+1, readfds, nil, nil, timeout)
+			if err != nil && err != syscall.EINTR {
 				return
 			}
-			m.mu.Lock()
-			if m.writer != nil {
-				m.writer.Write(buf[:n])
+			if n > 0 {
+				n, err := os.Stdin.Read(buf)
+				if err != nil {
+					return
+				}
+				m.mu.Lock()
+				if m.writer != nil && !m.paused {
+					m.writer.Write(buf[:n])
+				}
+				m.mu.Unlock()
 			}
-			m.mu.Unlock()
 		}
 	}()
 }
@@ -76,6 +111,7 @@ func main() {
 
 	verbose := flag.Bool("v", false, "Verbose output")
 	identity := flag.String("identity", "", "Path to private key for authentication")
+	batch := flag.Bool("batch", false, "Non-interactive batch mode")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
@@ -86,12 +122,12 @@ func main() {
 	sshURL := flag.Arg(0)
 	// Ignore SIGINT so it's passed as a byte to the SSH sessions
 	signal.Ignore(os.Interrupt)
-	if err := teleport(sshURL, *identity, *verbose); err != nil {
+	if err := teleport(sshURL, *identity, *verbose, *batch); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 }
 
-func teleport(sshURL string, identPath string, verbose bool) error {
+func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 	// Parse the SSH URL
 	u, err := url.Parse(sshURL)
 	if err != nil {
@@ -173,11 +209,15 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 		Timeout:         10 * time.Second,
 	}
 
-	// Set terminal to raw mode for the entire duration
+	// Set terminal to raw mode for the entire duration - only if NOT in batch mode
 	fd := int(os.Stdin.Fd())
-	oldState, err := term.MakeRaw(fd)
-	if err == nil {
-		defer term.Restore(fd, oldState)
+	var oldState *term.State
+	if !batch {
+		var err error
+		oldState, err = term.MakeRaw(fd)
+		if err == nil {
+			defer term.Restore(fd, oldState)
+		}
 	}
 
 	// Loop for persistent entry point session
@@ -342,6 +382,7 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 			if verbose {
 				log.Printf("Automatically selecting room: %s", currentRoom)
 			}
+			time.Sleep(500 * time.Millisecond) // Small delay to allow server to be ready
 			fmt.Fprintf(stdinPipe, "%s\r\n", currentRoom)
 			currentRoom = "" // Only do it once per URL invocation
 		}
@@ -378,7 +419,7 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 
 		// Connect to room using native SSH client - stay in room if download triggered
 		for {
-			downloaded, err := runRoomSSH(candidates, sshPort, hostKeys, config, verbose)
+			downloaded, err := runRoomSSH(candidates, sshPort, hostKeys, config, identPath, verbose, oldState, batch)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error connecting to room: %v\n", err)
 				time.Sleep(2 * time.Second)
@@ -394,7 +435,7 @@ func teleport(sshURL string, identPath string, verbose bool) error {
 	}
 }
 
-func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointConfig *ssh.ClientConfig, verbose bool) (bool, error) {
+func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointConfig *ssh.ClientConfig, identPath string, verbose bool, normalState *term.State, batch bool) (bool, error) {
 	if verbose {
 		log.Printf("Got connection info: candidates=%v port=%d keys=%d", candidates, sshPort, len(hostKeys))
 	}
@@ -446,66 +487,71 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		}
 		defer client.Close()
 
+		if verbose {
+			log.Printf("Connected to room at %s", target)
+		}
+
 		session, err := client.NewSession()
 		if err != nil {
 			return false, fmt.Errorf("failed to create session: %w", err)
 		}
 		defer session.Close()
 
-		// Request PTY
-		fd := int(os.Stdin.Fd())
-		width, height, err := term.GetSize(fd)
-		if err != nil {
-			width, height = 80, 24
-		}
-
-		if err := session.RequestPty("xterm", height, width, ssh.TerminalModes{}); err != nil {
-			return false, fmt.Errorf("failed to request PTY: %w", err)
-		}
-
-		// Handle window size changes
-		winch := make(chan os.Signal, 1)
-		signal.Notify(winch, syscall.SIGWINCH)
-		stopWinch := make(chan bool)
-		go func() {
-			for {
-				select {
-				case <-winch:
-					width, height, err := term.GetSize(fd)
-					if err == nil {
-						session.WindowChange(height, width)
-					}
-				case <-stopWinch:
-					return
-				}
-			}
-		}()
-		defer func() {
-			close(stopWinch)
-			signal.Stop(winch)
-		}()
-
 		stdin, _ := session.StdinPipe()
+		globalStdinManager.SetWriter(stdin)
+
 		stdout, _ := session.StdoutPipe()
 		stderr, _ := session.StderrPipe()
+
+		fd := int(os.Stdin.Fd())
+		w, h, err := term.GetSize(fd)
+		if err != nil {
+			w, h = 80, 24
+		}
+
+		if err := session.RequestPty("xterm-256color", h, w, ssh.TerminalModes{}); err != nil {
+			return false, fmt.Errorf("failed to request pty: %w", err)
+		}
 
 		if err := session.Shell(); err != nil {
 			return false, fmt.Errorf("failed to start shell: %w", err)
 		}
 
-		// Proxy I/O
-		globalStdinManager.SetWriter(stdin)
-		errChan := make(chan error, 2)
-		var downloadFilename string
-		var downloadPort int
-		var downloadTransferID string
-		stdoutDone := make(chan struct{})
+		// Handle window changes
+		winch := make(chan os.Signal, 1)
+		signal.Notify(winch, syscall.SIGWINCH)
+		defer signal.Stop(winch)
+
+		go func() {
+			for range winch {
+				w, h, err := term.GetSize(fd)
+				if err == nil {
+					session.WindowChange(h, w)
+				}
+			}
+		}()
+
+		type downloadInfo struct {
+			port  int
+			tid   string
+			sig   string
+			fname string
+		}
+
+		// Track download state in the session
+		var (
+			downloading  bool
+			downloadData string
+			stdoutDone   = make(chan struct{})
+			triggerDl    = make(chan downloadInfo, 1)
+		)
+
 		go func() {
 			defer close(stdoutDone)
-			var currentLine strings.Builder
-			var inData bool
-			var lastByte byte
 			buf := make([]byte, 1024)
+			var currentLine strings.Builder
+			var lastByte byte
+
 			for {
 				n, err := stdout.Read(buf)
 				if err != nil {
@@ -529,32 +575,25 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 						cleanLine := stripANSI(rawLine)
 						line := strings.TrimSpace(cleanLine)
 
-						if verbose && strings.Contains(line, "DOWNLOAD") {
-							log.Printf("DEBUG: saw line: %q", line)
+						if strings.Contains(line, "[DOWNLOAD FILE]") {
+							downloading = true
+							downloadData = ""
+							continue
 						}
 
-						if strings.Contains(line, "[DOWNLOAD FILE]") {
-							inData = true
-							downloadFilename = ""
-							downloadPort = 0
-							downloadTransferID = ""
-							if verbose {
-								log.Printf("DEBUG: Triggered download data capture")
-							}
-						} else if inData {
+						if downloading {
 							if strings.Contains(line, "[/DOWNLOAD FILE]") {
-								inData = false
-								if verbose {
-									log.Printf("Parsed download: %s on port %d (uuid: %s)", downloadFilename, downloadPort, downloadTransferID)
+								downloading = false
+								// Parse captured data
+								p, tid, sig, fname, err := parseDownloadBlock(downloadData)
+								if err == nil {
+									triggerDl <- downloadInfo{p, tid, sig, fname}
+									session.Close()
+									return
 								}
-							} else if downloadFilename == "" {
-								downloadFilename = strings.TrimSpace(line)
-							} else if downloadPort == 0 {
-								p, _ := strconv.Atoi(strings.TrimSpace(line))
-								downloadPort = p
-							} else {
-								downloadTransferID = strings.TrimSpace(line)
+								continue
 							}
+							downloadData += line + "\n"
 						}
 					} else {
 						currentLine.WriteByte(b)
@@ -562,32 +601,32 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 				}
 			}
 		}()
+
 		go func() {
-			_, err := io.Copy(os.Stderr, stderr)
-			errChan <- err
+			io.Copy(os.Stderr, stderr)
 		}()
 
-		// Wait for session to end
+		// Wait for session to end OR for a download to trigger
 		session.Wait()
 		globalStdinManager.SetWriter(nil)
-
-		// Wait for stdout to be fully processed
 		<-stdoutDone
 
-		downloaded := false
-		if downloadFilename != "" {
-			if verbose {
-				log.Printf("Automatic download triggered: %s (port: %d, uuid: %s)", downloadFilename, downloadPort, downloadTransferID)
+		// Check if we exited because of a download
+		select {
+		case info := <-triggerDl:
+			err := downloadFile(client, info.port, info.tid, config, info.fname, info.sig, identPath, verbose, normalState, batch)
+			if err != nil && verbose {
+				log.Printf("Download tool exited with error: %v", err)
 			}
-			// Use the existing room connection to tunnel to the one-shot server
-			if err := downloadFile(client, downloadPort, downloadTransferID, config, downloadFilename, verbose); err != nil {
-				fmt.Fprintf(os.Stderr, "\r\nError during automatic download: %v\r\n", err)
-			} else {
-				downloaded = true
-			}
-		}
 
-		return downloaded, nil
+			if verbose {
+				log.Printf("Waiting for reconnection to room...")
+			}
+			time.Sleep(500 * time.Millisecond) // Give server time to clean up previous session
+			return true, nil                   // Reconnect to room
+		default:
+			return false, nil // Exit normally
+		}
 	}
 
 	if lastErr != nil {
@@ -610,74 +649,109 @@ func stripANSI(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
 }
 
-func downloadFile(client *ssh.Client, port int, transferID string, config *ssh.ClientConfig, filename string, verbose bool) error {
-	// 1. Determine destination path (~/Downloads)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
+func downloadFile(client *ssh.Client, remotePort int, transferID string, config *ssh.ClientConfig, filename string, expectedSig string, identPath string, verbose bool, normalState *term.State, batch bool) error {
+	// 1. Pause the global stdin manager to yield terminal to unn-dl
+	if !batch {
+		globalStdinManager.Pause()
+		defer globalStdinManager.Resume()
 	}
-	destDir := filepath.Join(home, "Downloads")
-	// Make sure it exists
-	os.MkdirAll(destDir, 0755)
 
-	destPath := getUniquePath(filepath.Join(destDir, filepath.Base(filename)))
+	// 2. Setup local tunnel listener on a random port
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("failed to start local tunnel: %w", err)
+	}
+	defer listener.Close()
+	localPort := listener.Addr().(*net.TCPAddr).Port
 
 	if verbose {
-		log.Printf("Downloading to: %s (requesting %s via tunnel)", destPath, transferID)
+		log.Printf("Starting local tunnel proxy on port %d -> remote %d", localPort, remotePort)
 	}
 
-	fmt.Fprintf(os.Stderr, "\033[1;32mDownloading %s to %s...\033[0m\r\n", filename, destPath)
+	// 3. Start background proxy
+	go func() {
+		for {
+			lconn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				// Dial the remote one-shot server via the SSH client
+				rconn, err := client.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(remotePort)))
+				if err != nil {
+					if verbose {
+						log.Printf("Tunnel dial failed: %v", err)
+					}
+					return
+				}
+				defer rconn.Close()
 
-	// 2. Connect to the one-shot server via tunnel
-	tunnelAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	if verbose {
-		log.Printf("Dialing one-shot SFTP via tunnel @ %s", tunnelAddr)
+				errc := make(chan error, 2)
+				go func() {
+					_, err := io.Copy(rconn, c)
+					errc <- err
+				}()
+				go func() {
+					_, err := io.Copy(c, rconn)
+					errc <- err
+				}()
+				<-errc
+			}(lconn)
+		}
+	}()
+
+	// 4. Restore normal terminal state before running TUI
+	fd := int(os.Stdin.Fd())
+	if normalState != nil && !batch {
+		term.Restore(fd, normalState)
 	}
 
-	// Dial the one-shot server THROUGH the existing room connection (direct-tcpip)
-	conn, err := client.Dial("tcp", tunnelAddr)
-	if err != nil {
-		return fmt.Errorf("failed to open tunnel for SFTP: %w", err)
+	args := []string{
+		"-port", strconv.Itoa(localPort),
+		"-id", transferID,
+		"-file", filename,
+		"-sig", expectedSig,
+		"-identity", identPath,
 	}
-	defer conn.Close()
-
-	// Wrap the tunneled connection in a new SSH client (with mutual auth)
-	ncc, chans, reqs, err := ssh.NewClientConn(conn, tunnelAddr, config)
-	if err != nil {
-		return fmt.Errorf("failed SSH handshake over tunnel: %w", err)
-	}
-	sftpSshClient := ssh.NewClient(ncc, chans, reqs)
-	defer sftpSshClient.Close()
-
-	// 3. Create SFTP client
-	sftpClient, err := sftp.NewClient(sftpSshClient)
-	if err != nil {
-		return fmt.Errorf("failed to create SFTP client: %w", err)
-	}
-	defer sftpClient.Close()
-
-	// 4. Open remote file by transferID
-	remoteFile, err := sftpClient.Open(transferID)
-	if err != nil {
-		return fmt.Errorf("failed to open remote file (uuid: %s): %w", transferID, err)
-	}
-	defer remoteFile.Close()
-
-	// 4. Create local file
-	localFile, err := os.Create(destPath)
-	if err != nil {
-		return fmt.Errorf("failed to create local file: %w", err)
-	}
-	defer localFile.Close()
-
-	// 5. Transfer data
-	_, err = io.Copy(localFile, remoteFile)
-	if err != nil {
-		return fmt.Errorf("failed during data transfer: %w", err)
+	if batch {
+		args = append(args, "-batch")
 	}
 
-	fmt.Fprintf(os.Stderr, "\033[1;32mTransfer complete!\033[0m\r\n")
-	return nil
+	cmd := exec.Command("./unn-dl-bin", args...)
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	downloadErr := cmd.Run()
+
+	// 5. Re-enter raw mode after TUI exit
+	if normalState != nil && !batch {
+		term.MakeRaw(fd)
+	}
+
+	return downloadErr
+}
+
+func parseDownloadBlock(data string) (int, string, string, string, error) {
+	rawLines := strings.Split(data, "\n")
+	var lines []string
+	for _, l := range rawLines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+	}
+
+	if len(lines) < 4 {
+		return 0, "", "", "", fmt.Errorf("too few lines in download block (%d)", len(lines))
+	}
+	fname := lines[0]
+	port, _ := strconv.Atoi(lines[1])
+	tid := lines[2]
+	sig := lines[3]
+	return port, tid, sig, fname, nil
 }
 
 func getUniquePath(path string) string {

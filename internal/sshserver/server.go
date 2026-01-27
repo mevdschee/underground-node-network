@@ -46,6 +46,7 @@ type Server struct {
 	mu              sync.RWMutex
 	listener        net.Listener
 	headless        bool
+	uploadLimit     int64 // bytes per second
 }
 
 func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doors.Manager) (*Server, error) {
@@ -93,6 +94,12 @@ func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doo
 
 func (s *Server) SetHeadless(headless bool) {
 	s.headless = headless
+}
+
+func (s *Server) SetUploadLimit(limit int64) {
+	s.mu.Lock()
+	s.uploadLimit = limit
+	s.mu.Unlock()
 }
 
 func (s *Server) AuthorizeKey(pubKey ssh.PublicKey) {
@@ -497,7 +504,7 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 
 	// Post-TUI exit download info (mirroring teleport flow)
 	if v.PendingDownload != "" {
-		s.showDownloadInfo(v)
+		s.showDownloadInfo(v, v.PendingDownload)
 	} else {
 		// Clear screen on manual exit - first reset colors to avoid black background spill
 		fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
@@ -517,6 +524,20 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 	parts := strings.SplitN(cmd, " ", 2)
 	command := parts[0]
 
+	if command == "get" {
+		if len(parts) < 2 {
+			fmt.Fprint(channel, "\rUsage: /get <filename>\r\n")
+			return nil
+		}
+		fname := strings.TrimSpace(parts[1])
+		s.mu.RLock()
+		v := s.visitors[username]
+		s.mu.RUnlock()
+		if v != nil {
+			go s.showDownloadInfo(v, fname)
+		}
+		return nil
+	}
 	// Try to execute as a door
 	if _, ok := s.doorManager.Get(command); ok {
 		fmt.Fprintf(channel, "\r[Entering door: %s]\r\n", command)
@@ -549,21 +570,19 @@ func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
 	if strings.HasPrefix(cmd, "/") {
 		log.Printf("Internal command from %s: %s", v.Username, cmd)
 		// Echo the command in the chat history
-		v.ChatUI.AddMessage(fmt.Sprintf("<%s> %s", v.Username, cmd))
-
 		parts := strings.SplitN(strings.TrimPrefix(cmd, "/"), " ", 2)
 		command := parts[0]
 
 		switch command {
 		case "help":
 			v.ChatUI.AddMessage("--- Available Commands ---")
-			v.ChatUI.AddMessage("/help     - Show this help")
-			v.ChatUI.AddMessage("/who      - List visitors in room")
-			v.ChatUI.AddMessage("/doors    - List available doors")
-			v.ChatUI.AddMessage("/files    - List available files")
-			v.ChatUI.AddMessage("/download - Download a file")
-			v.ChatUI.AddMessage("/<door>   - Enter a door")
-			v.ChatUI.AddMessage("Ctrl+C    - Exit room")
+			v.ChatUI.AddMessage("/help       - Show this help")
+			v.ChatUI.AddMessage("/who        - List visitors in room")
+			v.ChatUI.AddMessage("/doors      - List available doors")
+			v.ChatUI.AddMessage("/files      - List available files")
+			v.ChatUI.AddMessage("/get <file> - Download a file")
+			v.ChatUI.AddMessage("/<door>     - Enter a door")
+			v.ChatUI.AddMessage("Ctrl+C      - Exit room")
 			return true
 		case "who":
 			visitors := s.GetVisitors()
@@ -571,6 +590,15 @@ func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
 			for _, name := range visitors {
 				v.ChatUI.AddMessage("• " + name)
 			}
+			return true
+		case "get":
+			if len(parts) < 2 {
+				v.ChatUI.AddMessage("Usage: /get <filename>")
+				return true
+			}
+			fname := strings.TrimSpace(parts[1])
+			v.PendingDownload = filepath.Clean(fname)
+			v.ChatUI.Close(true)
 			return true
 		case "doors":
 			doorList := s.doorManager.List()
@@ -582,13 +610,7 @@ func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
 		case "files":
 			s.showFiles(v.ChatUI)
 			return true
-		case "download":
-			if len(parts) < 2 {
-				v.ChatUI.AddMessage("Usage: /download <filename>")
-				return true
-			}
-			s.showDownloadInstructions(v, parts[1])
-			return true
+		default:
 		}
 	}
 	return false // Not handled internally, exit Run() to check if it's a door
@@ -663,7 +685,11 @@ func (s *Server) showFiles(chatUI *ui.ChatUI) {
 	chatUI.AddMessage("-----------------------")
 }
 
-func (s *Server) showDownloadInstructions(v *Visitor, filename string) {
+func (s *Server) showDownloadInfo(v *Visitor, filename string) {
+	if filename == "" {
+		return
+	}
+
 	// Sanitize and prevent path traversal
 	cleanTarget := filepath.Clean(filename)
 	path := filepath.Join(s.filesDir, cleanTarget)
@@ -672,27 +698,16 @@ func (s *Server) showDownloadInstructions(v *Visitor, filename string) {
 	absBase, _ := filepath.Abs(s.filesDir)
 	absPath, _ := filepath.Abs(path)
 	if !strings.HasPrefix(absPath, absBase) {
-		v.ChatUI.AddMessage(fmt.Sprintf("\033[1;31mAccess denied: %s\033[0m", filename))
+		fmt.Fprintf(v.Bus, "\033[1;31mAccess denied: %s\033[0m\r\n", filename)
 		return
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		v.ChatUI.AddMessage(fmt.Sprintf("\033[1;31mFile not found: %s\033[0m", filename))
+		fmt.Fprintf(v.Bus, "\033[1;31mFile not found: %s\033[0m\r\n", filename)
 		return
 	}
 
-	// Capture for post-TUI display
-	v.PendingDownload = cleanTarget
-
-	// Break the TUI loop
-	v.ChatUI.Close(true)
-}
-
-func (s *Server) showDownloadInfo(v *Visitor) {
-	filename := v.PendingDownload
-	if filename == "" {
-		return
-	}
+	filename = cleanTarget
 
 	transferID := uuid.New().String()
 
@@ -702,12 +717,13 @@ func (s *Server) showDownloadInfo(v *Visitor) {
 	s.mu.RUnlock()
 
 	filePort, err := fileserver.StartOneShot(fileserver.Options{
-		HostKey:    s.hostKey,
-		ClientKey:  v.PubKey,
-		Filename:   filename,
-		BaseDir:    s.filesDir,
-		TransferID: transferID,
-		Timeout:    dt,
+		HostKey:     s.hostKey,
+		ClientKey:   v.PubKey,
+		Filename:    filename,
+		BaseDir:     s.filesDir,
+		TransferID:  transferID,
+		Timeout:     dt,
+		UploadLimit: s.uploadLimit,
 	})
 	if err != nil {
 		fmt.Fprintf(v.Bus, "\033[1;31mFailed to start download server: %v\033[0m\r\n", err)
@@ -718,8 +734,11 @@ func (s *Server) showDownloadInfo(v *Visitor) {
 	// First reset colors to avoid the black background from sticking around
 	fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
 
+	// Calculate file signature early to include it in the wrapper's download block
+	sig := s.calculateFileSHA256(absPath)
+
 	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
-	fmt.Fprintf(v.Bus, "[DOWNLOAD FILE]\r\n%s\r\n%d\r\n%s\r\n[/DOWNLOAD FILE]\r\n", filename, filePort, transferID)
+	fmt.Fprintf(v.Bus, "[DOWNLOAD FILE]\r\n%s\r\n%d\r\n%s\r\n%s\r\n[/DOWNLOAD FILE]\r\n", filename, filePort, transferID, sig)
 	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
 
 	fmt.Fprintf(v.Bus, "\033[1;32mUNN DOWNLOAD READY\033[0m\r\n\r\n")
@@ -742,10 +761,7 @@ func (s *Server) showDownloadInfo(v *Visitor) {
 	fmt.Fprintf(v.Bus, "\033[1mHost Verification Fingerprint (tunnel):\033[0m\r\n")
 	fmt.Fprintf(v.Bus, "\033[1;36m%s\033[0m\r\n\r\n", fingerprint)
 
-	// Calculate and show file signature (matching entrypoint style)
-	cleanTarget := filepath.Clean(filename)
-	absPath := filepath.Join(s.filesDir, cleanTarget)
-	sig := s.calculateFileSHA256(absPath)
+	// Display the file signature (matching entrypoint style)
 	fmt.Fprintf(v.Bus, "\033[1mFile Verification Signature:\033[0m\r\n")
 	fmt.Fprintf(v.Bus, "\033[1;36m%s  %s\033[0m\r\n\r\n", sig, filename)
 

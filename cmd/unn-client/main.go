@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"time"
@@ -33,6 +35,7 @@ func main() {
 	filesDir := flag.String("files", "./files", "Directory to serve files from")
 	downloadTimeout := flag.Int("timeout", 60, "Timeout for one-shot SFTP download in seconds")
 	headless := flag.Bool("headless", false, "Disable TUI (headless mode)")
+	maxUpload := flag.String("max-upload", "", "Maximum upload speed (e.g. 1MB, 500KB)")
 	flag.Parse()
 
 	// Set default host key path to ephemeral file
@@ -77,6 +80,9 @@ func main() {
 	}
 	server.SetHeadless(*headless)
 	server.SetDownloadTimeout(time.Duration(*downloadTimeout) * time.Second)
+	if *maxUpload != "" {
+		server.SetUploadLimit(parseSpeed(*maxUpload))
+	}
 
 	// Get actual port (important when port 0 is used for random port)
 	actualPort := server.GetPort()
@@ -243,4 +249,31 @@ func loadOrGenerateKey(path string) (ssh.Signer, error) {
 	}
 
 	return ssh.ParsePrivateKey(keyBytes)
+}
+
+func parseSpeed(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	s = strings.ToUpper(s)
+	unit := int64(1)
+	if strings.HasSuffix(s, "KB") {
+		unit = 1024
+		s = s[:len(s)-2]
+	} else if strings.HasSuffix(s, "MB") {
+		unit = 1024 * 1024
+		s = s[:len(s)-2]
+	} else if strings.HasSuffix(s, "GB") {
+		unit = 1024 * 1024 * 1024
+		s = s[:len(s)-2]
+	} else if strings.HasSuffix(s, "K") {
+		unit = 1024
+		s = s[:len(s)-1]
+	} else if strings.HasSuffix(s, "M") {
+		unit = 1024 * 1024
+		s = s[:len(s)-1]
+	}
+
+	val, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	return val * unit
 }

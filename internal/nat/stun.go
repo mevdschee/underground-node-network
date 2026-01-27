@@ -205,7 +205,7 @@ func GetLocalCandidates(port int) []Candidate {
 	}
 
 	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+		if ipnet, ok := addr.(*net.IPNet); ok {
 			if ipnet.IP.To4() != nil {
 				candidates = append(candidates, Candidate{
 					Type:     "host",

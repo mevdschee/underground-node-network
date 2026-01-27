@@ -9,5 +9,10 @@ if [ ! -f unn-ssh-bin ] || [ cmd/unn-ssh/main.go -nt unn-ssh-bin ]; then
     go build -o unn-ssh-bin ./cmd/unn-ssh
 fi
 
+if [ ! -f unn-dl-bin ] || [ cmd/unn-dl/main.go -nt unn-dl-bin ]; then
+    echo "Building unn-dl..."
+    go build -o unn-dl-bin ./cmd/unn-dl
+fi
+
 # Run the wrapper
 ./unn-ssh-bin "$@"

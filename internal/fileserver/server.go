@@ -13,12 +13,13 @@ import (
 
 // Options configures the one-shot file server
 type Options struct {
-	HostKey    ssh.Signer
-	ClientKey  ssh.PublicKey
-	Filename   string
-	BaseDir    string
-	TransferID string
-	Timeout    time.Duration
+	HostKey     ssh.Signer
+	ClientKey   ssh.PublicKey
+	Filename    string
+	BaseDir     string
+	TransferID  string
+	Timeout     time.Duration
+	UploadLimit int64 // bytes per second
 }
 
 // StartOneShot starts a single-connection SSH server that serves one file via SFTP
@@ -88,7 +89,9 @@ func StartOneShot(opts Options) (int, error) {
 					for req := range in {
 						if req.Type == "subsystem" && string(req.Payload[4:]) == "sftp" {
 							req.Reply(true, nil)
-							handleSFTP(ch, opts)
+							// Apply rate limiting if configured
+							rw := NewRateLimitedReadWriteCloser(ch, opts.UploadLimit)
+							handleSFTP(rw, opts)
 							// Signal clean exit to client
 							ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 							ch.Close()
@@ -114,7 +117,7 @@ func StartOneShot(opts Options) (int, error) {
 	return port, nil
 }
 
-func handleSFTP(channel ssh.Channel, opts Options) {
+func handleSFTP(rwc io.ReadWriteCloser, opts Options) {
 	handler := &Handler{
 		BaseDir:    opts.BaseDir,
 		Filename:   opts.Filename,
@@ -127,7 +130,7 @@ func handleSFTP(channel ssh.Channel, opts Options) {
 		FileList: handler,
 	}
 
-	server := sftp.NewRequestServer(channel, handlers)
+	server := sftp.NewRequestServer(rwc, handlers)
 	if err := server.Serve(); err != nil {
 		if err != io.EOF {
 			log.Printf("One-shot SFTP server error: %v", err)

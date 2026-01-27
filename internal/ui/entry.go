@@ -162,6 +162,12 @@ func (ui *EntryUI) Run() bool {
 					if onCmd != nil {
 						onCmd(cmd)
 					}
+					// Check if we should exit after processing a command (e.g. joined room)
+					select {
+					case <-ui.closeChan:
+						return
+					default:
+					}
 				}
 				ui.Close(false)
 			}()

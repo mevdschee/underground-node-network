@@ -29,7 +29,7 @@ If you don't specify a room, you'll enter the entry point's interactive shell:
 ```
 From here you can:
 - List active rooms with `/rooms`
-- Search and download files with `/files` and `/download`
+- Search and download files with `/files` and `/get`
 ### Manual Exploration
 If you're not using the wrapper, you can connect directly using any SSH client. The entry point and room nodes provide **precalculated host fingerprints** (standard SHA256 base64 format) and **file verification signatures** (hex-encoded SHA256) for easy manual verification.
 
@@ -51,6 +51,7 @@ To become a part of the network and host your own "room":
 ## Documentation
 
 - [SSH Wrapper](docs/SSH_WRAPPER.md) - Details on the `unn-ssh` tool.
+- [Download Tool](docs/DOWNLOAD_TOOL.md) - Features and architecture of `unn-dl`.
 - [Client Architecture](docs/CLIENT.md) - How room nodes work.
 - [Server Architecture](docs/SERVER.md) - How entry points function.
 - [Implementation Details](docs/IMPLEMENTATION.md) - Protocols and flow.
