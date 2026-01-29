@@ -107,19 +107,19 @@ func TestEntryUINavigation(t *testing.T) {
 	ui.cursorIdx = 5
 
 	// Test Left Arrow
-	ui.handleKeyResult(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone))
+	ui.HandleKeyResult(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone))
 	if ui.cursorIdx != 4 {
 		t.Errorf("Expected cursorIdx 4, got %d", ui.cursorIdx)
 	}
 
 	// Test Home
-	ui.handleKeyResult(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
+	ui.HandleKeyResult(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
 	if ui.cursorIdx != 0 {
 		t.Errorf("Expected cursorIdx 0, got %d", ui.cursorIdx)
 	}
 
 	// Test End
-	ui.handleKeyResult(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone))
+	ui.HandleKeyResult(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone))
 	if ui.cursorIdx != 5 {
 		t.Errorf("Expected cursorIdx 5, got %d", ui.cursorIdx)
 	}
@@ -127,7 +127,7 @@ func TestEntryUINavigation(t *testing.T) {
 	// Test History
 	ui.history = []string{"join main", "list"}
 	ui.hIndex = 2
-	ui.handleKeyResult(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+	ui.HandleKeyResult(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
 	if ui.input != "list" || ui.hIndex != 1 {
 		t.Errorf("Expected 'list', hIndex 1. Got '%s', %d", ui.input, ui.hIndex)
 	}
@@ -136,11 +136,11 @@ func TestEntryUINavigation(t *testing.T) {
 	ui.input = "entry draft"
 	ui.history = []string{"join room1", "list"}
 	ui.hIndex = 2
-	ui.handleKeyResult(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone)) // "list"
+	ui.HandleKeyResult(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone)) // "list"
 	if ui.input != "list" || ui.draft != "entry draft" {
 		t.Errorf("Expected 'list' and draft 'entry draft'. Got '%s', %s", ui.input, ui.draft)
 	}
-	ui.handleKeyResult(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone)) // "entry draft"
+	ui.HandleKeyResult(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone)) // "entry draft"
 	if ui.input != "entry draft" {
 		t.Errorf("Expected draft 'entry draft' restored, got '%s'", ui.input)
 	}
@@ -154,7 +154,7 @@ func TestEntryUINavigation(t *testing.T) {
 
 	// Type 9 chars
 	for _, r := range "123456789" {
-		ui.handleKeyResult(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+		ui.HandleKeyResult(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
 	}
 	// Same expectation as ChatUI: offset should be 3
 	if ui.inputOffset != 3 {

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func TestIntegration_BasicRegistration(t *testing.T) {
@@ -19,7 +21,6 @@ func TestIntegration_BasicRegistration(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	epBin, clientBin := buildBinaries(t)
-	// Build binaries is recursive, so clean it up if needed, but normally it's in a temp dir.
 
 	clientName := "testroom1"
 	clientPort := 22223
@@ -36,8 +37,14 @@ func TestIntegration_BasicRegistration(t *testing.T) {
 	roomKey, _ := os.ReadFile("../../tests/integration/test_room_key.pub")
 	userKey, _ := os.ReadFile("../../tests/integration/test_user_key.pub")
 
-	os.WriteFile(filepath.Join(usersDir, clientName), roomKey, 0600)
-	os.WriteFile(filepath.Join(usersDir, "maurits"), userKey, 0600)
+	roomPubKeyRaw, _, _, _, _ := ssh.ParseAuthorizedKey(roomKey)
+	userPubKeyRaw, _, _, _, _ := ssh.ParseAuthorizedKey(userKey)
+
+	roomHash := sha256.Sum256(roomPubKeyRaw.Marshal())
+	userHash := sha256.Sum256(userPubKeyRaw.Marshal())
+
+	os.WriteFile(filepath.Join(usersDir, fmt.Sprintf("%x.identity", roomHash)), []byte("github:testroom1"), 0600)
+	os.WriteFile(filepath.Join(usersDir, fmt.Sprintf("%x.identity", userHash)), []byte("github:maurits"), 0600)
 
 	epPort := 44323
 	epHostKey := filepath.Join(tempDir, "ep_host_key")
@@ -114,10 +121,18 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	// Pre-register room name (as user) and test user
 	usersDir := filepath.Join(tempDir, "users")
 	os.MkdirAll(usersDir, 0700)
+
 	roomKey, _ := os.ReadFile("../../tests/integration/test_room_key.pub")
 	userKey, _ := os.ReadFile("../../tests/integration/test_user_key.pub")
-	os.WriteFile(filepath.Join(usersDir, clientName), roomKey, 0600)
-	os.WriteFile(filepath.Join(usersDir, "maurits"), userKey, 0600)
+
+	roomPubKeyRaw, _, _, _, _ := ssh.ParseAuthorizedKey(roomKey)
+	userPubKeyRaw, _, _, _, _ := ssh.ParseAuthorizedKey(userKey)
+
+	roomHash := sha256.Sum256(roomPubKeyRaw.Marshal())
+	userHash := sha256.Sum256(userPubKeyRaw.Marshal())
+
+	os.WriteFile(filepath.Join(usersDir, fmt.Sprintf("%x.identity", roomHash)), []byte("github:downloadroom"), 0600)
+	os.WriteFile(filepath.Join(usersDir, fmt.Sprintf("%x.identity", userHash)), []byte("github:maurits"), 0600)
 
 	epPort := 44324
 	epHostKey := filepath.Join(tempDir, "ep_host_key")
@@ -134,22 +149,11 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	defer sshClient.Close()
 	defer session.Close()
 
-	// Trigger download
-	fmt.Printf("Triggering download of %s...\n", fileName)
-	runSSHCommand(t, session, clientName)
-	// We need another session to send the /download command because the first one might be in TUI mode
-	// Wait, runSSHCommand sends a command and closes. But for TUI interaction it might be tricky.
-
-	sshClient2, session2 := getSSHClient(t, "localhost:44324", "maurits", "../../tests/integration/test_user_key")
-	defer sshClient2.Close()
-	defer session2.Close()
-
 	// Join room
-	runSSHCommand(t, session2, clientName)
+	runSSHCommand(t, session, clientName)
 	time.Sleep(1 * time.Second)
 
-	// In a real TUI we'd send /download, but these tests use a simplified interaction.
-	// Let's see if we can just connect to the room node directly and trigger it.
+	// Connect to the room node directly and trigger download
 	sshClientRoom, sessionRoom := getSSHClient(t, fmt.Sprintf("localhost:%d", clientPort), "maurits", "../../tests/integration/test_user_key")
 	defer sshClientRoom.Close()
 	defer sessionRoom.Close()

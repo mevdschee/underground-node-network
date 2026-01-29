@@ -95,19 +95,4 @@ func TestEntrypointCommands(t *testing.T) {
 			t.Errorf("Joining non-existent room didn't show error")
 		}
 	})
-
-	t.Run("register usage", func(t *testing.T) {
-		s.handlePersonCommand(p, nil, "/register")
-		logs := p.UI.GetLogs()
-		found := false
-		for _, l := range logs {
-			if strings.Contains(l.Text, "Usage: /register <public_key>") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Register without args didn't show usage")
-		}
-	})
 }

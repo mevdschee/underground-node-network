@@ -17,39 +17,44 @@ type RoomInfo struct {
 }
 
 type EntryUI struct {
-	screen       tcell.Screen
-	rooms        []RoomInfo
-	logs         []Message
-	input        string
-	username     string
-	addr         string
-	history      []string
-	hIndex       int
-	cursorIdx    int
-	scrollOffset int
-	inputOffset  int
-	draft        string
-	physicalLogs []Message
-	lastWidth    int
-	lastLogCount int
-	mu           sync.Mutex
-	onCmd        func(string)
-	onExit       func()
-	onClose      func()
-	closeChan    chan struct{}
-	success      bool
-	Headless     bool
-	Input        io.ReadWriter
+	screen         tcell.Screen
+	rooms          []RoomInfo
+	logs           []Message
+	prompt         string
+	promptChan     chan string
+	LogsOnly       bool // If true, only draw logs full-screen (for verification flow)
+	CenteredPrompt bool // If true, draw the prompt in a centered box
+	input          string
+	username       string
+	addr           string
+	history        []string
+	hIndex         int
+	cursorIdx      int
+	scrollOffset   int
+	inputOffset    int
+	draft          string
+	physicalLogs   []Message
+	lastWidth      int
+	lastLogCount   int
+	mu             sync.Mutex
+	onCmd          func(string)
+	onExit         func()
+	onClose        func()
+	closeChan      chan struct{}
+	success        bool
+	Headless       bool
+	Input          io.ReadWriter
 }
 
 func NewEntryUI(screen tcell.Screen, username, addr string) *EntryUI {
 	return &EntryUI{
-		screen:    screen,
-		username:  username,
-		addr:      addr,
-		rooms:     make([]RoomInfo, 0),
-		logs:      make([]Message, 0),
-		closeChan: make(chan struct{}, 1),
+		screen:     screen,
+		username:   username,
+		addr:       addr,
+		rooms:      make([]RoomInfo, 0),
+		logs:       make([]Message, 0),
+		closeChan:  make(chan struct{}, 1),
+		promptChan: make(chan string),
 	}
 }
 
@@ -127,6 +132,29 @@ func (ui *EntryUI) ShowMessage(msg string, msgType MessageType) {
 	if ui.screen != nil {
 		ui.screen.PostEvent(&tcell.EventInterrupt{})
 	}
+}
+
+func (ui *EntryUI) Prompt(q string) string {
+	ui.mu.Lock()
+	ui.prompt = q
+	ui.LogsOnly = true
+	ui.CenteredPrompt = true
+	ui.mu.Unlock()
+
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
+
+	if ui.Headless && ui.Input != nil {
+		fmt.Fprintf(ui.Input, "%s ", q)
+	}
+
+	res := <-ui.promptChan
+	ui.mu.Lock()
+	ui.prompt = ""
+	ui.CenteredPrompt = false
+	ui.mu.Unlock()
+	return res
 }
 
 func (ui *EntryUI) GetLogs() []Message {
@@ -218,7 +246,7 @@ func (ui *EntryUI) Run() bool {
 
 			switch ev := ev.(type) {
 			case *tcell.EventKey:
-				done, success := ui.handleKeyResult(ev)
+				done, success := ui.HandleKeyResult(ev)
 				if done {
 					exitChan <- success
 					return
@@ -285,8 +313,119 @@ func (ui *EntryUI) Draw() {
 	userLen := len([]rune(userStr))
 	ui.drawText(w-userLen-2, 0, userStr, userLen, blackStyle)
 
-	// Pane separator (horizontal, below header)
 	sepY := 1
+
+	if ui.CenteredPrompt && ui.prompt != "" {
+		// Draw centered registration box
+		boxW := 50
+		boxH := 8
+		if w < boxW+4 {
+			boxW = w - 4
+		}
+		startX := (w - boxW) / 2
+		startY := (h - boxH) / 2
+
+		// Shadow
+		ui.fillRegion(startX+2, startY+1, boxW, boxH, ' ', blackStyle.Background(tcell.ColorBlack).Foreground(tcell.ColorBlack))
+
+		// Box background
+		boxStyle := blackStyle.Background(tcell.ColorDarkBlue).Foreground(tcell.ColorWhite)
+		ui.fillRegion(startX, startY, boxW, boxH, ' ', boxStyle)
+
+		// Border
+		borderStyle := boxStyle.Foreground(tcell.ColorLightCyan)
+		// Corners
+		s.SetContent(startX, startY, '╔', nil, borderStyle)
+		s.SetContent(startX+boxW-1, startY, '╗', nil, borderStyle)
+		s.SetContent(startX, startY+boxH-1, '╚', nil, borderStyle)
+		s.SetContent(startX+boxW-1, startY+boxH-1, '╝', nil, borderStyle)
+		// Horizontallines
+		for x := startX + 1; x < startX+boxW-1; x++ {
+			s.SetContent(x, startY, '═', nil, borderStyle)
+			s.SetContent(x, startY+boxH-1, '═', nil, borderStyle)
+		}
+		// Vertical lines
+		for y := startY + 1; y < startY+boxH-1; y++ {
+			s.SetContent(startX, y, '║', nil, borderStyle)
+			s.SetContent(startX+boxW-1, y, '║', nil, borderStyle)
+		}
+
+		// Title
+		title := " IDENTITY VERIFICATION "
+		ui.drawText(startX+(boxW-len(title))/2, startY, title, len(title), borderStyle.Bold(true))
+
+		// Prompt text
+		wrappedPrompt := wrapText(ui.prompt, boxW-4)
+		for i, line := range wrappedPrompt {
+			if i >= 3 {
+				break
+			}
+			ui.drawText(startX+2, startY+2+i, line, boxW-4, boxStyle)
+		}
+
+		// Input field
+		inputY := startY + boxH - 3
+		ui.drawText(startX+2, inputY, "> ", 2, boxStyle.Foreground(tcell.ColorYellow))
+
+		runes := []rune(ui.input)
+		availWidth := boxW - 6
+		inputOffset := ui.cursorIdx - availWidth/2
+		if inputOffset < 0 {
+			inputOffset = 0
+		}
+		maxOff := len(runes) - availWidth
+		if inputOffset > maxOff {
+			inputOffset = maxOff
+		}
+		if inputOffset < 0 {
+			inputOffset = 0
+		}
+
+		visibleInput := ""
+		if inputOffset < len(runes) {
+			endIdx := inputOffset + availWidth
+			if endIdx > len(runes) {
+				endIdx = len(runes)
+			}
+			visibleInput = string(runes[inputOffset:endIdx])
+		}
+		ui.drawText(startX+4, inputY, visibleInput, availWidth, boxStyle.Underline(true))
+		s.ShowCursor(startX+4+ui.cursorIdx-inputOffset, inputY)
+
+		s.Show()
+		return
+	}
+
+	if ui.LogsOnly {
+		// Just draw logs full screen
+		logH := h - 2 - sepY - 1
+		if logH > 0 {
+			ui.updatePhysicalLogs(w)
+			logEnd := len(ui.physicalLogs) - ui.scrollOffset
+			if logEnd < 0 {
+				logEnd = 0
+			}
+			logStart := logEnd - logH
+			if logStart < 0 {
+				logStart = 0
+			}
+			for i, logMsg := range ui.physicalLogs[logStart:logEnd] {
+				ui.drawText(1, sepY+1+i, logMsg.Text, w-2, logStyle)
+			}
+		}
+
+		// Draw prompt if any
+		if ui.prompt != "" {
+			promptStr := fmt.Sprintf("%s %s", ui.prompt, ui.input)
+			ui.drawText(1, h-1, promptStr, w-2, promptStyle)
+			s.ShowCursor(1+len([]rune(ui.prompt))+1+ui.cursorIdx-ui.inputOffset, h-1)
+		}
+
+		s.Show()
+		return
+	}
+
+	// Pane separator (horizontal, below header)
 	for x := 0; x < w; x++ {
 		s.SetContent(x, sepY, '━', nil, sepStyle)
 	}
@@ -402,7 +541,7 @@ func (ui *EntryUI) Draw() {
 	s.Show()
 }
 
-func (ui *EntryUI) handleKeyResult(ev *tcell.EventKey) (done bool, success bool) {
+func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 
@@ -427,7 +566,9 @@ func (ui *EntryUI) handleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 			}
 			ui.hIndex = len(ui.history)
 
-			if ui.onCmd != nil {
+			if ui.prompt != "" {
+				ui.promptChan <- cmd
+			} else if ui.onCmd != nil {
 				go ui.onCmd(cmd)
 			}
 		}

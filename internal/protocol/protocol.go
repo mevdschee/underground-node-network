@@ -62,9 +62,10 @@ type PunchRequestPayload struct {
 
 // PunchOfferPayload is forwarded from entry point to room operator
 type PunchOfferPayload struct {
-	PersonID   string   `json:"person_id"`
-	Candidates []string `json:"candidates"`
-	PersonKey  string   `json:"person_key"` // Person's public key for P2P auth
+	PersonID    string   `json:"person_id"`
+	Candidates  []string `json:"candidates"`
+	PersonKey   string   `json:"person_key"` // Person's public key for P2P auth
+	DisplayName string   `json:"display_name"`
 }
 
 // PunchAnswerPayload is sent by room operator back to entry point

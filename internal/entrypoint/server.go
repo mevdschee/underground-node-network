@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,48 +60,15 @@ type Server struct {
 	mu            sync.RWMutex
 	listener      net.Listener
 	headless      bool
+	httpClient    *http.Client
+	identities    map[string]string // keyHash -> "username@platform"
+	usernames     map[string]string // unnUsername -> keyHash
 }
 
 // NewServer creates a new entry point server
 func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 	config := &ssh.ServerConfig{
 		NoClientAuth: false,
-	}
-
-	config.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
-		username := c.User()
-		// Sanitize
-		if !isValidUsername(username) {
-			return nil, fmt.Errorf("invalid username: only alphanumeric characters allowed")
-		}
-
-		keyPath := filepath.Join(usersDir, username)
-
-		// Check if user exists
-		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-			// Manual registration required
-			return &ssh.Permissions{
-				Extensions: map[string]string{"registered": "false"},
-			}, nil
-		}
-
-		// Verify key
-		valid, err := verifyUserKey(keyPath, pubKey)
-		if err != nil {
-			log.Printf("Failed to verify user %s: %v", username, err)
-			return nil, fmt.Errorf("internal verification error")
-		}
-		if !valid {
-			return nil, fmt.Errorf("public key mismatch for user %s", username)
-		}
-
-		pubKeyStr := string(ssh.MarshalAuthorizedKey(pubKey))
-		return &ssh.Permissions{
-			Extensions: map[string]string{
-				"registered": "true",
-				"pubkey":     pubKeyStr,
-			},
-		}, nil
 	}
 
 	// Load or generate host key
@@ -117,6 +85,45 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		rooms:         make(map[string]*Room),
 		people:        make(map[string]*Person),
 		punchSessions: make(map[string]*PunchSession),
+		httpClient:    http.DefaultClient,
+		identities:    make(map[string]string),
+		usernames:     make(map[string]string),
+	}
+
+	// Load identities and usernames from single files
+	s.loadIdentities()
+	s.loadUsernames()
+
+	config.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+		pubKeyHash := s.calculatePubKeyHash(pubKey)
+		requestedUser := c.User()
+
+		s.mu.RLock()
+		identity, verified := s.identities[pubKeyHash]
+		ownerHash, taken := s.usernames[requestedUser]
+		s.mu.RUnlock()
+
+		perms := &ssh.Permissions{
+			Extensions: map[string]string{
+				"pubkey": string(ssh.MarshalAuthorizedKey(pubKey)),
+			},
+		}
+
+		if verified {
+			parts := strings.Split(identity, "@")
+			perms.Extensions["verified"] = "true"
+			perms.Extensions["username"] = parts[0]
+			perms.Extensions["platform"] = parts[1]
+		} else {
+			perms.Extensions["verified"] = "false"
+		}
+
+		// Check if requested username is taken by someone else
+		if taken && ownerHash != pubKeyHash {
+			perms.Extensions["taken"] = "true"
+		}
+
+		return perms, nil
 	}
 
 	// Load banner if it exists
@@ -342,9 +349,9 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 			}
 
 			// Enforce registration
-			if conn.Permissions == nil || conn.Permissions.Extensions["registered"] != "true" {
-				log.Printf("Rejected room registration for unregistered user: %s", username)
-				s.sendError(encoder, "User not registered. Please connect manually and /register first.")
+			if conn.Permissions == nil || conn.Permissions.Extensions["verified"] != "true" {
+				log.Printf("Rejected room registration for unverified user: %s", username)
+				s.sendError(encoder, "User not verified. Please connect manually and verify your identity first.")
 				continue
 			}
 
@@ -435,6 +442,15 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 		entryUI.SetBanner(s.banner)
 	}
 
+	// Check if verified in background so Run() can start and handle events
+	go func() {
+		if conn.Permissions == nil || conn.Permissions.Extensions["verified"] != "true" {
+			if !s.handleOnboarding(p, conn) {
+				entryUI.Close(false)
+			}
+		}
+	}()
+
 	entryUI.OnCmd(func(cmd string) {
 		s.handlePersonCommand(p, conn, cmd)
 	})
@@ -469,6 +485,110 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 	}
 
 	conn.Close() // Ensure immediate disconnect
+}
+
+func (s *Server) handleOnboarding(p *Person, conn *ssh.ServerConn) bool {
+	eui := p.UI
+	eui.ShowMessage("--- Identity Verification Required ---", ui.MsgServer)
+	eui.ShowMessage("Welcome to the Underground Node Network!", ui.MsgServer)
+	eui.ShowMessage("To participate, you must verify your identity using one of the supported platforms.", ui.MsgServer)
+	eui.ShowMessage("", ui.MsgServer)
+
+	platforms := []string{"github", "gitlab", "sourcehut", "codeberg"}
+
+	for {
+		platform := strings.ToLower(eui.Prompt("Enter platform (github/gitlab/sourcehut/codeberg):"))
+		valid := false
+		for _, p := range platforms {
+			if platform == p {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			eui.ShowMessage("Invalid platform.", ui.MsgServer)
+			continue
+		}
+
+		username := eui.Prompt(fmt.Sprintf("Enter your %s username:", platform))
+		if username == "" {
+			continue
+		}
+
+		eui.ShowMessage(fmt.Sprintf("Checking %s for public keys of user '%s'...", platform, username), ui.MsgServer)
+
+		pubKeyStr := conn.Permissions.Extensions["pubkey"]
+		offeredKey, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(pubKeyStr))
+
+		matched, err := s.VerifyIdentity(platform, username, offeredKey)
+		if err != nil {
+			eui.ShowMessage(fmt.Sprintf("Error during verification: %v", err), ui.MsgServer)
+			continue
+		}
+
+		if matched {
+			eui.ShowMessage("Identity verified successfully!", ui.MsgServer)
+			s.saveIdentity(offeredKey, platform, username)
+			// Update current session permissions
+			conn.Permissions.Extensions["verified"] = "true"
+			conn.Permissions.Extensions["platform"] = platform
+			conn.Permissions.Extensions["username"] = username
+			eui.Lock()
+			eui.LogsOnly = false
+			eui.Unlock()
+			return true
+		} else {
+			eui.ShowMessage("Your public key was NOT found on that platform for that user.", ui.MsgServer)
+		}
+	}
+}
+
+func (s *Server) VerifyIdentity(platform, username string, offeredKey ssh.PublicKey) (bool, error) {
+	url := ""
+	switch platform {
+	case "github":
+		url = fmt.Sprintf("https://github.com/%s.keys", username)
+	case "gitlab":
+		url = fmt.Sprintf("https://gitlab.com/%s.keys", username)
+	case "sourcehut":
+		url = fmt.Sprintf("https://meta.sr.ht/~%s.keys", username)
+	case "codeberg":
+		url = fmt.Sprintf("https://codeberg.org/%s.keys", username)
+	default:
+		return false, fmt.Errorf("unsupported platform: %s", platform)
+	}
+
+	resp, err := s.httpClient.Get(url)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("platform returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, err
+	}
+
+	lines := strings.Split(string(body), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+		if err != nil {
+			continue
+		}
+		if bytes.Equal(pubKey.Marshal(), offeredKey.Marshal()) {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func (s *Server) updateAllPeople() {
@@ -512,7 +632,6 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 		case "help":
 			p.UI.ShowMessage("/help               - Show this help message", ui.MsgServer)
 			p.UI.ShowMessage("/rooms              - List all active rooms", ui.MsgServer)
-			p.UI.ShowMessage("/register <pubkey>  - Register your SSH public key", ui.MsgServer)
 			p.UI.ShowMessage("<room_name>         - Join a room by name", ui.MsgServer)
 			p.UI.ShowMessage("Ctrl+C              - Exit", ui.MsgServer)
 		case "rooms":
@@ -533,23 +652,6 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 				}
 			}
 			s.mu.RUnlock()
-		case "register":
-			if len(parts) < 2 {
-				p.UI.ShowMessage("Usage: /register <public_key>", ui.MsgServer)
-				return
-			}
-			keyStr := strings.Join(parts[1:], " ")
-			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyStr))
-			if err != nil {
-				p.UI.ShowMessage(fmt.Sprintf("Invalid key: %v", err), ui.MsgServer)
-				return
-			}
-			keyPath := filepath.Join(s.usersDir, p.Username)
-			if err := registerUserKey(keyPath, pubKey); err != nil {
-				p.UI.ShowMessage(fmt.Sprintf("Failed: %v", err), ui.MsgServer)
-			} else {
-				p.UI.ShowMessage("Successfully registered.", ui.MsgServer)
-			}
 		default:
 			p.UI.ShowMessage(fmt.Sprintf("Unknown command: %s", command), ui.MsgServer)
 		}
@@ -590,10 +692,17 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 		personKey = conn.Permissions.Extensions["pubkey"]
 	}
 
+	// For P2P auth, room operator needs the user's "global" identity if verified
+	displayName := p.Username
+	if conn.Permissions != nil && conn.Permissions.Extensions["verified"] == "true" {
+		displayName = fmt.Sprintf("%s (%s)", conn.Permissions.Extensions["username"], conn.Permissions.Extensions["platform"])
+	}
+
 	offerPayload := protocol.PunchOfferPayload{
-		PersonID:   personID,
-		Candidates: []string{},
-		PersonKey:  personKey,
+		PersonID:    personID,
+		Candidates:  []string{},
+		PersonKey:   personKey,
+		DisplayName: displayName,
 	}
 	offerMsg, _ := protocol.NewMessage(protocol.MsgTypePunchOffer, offerPayload)
 
@@ -663,45 +772,20 @@ func loadOrGenerateHostKey(path string) (ssh.Signer, error) {
 	return ssh.ParsePrivateKey(keyBytes)
 }
 
-func isValidUsername(name string) bool {
-	if len(name) == 0 || len(name) > 32 {
-		return false
-	}
-	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
-			return false
-		}
-	}
-	return true
+func (s *Server) calculatePubKeyHash(key ssh.PublicKey) string {
+	hash := sha256.Sum256(key.Marshal())
+	return fmt.Sprintf("%x", hash)
 }
 
-func registerUserKey(path string, key ssh.PublicKey) error {
-	// Create directory if not exists
-	dir := filepath.Dir(path)
+func (s *Server) saveIdentity(pubKey ssh.PublicKey, platform, username string) error {
+	dir := s.usersDir
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("failed to create users directory: %w", err)
+		return err
 	}
-
-	// Marshal key to authorized_keys format
-	keyBytes := ssh.MarshalAuthorizedKey(key)
-	if err := os.WriteFile(path, keyBytes, 0600); err != nil {
-		return fmt.Errorf("failed to write user key: %w", err)
-	}
-	return nil
-}
-
-func verifyUserKey(path string, offeredKey ssh.PublicKey) (bool, error) {
-	keyBytes, err := os.ReadFile(path)
-	if err != nil {
-		return false, fmt.Errorf("failed to read user key: %w", err)
-	}
-
-	storedKey, _, _, _, err := ssh.ParseAuthorizedKey(keyBytes)
-	if err != nil {
-		return false, fmt.Errorf("failed to parse stored key: %w", err)
-	}
-
-	return bytes.Equal(storedKey.Marshal(), offeredKey.Marshal()), nil
+	hash := s.calculatePubKeyHash(pubKey)
+	path := filepath.Join(dir, hash+".identity")
+	data := fmt.Sprintf("%s:%s", platform, username)
+	return os.WriteFile(path, []byte(data), 0600)
 }
 
 func (s *Server) showTeleportInfo(p *Person) {
