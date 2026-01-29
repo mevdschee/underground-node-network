@@ -739,6 +739,17 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			addMessage("/clear        - Clear your chat history", ui.MsgServer)
 			addMessage("/open <door>  - Open a door (launch program)", ui.MsgServer)
 			addMessage("Ctrl+C        - Exit room", ui.MsgServer)
+
+			if s.isOperator(p.PubKey) {
+				addMessage("--- Operator Commands ---", ui.MsgServer)
+				addMessage("/kick <user/hash> [reason] - Kick a person", ui.MsgServer)
+				addMessage("/kickban <user/hash> [reason] - Ban a person", ui.MsgServer)
+				addMessage("/unban <hash>              - Unban a person", ui.MsgServer)
+				addMessage("/banlist                   - List banned people", ui.MsgServer)
+				addMessage("/lock <key>                - Lock the room", ui.MsgServer)
+				addMessage("/unlock                    - Unlock the room", ui.MsgServer)
+				addMessage("/kickall [reason]          - Kick everyone", ui.MsgServer)
+			}
 			return true
 		case "who":
 			addMessage(cmd, ui.MsgCommand)

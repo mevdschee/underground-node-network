@@ -38,19 +38,44 @@ func TestRoomCommands(t *testing.T) {
 	}
 	p.ChatUI.SetUsername("alice")
 
-	t.Run("help", func(t *testing.T) {
+	t.Run("help regular", func(t *testing.T) {
 		s.handleInternalCommand(p, "/help")
 		msgs := p.ChatUI.GetMessages()
-		found := false
+		foundOperator := false
 		for _, m := range msgs {
-			if strings.Contains(m.Text, "--- Available Commands ---") {
-				found = true
+			if strings.Contains(m.Text, "--- Operator Commands ---") {
+				foundOperator = true
 				break
 			}
 		}
-		if !found {
-			t.Errorf("Help command didn't show available commands")
+		if foundOperator {
+			t.Errorf("Regular user saw operator commands in help")
 		}
+	})
+
+	t.Run("help operator", func(t *testing.T) {
+		// make alice operator
+		s.mu.Lock()
+		s.operatorPubKey = p.PubKey
+		s.mu.Unlock()
+
+		s.handleInternalCommand(p, "/help")
+		msgs := p.ChatUI.GetMessages()
+		foundOperator := false
+		for _, m := range msgs {
+			if strings.Contains(m.Text, "--- Operator Commands ---") {
+				foundOperator = true
+				break
+			}
+		}
+		if !foundOperator {
+			t.Errorf("Operator didn't see operator commands in help")
+		}
+
+		// clear operator for other tests if needed
+		s.mu.Lock()
+		s.operatorPubKey = nil
+		s.mu.Unlock()
 	})
 
 	t.Run("who", func(t *testing.T) {
