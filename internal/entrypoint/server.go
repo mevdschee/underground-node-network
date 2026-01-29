@@ -442,11 +442,52 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 		entryUI.SetBanner(s.banner)
 	}
 
-	// Check if verified in background so Run() can start and handle events
+	// Check if verified or if username is taken
 	go func() {
-		if conn.Permissions == nil || conn.Permissions.Extensions["verified"] != "true" {
+		verified := conn.Permissions != nil && conn.Permissions.Extensions["verified"] == "true"
+		taken := conn.Permissions != nil && conn.Permissions.Extensions["taken"] == "true"
+
+		if !verified {
 			if !s.handleOnboarding(p, conn) {
 				entryUI.Close(false)
+				return
+			}
+		} else if taken {
+			// Identity is verified but they connected with a username owned by someone else
+			eui := p.UI
+			eui.ShowMessage("--- Username Conflict ---", ui.MsgServer)
+			eui.ShowMessage(fmt.Sprintf("The username '%s' is already claimed by another user.", p.Username), ui.MsgServer)
+
+			for {
+				newUsername := eui.Prompt("Enter a new username to use for this session:")
+				if newUsername == "" {
+					continue
+				}
+
+				s.mu.Lock()
+				_, exists := s.usernames[newUsername]
+				if !exists {
+					// Update mapping
+					pubKeyHash := s.calculatePubKeyHash(conn.PublicKey())
+
+					// Free old username if we were the owner
+					for u, h := range s.usernames {
+						if h == pubKeyHash {
+							delete(s.usernames, u)
+							break
+						}
+					}
+
+					s.usernames[newUsername] = pubKeyHash
+					p.Username = newUsername
+					s.saveUsernames()
+					s.mu.Unlock()
+
+					eui.ShowMessage(fmt.Sprintf("Username updated to '%s'.", newUsername), ui.MsgServer)
+					break
+				}
+				s.mu.Unlock()
+				eui.ShowMessage("That username is also taken. Please try another.", ui.MsgServer)
 			}
 		}
 	}()
@@ -528,7 +569,43 @@ func (s *Server) handleOnboarding(p *Person, conn *ssh.ServerConn) bool {
 
 		if matched {
 			eui.ShowMessage("Identity verified successfully!", ui.MsgServer)
-			s.saveIdentity(offeredKey, platform, username)
+
+			// Now let them choose a username if the current one is taken or they want to change it
+			pubKeyHash := s.calculatePubKeyHash(offeredKey)
+
+			for {
+				requestedUser := p.Username
+				s.mu.RLock()
+				ownerHash, taken := s.usernames[requestedUser]
+				s.mu.RUnlock()
+
+				if !taken || ownerHash == pubKeyHash {
+					break
+				}
+
+				eui.ShowMessage(fmt.Sprintf("Username '%s' is taken. Please choose another.", requestedUser), ui.MsgServer)
+				newUser := eui.Prompt("Enter new UNN username:")
+				if newUser != "" {
+					p.Username = newUser
+				}
+			}
+
+			s.mu.Lock()
+			// Update both maps
+			s.identities[pubKeyHash] = fmt.Sprintf("%s@%s", username, platform)
+
+			// Remove any old username mappings for this key
+			for u, h := range s.usernames {
+				if h == pubKeyHash {
+					delete(s.usernames, u)
+				}
+			}
+			s.usernames[p.Username] = pubKeyHash
+
+			s.saveIdentities()
+			s.saveUsernames()
+			s.mu.Unlock()
+
 			// Update current session permissions
 			conn.Permissions.Extensions["verified"] = "true"
 			conn.Permissions.Extensions["platform"] = platform
@@ -777,15 +854,58 @@ func (s *Server) calculatePubKeyHash(key ssh.PublicKey) string {
 	return fmt.Sprintf("%x", hash)
 }
 
-func (s *Server) saveIdentity(pubKey ssh.PublicKey, platform, username string) error {
-	dir := s.usersDir
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
+func (s *Server) loadIdentities() {
+	path := filepath.Join(s.usersDir, "identities")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
 	}
-	hash := s.calculatePubKeyHash(pubKey)
-	path := filepath.Join(dir, hash+".identity")
-	data := fmt.Sprintf("%s:%s", platform, username)
-	return os.WriteFile(path, []byte(data), 0600)
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) == 2 {
+			s.identities[parts[0]] = parts[1]
+		}
+	}
+}
+
+func (s *Server) loadUsernames() {
+	path := filepath.Join(s.usersDir, "usernames")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) == 2 {
+			s.usernames[parts[0]] = parts[1]
+		}
+	}
+}
+
+func (s *Server) saveIdentities() error {
+	var buf bytes.Buffer
+	for hash, id := range s.identities {
+		buf.WriteString(fmt.Sprintf("%s %s\n", hash, id))
+	}
+	return os.WriteFile(filepath.Join(s.usersDir, "identities"), buf.Bytes(), 0600)
+}
+
+func (s *Server) saveUsernames() error {
+	var buf bytes.Buffer
+	for user, hash := range s.usernames {
+		buf.WriteString(fmt.Sprintf("%s %s\n", user, hash))
+	}
+	return os.WriteFile(filepath.Join(s.usersDir, "usernames"), buf.Bytes(), 0600)
 }
 
 func (s *Server) showTeleportInfo(p *Person) {
