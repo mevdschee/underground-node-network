@@ -47,6 +47,7 @@ type ChatUI struct {
 	scrollOffset  int
 	cursorIdx     int
 	inputOffset   int
+	draft         string
 	physicalLines []Message
 	lastWidth     int
 	lastMsgCount  int
@@ -199,6 +200,7 @@ func (ui *ChatUI) Reset() {
 	ui.cursorIdx = 0
 	ui.scrollOffset = 0
 	ui.inputOffset = 0
+	ui.draft = ""
 	ui.lastWidth = 0
 	ui.lastMsgCount = 0
 	ui.physicalLines = nil
@@ -308,6 +310,7 @@ func (ui *ChatUI) Run() string {
 					ui.cursorIdx = 0
 					ui.scrollOffset = 0
 					ui.inputOffset = 0
+					ui.draft = ""
 
 					// Save to history if not empty and different from last
 					if msg != "" && (len(ui.history) == 0 || ui.history[len(ui.history)-1] != msg) {
@@ -549,10 +552,18 @@ func (ui *ChatUI) Draw() {
 
 	// Draw input
 	prompt := "> "
+	if ui.inputOffset > 0 {
+		prompt = ""
+	}
 	runes := []rune(ui.input)
+	availWidth := w - len([]rune(prompt)) - 2
+	if availWidth < 1 {
+		availWidth = 1
+	}
+
 	visibleInput := ""
 	if ui.inputOffset < len(runes) {
-		endIdx := ui.inputOffset + (w - len([]rune(prompt)) - 2)
+		endIdx := ui.inputOffset + availWidth
 		if endIdx > len(runes) {
 			endIdx = len(runes)
 		}
@@ -611,6 +622,9 @@ func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
 		}
 	case tcell.KeyUp:
 		if ui.hIndex > 0 {
+			if ui.hIndex == len(ui.history) {
+				ui.draft = ui.input
+			}
 			ui.hIndex--
 			ui.input = ui.history[ui.hIndex]
 			ui.cursorIdx = len([]rune(ui.input))
@@ -620,10 +634,10 @@ func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
 			ui.hIndex++
 			ui.input = ui.history[ui.hIndex]
 			ui.cursorIdx = len([]rune(ui.input))
-		} else {
-			ui.hIndex = len(ui.history)
-			ui.input = ""
-			ui.cursorIdx = 0
+		} else if ui.hIndex == len(ui.history)-1 {
+			ui.hIndex++
+			ui.input = ui.draft
+			ui.cursorIdx = len([]rune(ui.input))
 		}
 	case tcell.KeyRune:
 		runes = append(runes[:ui.cursorIdx], append([]rune{ev.Rune()}, runes[ui.cursorIdx:]...)...)
@@ -631,19 +645,21 @@ func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
 		ui.cursorIdx++
 	}
 
-	// Update inputOffset to follow cursor
+	// Update inputOffset to follow cursor (centered)
 	w, _ := ui.screen.Size()
-	prompt := "> "
-	availWidth := w - len([]rune(prompt)) - 2
+	promptLen := 2
+	if ui.inputOffset > 0 {
+		promptLen = 0
+	}
+	availWidth := w - promptLen - 2
 	if availWidth < 1 {
 		availWidth = 1
 	}
 
-	if ui.cursorIdx < ui.inputOffset {
-		ui.inputOffset = ui.cursorIdx
-	}
-	if ui.cursorIdx >= ui.inputOffset+availWidth {
-		ui.inputOffset = ui.cursorIdx - availWidth + 1
+	ui.inputOffset = ui.cursorIdx - availWidth/2
+	maxOffset := len(runes) - availWidth
+	if ui.inputOffset > maxOffset {
+		ui.inputOffset = maxOffset
 	}
 	if ui.inputOffset < 0 {
 		ui.inputOffset = 0
