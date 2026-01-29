@@ -46,6 +46,7 @@ type ChatUI struct {
 	closeChan     chan struct{}
 	scrollOffset  int
 	cursorIdx     int
+	inputOffset   int
 	physicalLines []Message
 	lastWidth     int
 	lastMsgCount  int
@@ -197,6 +198,7 @@ func (ui *ChatUI) Reset() {
 	ui.firstDraw = true
 	ui.cursorIdx = 0
 	ui.scrollOffset = 0
+	ui.inputOffset = 0
 	ui.lastWidth = 0
 	ui.lastMsgCount = 0
 	ui.physicalLines = nil
