@@ -61,7 +61,7 @@ The wrapper is designed for seamless navigation:
 - **Window Resizing**: Supports `SIGWINCH` for correct PTY sizing.
 - **Managed Input**: Uses a managed stdin proxy to ensure `Ctrl+C` behavior is consistent and no characters are lost during transitions.
 - **Native Implementation**: Uses the native Go SSH library for the wrapper logic, falling back to system `ssh` only for the final room session.
-- **Automated Downloads**: Monitors room output for secure `[GET FILE]` signals. When triggered, the wrapper:
+- **Automated Downloads**: Monitors room output for secure `[DOWNLOAD FILE]` signals. When triggered, the wrapper:
     1. Extracts the one-shot port and transfer UUID.
     2. Establishes a second SSH connection to the room's one-shot server using your existing identity.
     3. Verifies the room's host key (using the signature displayed by the room server).
