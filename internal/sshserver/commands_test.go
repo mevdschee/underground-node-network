@@ -78,23 +78,23 @@ func TestRoomCommands(t *testing.T) {
 		s.mu.Unlock()
 	})
 
-	t.Run("who", func(t *testing.T) {
+	t.Run("people", func(t *testing.T) {
 		s.mu.Lock()
 		s.people["alice"] = p
 		s.mu.Unlock()
 
-		s.handleInternalCommand(p, "/who")
+		s.handleInternalCommand(p, "/people")
 		msgs := p.ChatUI.GetMessages()
 		found := false
 		for _, m := range msgs {
-			// Format is "<alice> /who" followed by "--- People in room ---" then "• alice"
+			// Format is "<alice> /people" followed by "--- People in room ---" then "• alice"
 			if strings.Contains(m.Text, "• alice") {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("Who command didn't show alice in %v", msgs)
+			t.Errorf("People command didn't show alice in %v", msgs)
 		}
 	})
 

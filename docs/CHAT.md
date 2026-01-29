@@ -9,7 +9,7 @@ In the underground, every Room functions as a live channel. Communication is ins
 ### Interactive Features
 
 *   **Real-time Sidebar**: Inspired by the classic mIRC user list, the sidebar provides an instant view of all travelers currently jacked into the node and the "Doors" (services) available for execution.
-*   **Slash Command Navigation**: Direct control via intuitive commands like `/who`, `/files`, and `/clear`.
+*   **Slash Command Navigation**: Direct control via intuitive commands like `/people`, `/files`, and `/clear`.
 *   **Dynamic Mentions**: Interact with automated agents and bots using the `@name` syntax.
 *   **Operator Focus**: Room owners possess an elevated console view, allowing them to monitor network signals and people status in real-time.
 
@@ -49,7 +49,7 @@ The network prioritizes a balance between convenience and strict volatility:
 | Command | Effect |
 | :--- | :--- |
 | `/help` | List available room services. |
-| `/who` | See who else is currently connected (name + hash). |
+| `/people` | See who else is currently connected (name + hash). |
 | `/doors` | List available sub-programs on this node. |
 | `/files` | View the shared file manifest. |
 | `/get <name>`| Initiate a secure, obfuscated file transfer. |

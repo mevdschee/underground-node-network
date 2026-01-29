@@ -732,7 +732,7 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			addMessage(cmd, ui.MsgCommand)
 			addMessage("--- Available Commands ---", ui.MsgServer)
 			addMessage("/help         - Show this help", ui.MsgServer)
-			addMessage("/who          - List people in room", ui.MsgServer)
+			addMessage("/people       - List people in room", ui.MsgServer)
 			addMessage("/doors        - List available doors", ui.MsgServer)
 			addMessage("/files        - List available files", ui.MsgServer)
 			addMessage("/get <file>   - Download a file", ui.MsgServer)
@@ -742,16 +742,16 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 
 			if s.isOperator(p.PubKey) {
 				addMessage("--- Operator Commands ---", ui.MsgServer)
-				addMessage("/kick <user> [reason]    - Kick a person", ui.MsgServer)
-				addMessage("/kickban <user> [reason] - Ban a person", ui.MsgServer)
-				addMessage("/unban <user>            - Unban a person", ui.MsgServer)
-				addMessage("/banlist                 - List banned people", ui.MsgServer)
-				addMessage("/lock <key>              - Lock the room", ui.MsgServer)
-				addMessage("/unlock                  - Unlock the room", ui.MsgServer)
-				addMessage("/kickall [reason]        - Kick everyone", ui.MsgServer)
+				addMessage("/kick <person> [reason]    - Kick a person", ui.MsgServer)
+				addMessage("/kickban <person> [reason] - Kick and ban a person", ui.MsgServer)
+				addMessage("/unban <person>            - Unban a person", ui.MsgServer)
+				addMessage("/banlist                   - List banned people", ui.MsgServer)
+				addMessage("/lock <key>                - Lock the room", ui.MsgServer)
+				addMessage("/unlock                    - Unlock the room", ui.MsgServer)
+				addMessage("/kickall [reason]          - Kick everyone", ui.MsgServer)
 			}
 			return true
-		case "who":
+		case "people":
 			addMessage(cmd, ui.MsgCommand)
 			s.mu.RLock()
 			people := make([]string, 0, len(s.people))
