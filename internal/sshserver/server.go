@@ -22,8 +22,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// Visitor represents a connected visitor
-type Visitor struct {
+// Person represents a connected person
+type Person struct {
 	Username        string
 	Conn            ssh.Conn
 	ChatUI          *ui.ChatUI
@@ -38,7 +38,7 @@ type Server struct {
 	config          *ssh.ServerConfig
 	doorManager     *doors.Manager
 	roomName        string
-	visitors        map[string]*Visitor
+	people          map[string]*Person
 	authorizedKeys  map[string]bool // Marshaled pubkey -> true
 	filesDir        string
 	hostKey         ssh.Signer
@@ -48,6 +48,9 @@ type Server struct {
 	headless        bool
 	uploadLimit     int64                   // bytes per second
 	histories       map[string][]ui.Message // keyed by pubkey hash (hex)
+	bannedHashes    map[string]string       // hash -> reason
+	roomLockKey     string
+	operatorPubKey  ssh.PublicKey
 }
 
 func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doors.Manager) (*Server, error) {
@@ -56,9 +59,10 @@ func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doo
 		doorManager:     doorManager,
 		roomName:        roomName,
 		filesDir:        filesDir,
-		visitors:        make(map[string]*Visitor),
+		people:          make(map[string]*Person),
 		authorizedKeys:  make(map[string]bool),
 		histories:       make(map[string][]ui.Message),
+		bannedHashes:    make(map[string]string),
 		downloadTimeout: 60 * time.Second,
 	}
 
@@ -108,7 +112,7 @@ func (s *Server) AuthorizeKey(pubKey ssh.PublicKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.authorizedKeys[string(pubKey.Marshal())] = true
-	log.Printf("Authorized key for visitor")
+	log.Printf("Authorized key for person")
 }
 
 // SetDownloadTimeout sets the timeout for one-shot SFTP download servers
@@ -151,62 +155,91 @@ func (s *Server) Stop() error {
 	return nil
 }
 
-// GetVisitors returns a list of current visitors
-func (s *Server) GetVisitors() []string {
+// GetPeople returns a list of current people
+func (s *Server) GetPeople() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	names := make([]string, 0, len(s.visitors))
-	for name := range s.visitors {
+	names := make([]string, 0, len(s.people))
+	for name := range s.people {
 		names = append(names, name)
 	}
 	return names
 }
 
-func (s *Server) updateAllVisitors() {
+func (s *Server) updateAllPeople() {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, v := range s.visitors {
-		s.updateVisitorList(v)
+	for _, p := range s.people {
+		s.updatePeopleList(p)
 	}
 }
 
-func (s *Server) updateVisitorList(v *Visitor) {
-	if v.ChatUI == nil {
+func (s *Server) updatePeopleList(p *Person) {
+	if p.ChatUI == nil {
 		return
 	}
 	s.mu.RLock()
-	names := make([]string, 0, len(s.visitors))
-	for name := range s.visitors {
-		names = append(names, name)
+	names := make([]string, 0, len(s.people))
+	for name, person := range s.people {
+		displayName := name
+		if s.isOperator(person.PubKey) {
+			displayName = "@" + name
+		}
+		names = append(names, displayName)
 	}
 	s.mu.RUnlock()
-	v.ChatUI.SetVisitors(names)
-	v.ChatUI.SetDoors(s.doorManager.List())
+	p.ChatUI.SetPeople(names)
+	p.ChatUI.SetDoors(s.doorManager.List())
 }
 
-// Broadcast sends a message to all connected visitors and stores it in their histories
+// Broadcast sends a message to all connected people and stores it in their histories
 func (s *Server) Broadcast(sender, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	chatMsg := fmt.Sprintf("<%s> %s", sender, message)
 
-	for _, v := range s.visitors {
+	for _, p := range s.people {
 		msgType := ui.MsgChat
-		if v.Username == sender {
+		if p.Username == sender {
 			msgType = ui.MsgSelf
 		}
 
 		// Add to UI if available
-		if v.ChatUI != nil {
-			v.ChatUI.AddMessage(chatMsg, msgType)
+		if p.ChatUI != nil {
+			p.ChatUI.AddMessage(chatMsg, msgType)
 		}
 
 		// Add to history (Security: only because they are connected now)
-		pubHash := s.getPubKeyHash(v.PubKey)
+		pubHash := s.getPubKeyHash(p.PubKey)
 		s.addMessageToHistory(pubHash, ui.Message{Text: chatMsg, Type: msgType})
 	}
+}
+
+func (s *Server) broadcastWithHistory(senderPubKey ssh.PublicKey, chatMsg string, msgType ui.MessageType) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, p := range s.people {
+		actualType := msgType
+		if msgType == ui.MsgChat && p.PubKey != nil && senderPubKey != nil && string(p.PubKey.Marshal()) == string(senderPubKey.Marshal()) {
+			actualType = ui.MsgSelf
+		}
+
+		if p.ChatUI != nil {
+			p.ChatUI.AddMessage(chatMsg, actualType)
+		}
+		pubHash := s.getPubKeyHash(p.PubKey)
+		s.addMessageToHistory(pubHash, ui.Message{Text: chatMsg, Type: actualType})
+	}
+}
+
+func (s *Server) isOperator(pubKey ssh.PublicKey) bool {
+	if pubKey == nil || s.operatorPubKey == nil {
+		return false
+	}
+	return string(pubKey.Marshal()) == string(s.operatorPubKey.Marshal())
 }
 
 func (s *Server) getPubKeyHash(pubKey ssh.PublicKey) string {
@@ -249,10 +282,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 		return
 	}
-	defer sshConn.Close()
-
-	username := sshConn.User()
-	log.Printf("Visitor connected: %s", username)
 
 	var pubKey ssh.PublicKey
 	if b64, ok := sshConn.Permissions.Extensions["pubkey"]; ok {
@@ -260,23 +289,57 @@ func (s *Server) handleConnection(conn net.Conn) {
 		pubKey, _ = ssh.ParsePublicKey(marshaled)
 	}
 
-	// Register visitor
+	// Check for bans
+	pubHash := s.getPubKeyHash(pubKey)
+	s.mu.RLock()
+	reason, banned := s.bannedHashes[pubHash]
+	if !banned {
+		for h, r := range s.bannedHashes {
+			if strings.HasPrefix(pubHash, h) {
+				banned = true
+				reason = r
+				break
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	if banned {
+		fmt.Fprintf(conn, "\r\n*** YOU ARE BANNED FROM THIS ROOM ***\r\n*** Reason: %s ***\r\n\r\n", reason)
+		sshConn.Close()
+		return
+	}
+
+	// First connection becomes operator if none exists
 	s.mu.Lock()
-	v := &Visitor{
+	if s.operatorPubKey == nil && pubKey != nil {
+		s.operatorPubKey = pubKey
+		log.Printf("First person %s identified as operator", sshConn.User())
+	}
+	s.mu.Unlock()
+
+	defer sshConn.Close()
+
+	username := sshConn.User()
+	log.Printf("Person connected: %s", username)
+
+	// Register person
+	s.mu.Lock()
+	p := &Person{
 		Username: username,
 		Conn:     sshConn,
 		PubKey:   pubKey,
 	}
-	s.visitors[username] = v
+	s.people[username] = p
 	s.mu.Unlock()
-	s.updateAllVisitors()
+	s.updateAllPeople()
 
 	defer func() {
 		s.mu.Lock()
-		delete(s.visitors, username)
+		delete(s.people, username)
 		s.mu.Unlock()
-		log.Printf("Visitor disconnected: %s", username)
-		s.updateAllVisitors()
+		log.Printf("Person disconnected: %s", username)
+		s.updateAllPeople()
 	}()
 
 	// Discard global requests
@@ -356,12 +419,12 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 	}
 	defer rawChannel.Close()
 
-	var v *Visitor
+	var p *Person
 	s.mu.RLock()
-	v = s.visitors[username]
+	p = s.people[username]
 	s.mu.RUnlock()
 
-	if v == nil {
+	if p == nil {
 		return
 	}
 
@@ -382,8 +445,8 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 			req.Reply(true, nil)
 
 			// Shell session - init TUI and start interaction
-			v.Bridge = ui.NewInputBridge(rawChannel)
-			v.Bus = ui.NewSSHBus(v.Bridge, int(initialW), int(initialH))
+			p.Bridge = ui.NewInputBridge(rawChannel)
+			p.Bus = ui.NewSSHBus(p.Bridge, int(initialW), int(initialH))
 
 			// Handle remaining requests in background (e.g., resize)
 			go func() {
@@ -391,12 +454,12 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 					switch r.Type {
 					case "pty-req":
 						if w, h, ok := ui.ParsePtyRequest(r.Payload); ok {
-							v.Bus.Resize(int(w), int(h))
+							p.Bus.Resize(int(w), int(h))
 						}
 						r.Reply(true, nil)
 					case "window-change":
 						if w, h, ok := ui.ParseWindowChange(r.Payload); ok {
-							v.Bus.Resize(int(w), int(h))
+							p.Bus.Resize(int(w), int(h))
 						}
 						r.Reply(true, nil)
 					default:
@@ -408,8 +471,8 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 			// Main interaction loop
 			s.handleInteraction(rawChannel, username)
 
-			// Ensure channel close after visitor done
-			v.Bus.ForceClose()
+			// Ensure channel close after person done
+			p.Bus.ForceClose()
 			return
 		case "subsystem":
 			subsystem := string(req.Payload[4:])
@@ -438,37 +501,60 @@ func (s *Server) handleRoomSubsystem(newChannel ssh.NewChannel, username string)
 }
 
 func (s *Server) handleInteraction(channel ssh.Channel, username string) {
-	var v *Visitor
+	var p *Person
 	s.mu.RLock()
-	v = s.visitors[username]
+	p = s.people[username]
 	s.mu.RUnlock()
 
-	if v == nil {
+	if p == nil {
 		return
+	}
+
+	// Handle room lock
+	s.mu.RLock()
+	lockKey := s.roomLockKey
+	isOp := s.isOperator(p.PubKey)
+	s.mu.RUnlock()
+
+	if lockKey != "" && !isOp && !s.headless {
+		// Use a local screen variable to avoid conflict with long-running ChatUI screen
+		scr, err := tcell.NewTerminfoScreenFromTty(p.Bus)
+		if err == nil {
+			if err := scr.Init(); err == nil {
+				pwdUI := ui.NewPasswordUI(scr)
+				entered := pwdUI.Run()
+				scr.Fini()
+				if entered != lockKey {
+					fmt.Fprintf(channel, "\r\n*** INCORRECT ROOM KEY ***\r\n\r\n")
+					p.Conn.Close()
+					return
+				}
+			}
+		}
 	}
 
 	chatUI := ui.NewChatUI(nil) // Screen will be set in loop
 	chatUI.SetUsername(username)
 	chatUI.SetTitle(fmt.Sprintf("Underground Node Network - Room: %s", s.roomName))
 	chatUI.Headless = s.headless
-	chatUI.Input = v.Bus
-	v.ChatUI = chatUI
+	chatUI.Input = p.Bus
+	p.ChatUI = chatUI
 
 	chatUI.OnSend(func(msg string) {
 		s.Broadcast(username, msg)
 	})
 
 	chatUI.OnClose(func() {
-		v.Bus.SignalExit()
+		p.Bus.SignalExit()
 	})
 
 	chatUI.OnCmd(func(cmd string) bool {
-		return s.handleInternalCommand(v, cmd)
+		return s.handleInternalCommand(p, cmd)
 	})
 
 	// REPLAY HISTORY
 	s.mu.Lock()
-	pubHash := s.getPubKeyHash(v.PubKey)
+	pubHash := s.getPubKeyHash(p.PubKey)
 	history := s.histories[pubHash]
 	s.mu.Unlock()
 
@@ -492,12 +578,12 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 
 	for {
 		// Reset bus and UI for each TUI run
-		v.Bus.Reset()
+		p.Bus.Reset()
 		chatUI.Reset()
 
 		// Create a fresh screen for each run to avoid "already engaged" errors
 		if !s.headless {
-			screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
+			screen, err := tcell.NewTerminfoScreenFromTty(p.Bus)
 			if err != nil {
 				log.Printf("Failed to create screen: %v", err)
 				return
@@ -511,7 +597,7 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 		}
 
 		// Update visitors list
-		s.updateVisitorList(v)
+		s.updatePeopleList(p)
 
 		cmd := chatUI.Run()
 
@@ -522,13 +608,13 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 		}
 		s.mu.RUnlock()
 
-		if cmd == "" && v.PendingDownload == "" {
-			v.Conn.Close() // Force immediate disconnect
+		if cmd == "" && p.PendingDownload == "" {
+			p.Conn.Close() // Force immediate disconnect
 			return         // User exited
 		}
 
 		// Prepare bus for potential door command (since chatUI.Run signaled it to exit)
-		v.Bus.Reset()
+		p.Bus.Reset()
 
 		// Handle external "door" command (anything that returned from Run)
 		done := s.handleCommand(channel, username, cmd)
@@ -536,21 +622,21 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 			// Wait for door to finish
 			<-done
 			// Force the stdin goroutine to exit
-			v.Bus.SignalExit()
+			p.Bus.SignalExit()
 		}
 
 		// If a download was requested, exit the loop to show info in plain terminal
-		if v.PendingDownload != "" {
+		if p.PendingDownload != "" {
 			break
 		}
 	}
 
 	// Post-TUI exit download info (mirroring teleport flow)
-	if v.PendingDownload != "" {
-		s.showDownloadInfo(v, v.PendingDownload)
+	if p.PendingDownload != "" {
+		s.showDownloadInfo(p, p.PendingDownload)
 	} else {
 		// Clear screen on manual exit - first reset colors to avoid black background spill
-		fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
+		fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 	}
 }
 
@@ -567,7 +653,10 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 	}
 
 	cmd := strings.TrimPrefix(input, "/")
-	parts := strings.SplitN(cmd, " ", 2)
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return nil
+	}
 	command := parts[0]
 
 	if command == "get" {
@@ -577,51 +666,62 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 		}
 		fname := strings.TrimSpace(parts[1])
 		s.mu.RLock()
-		v := s.visitors[username]
+		p := s.people[username]
 		s.mu.RUnlock()
-		if v != nil {
-			go s.showDownloadInfo(v, fname)
+		if p != nil {
+			p.PendingDownload = fname
 		}
 		return nil
 	}
-	// Try to execute as a door
-	if _, ok := s.doorManager.Get(command); ok {
-		fmt.Fprintf(channel, "\r[Entering door: %s]\r\n", command)
-		done := make(chan struct{})
-		go func() {
-			// Get current visitor to access bridge
-			s.mu.RLock()
-			v := s.visitors[username]
-			s.mu.RUnlock()
 
-			var input io.Reader = channel
-			if v != nil && v.Bus != nil {
-				input = v.Bus
-			}
+	if command == "open" {
+		if len(parts) < 2 {
+			fmt.Fprint(channel, "\rUsage: /open <door>\r\n")
+			return nil
+		}
+		doorName := parts[1]
+		// Try to execute as a door
+		if _, ok := s.doorManager.Get(doorName); ok {
+			fmt.Fprintf(channel, "\r[Opening door: %s]\r\n", doorName)
+			done := make(chan struct{})
+			go func() {
+				// Get current person to access bridge
+				s.mu.RLock()
+				p := s.people[username]
+				s.mu.RUnlock()
 
-			if err := s.doorManager.Execute(command, input, channel, channel); err != nil {
-				fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)
-			}
-			fmt.Fprintf(channel, "\r[Exited door: %s]\r\n", command)
-			close(done)
-		}()
-		return done
-	} else {
-		fmt.Fprintf(channel, "\rUnknown command: %s\r\n", command)
+				var input io.Reader = channel
+				if p != nil && p.Bus != nil {
+					input = p.Bus
+				}
+
+				if err := s.doorManager.Execute(doorName, input, channel, channel); err != nil {
+					fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)
+				}
+				fmt.Fprintf(channel, "\r[Closed door: %s]\r\n", doorName)
+				close(done)
+			}()
+			return done
+		} else {
+			fmt.Fprintf(channel, "\rDoor not found: %s\r\n", doorName)
+		}
+		return nil
 	}
+
+	fmt.Fprintf(channel, "\rUnknown command: %s\r\n", command)
 	return nil
 }
 
-func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
+func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 	if strings.HasPrefix(cmd, "/") {
-		log.Printf("Internal command from %s: %s", v.Username, cmd)
+		log.Printf("Internal command from %s: %s", p.Username, cmd)
 		// Echo the command in the chat history
 		parts := strings.SplitN(strings.TrimPrefix(cmd, "/"), " ", 2)
 		command := parts[0]
-		pubHash := s.getPubKeyHash(v.PubKey)
+		pubHash := s.getPubKeyHash(p.PubKey)
 
 		addMessage := func(text string, msgType ui.MessageType) {
-			v.ChatUI.AddMessage(text, msgType)
+			p.ChatUI.AddMessage(text, msgType)
 			s.mu.Lock()
 			s.addMessageToHistory(pubHash, ui.Message{Text: text, Type: msgType})
 			s.mu.Unlock()
@@ -631,22 +731,273 @@ func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
 		case "help":
 			addMessage(cmd, ui.MsgCommand)
 			addMessage("--- Available Commands ---", ui.MsgServer)
-			addMessage("/help       - Show this help", ui.MsgServer)
-			addMessage("/who        - List visitors in room", ui.MsgServer)
-			addMessage("/doors      - List available doors", ui.MsgServer)
-			addMessage("/files      - List available files", ui.MsgServer)
-			addMessage("/get <file> - Download a file", ui.MsgServer)
-			addMessage("/clear      - Clear your chat history", ui.MsgServer)
-			addMessage("/<door>     - Enter a door", ui.MsgServer)
-			addMessage("Ctrl+C      - Exit room", ui.MsgServer)
+			addMessage("/help         - Show this help", ui.MsgServer)
+			addMessage("/who          - List people in room", ui.MsgServer)
+			addMessage("/doors        - List available doors", ui.MsgServer)
+			addMessage("/files        - List available files", ui.MsgServer)
+			addMessage("/get <file>   - Download a file", ui.MsgServer)
+			addMessage("/clear        - Clear your chat history", ui.MsgServer)
+			addMessage("/open <door>  - Open a door (launch program)", ui.MsgServer)
+			addMessage("Ctrl+C        - Exit room", ui.MsgServer)
 			return true
 		case "who":
 			addMessage(cmd, ui.MsgCommand)
-			visitors := s.GetVisitors()
-			addMessage("--- Visitors in room ---", ui.MsgServer)
-			for _, name := range visitors {
-				addMessage("• "+name, ui.MsgServer)
+			s.mu.RLock()
+			people := make([]string, 0, len(s.people))
+			for _, person := range s.people {
+				prefix := ""
+				if s.operatorPubKey != nil && string(person.PubKey.Marshal()) == string(s.operatorPubKey.Marshal()) {
+					prefix = "@"
+				}
+				hash := s.getPubKeyHash(person.PubKey)
+				if len(hash) > 8 {
+					hash = hash[:8]
+				}
+				people = append(people, fmt.Sprintf("%s%s (%s)", prefix, person.Username, hash))
 			}
+			s.mu.RUnlock()
+			addMessage("--- People in room ---", ui.MsgServer)
+			for _, personStr := range people {
+				addMessage("• "+personStr, ui.MsgServer)
+			}
+			return true
+		case "me":
+			if len(parts) < 2 {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("Usage: /me <action>", ui.MsgServer)
+				return true
+			}
+			action := strings.TrimSpace(parts[1])
+			chatMsg := fmt.Sprintf("* %s %s", p.Username, action)
+			s.broadcastWithHistory(p.PubKey, chatMsg, ui.MsgAction)
+			return true
+		case "whisper":
+			if len(parts) < 2 {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("Usage: /whisper <user> <message>", ui.MsgServer)
+				return true
+			}
+			msgParts := strings.SplitN(parts[1], " ", 2)
+			if len(msgParts) < 2 {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("Usage: /whisper <user> <message>", ui.MsgServer)
+				return true
+			}
+			targetName := strings.TrimSpace(msgParts[0])
+			whisperMsg := strings.TrimSpace(msgParts[1])
+
+			s.mu.Lock()
+			var target *Person
+			for _, person := range s.people {
+				if person.Username == targetName {
+					target = person
+					break
+				}
+			}
+			s.mu.Unlock()
+
+			if target == nil {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage(fmt.Sprintf("User '%s' not found.", targetName), ui.MsgServer)
+				return true
+			}
+
+			// Add to sender
+			addMessage(fmt.Sprintf("-> [%s] %s", targetName, whisperMsg), ui.MsgWhisper)
+			// Add to target
+			target.ChatUI.AddMessage(fmt.Sprintf("[%s] -> %s", p.Username, whisperMsg), ui.MsgWhisper)
+			// Save to histories
+			s.mu.Lock()
+			senderHash := s.getPubKeyHash(p.PubKey)
+			targetHash := s.getPubKeyHash(target.PubKey)
+			s.addMessageToHistory(senderHash, ui.Message{Text: fmt.Sprintf("-> [%s] %s", targetName, whisperMsg), Type: ui.MsgWhisper})
+			s.addMessageToHistory(targetHash, ui.Message{Text: fmt.Sprintf("[%s] -> %s", p.Username, whisperMsg), Type: ui.MsgWhisper})
+			s.mu.Unlock()
+
+			// Broadcast whisper event (the fact, not the content)
+			bystanderMsg := fmt.Sprintf("* %s is secretly whispering with %s", p.Username, targetName)
+			s.mu.Lock()
+			for _, person := range s.people {
+				if person.Username != p.Username && person.Username != targetName {
+					person.ChatUI.AddMessage(bystanderMsg, ui.MsgSystem)
+					h := s.getPubKeyHash(person.PubKey)
+					s.addMessageToHistory(h, ui.Message{Text: bystanderMsg, Type: ui.MsgSystem})
+				}
+			}
+			s.mu.Unlock()
+			return true
+		case "kick":
+			if !s.isOperator(p.PubKey) {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("You do not have operator privileges.", ui.MsgServer)
+				return true
+			}
+			if len(parts) < 2 {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("Usage: /kick <user/hash> [reason]", ui.MsgServer)
+				return true
+			}
+			kickParts := strings.SplitN(parts[1], " ", 2)
+			targetID := strings.TrimSpace(kickParts[0])
+			reason := "No reason given."
+			if len(kickParts) > 1 {
+				reason = strings.TrimSpace(kickParts[1])
+			}
+
+			s.mu.Lock()
+			var targetPerson *Person
+			for _, person := range s.people {
+				h := s.getPubKeyHash(person.PubKey)
+				if person.Username == targetID || strings.HasPrefix(h, targetID) {
+					targetPerson = person
+					break
+				}
+			}
+			s.mu.Unlock()
+
+			if targetPerson == nil {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("User not found.", ui.MsgServer)
+				return true
+			}
+
+			s.Broadcast("Server", fmt.Sprintf("*** %s was kicked by @%s (%s) ***", targetPerson.Username, p.Username, reason))
+			targetPerson.Conn.Close()
+			return true
+		case "kickban":
+			if !s.isOperator(p.PubKey) {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("You do not have operator privileges.", ui.MsgServer)
+				return true
+			}
+			if len(parts) < 2 {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("Usage: /kickban <user/hash> [reason]", ui.MsgServer)
+				return true
+			}
+			banParts := strings.SplitN(parts[1], " ", 2)
+			targetID := strings.TrimSpace(banParts[0])
+			reason := "No reason given."
+			if len(banParts) > 1 {
+				reason = strings.TrimSpace(banParts[1])
+			}
+
+			s.mu.Lock()
+			var targetPerson *Person
+			var targetHash string
+			for _, person := range s.people {
+				h := s.getPubKeyHash(person.PubKey)
+				if person.Username == targetID || strings.HasPrefix(h, targetID) {
+					targetPerson = person
+					targetHash = h
+					break
+				}
+			}
+			if targetPerson != nil {
+				s.bannedHashes[targetHash] = reason
+				s.mu.Unlock()
+				s.Broadcast("Server", fmt.Sprintf("*** %s was banned by @%s (%s) ***", targetPerson.Username, p.Username, reason))
+				targetPerson.Conn.Close()
+			} else {
+				// Handle offline ban by hash
+				if len(targetID) >= 8 {
+					s.bannedHashes[targetID] = reason
+					s.mu.Unlock()
+					addMessage(fmt.Sprintf("Banned hash prefix: %s", targetID), ui.MsgServer)
+				} else {
+					s.mu.Unlock()
+					addMessage("User not found or hash too short.", ui.MsgServer)
+				}
+			}
+			return true
+		case "unban":
+			if !s.isOperator(p.PubKey) {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("You do not have operator privileges.", ui.MsgServer)
+				return true
+			}
+			if len(parts) < 2 {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("Usage: /unban <hash>", ui.MsgServer)
+				return true
+			}
+			hash := strings.TrimSpace(parts[1])
+			s.mu.Lock()
+			found := false
+			for h := range s.bannedHashes {
+				if strings.HasPrefix(h, hash) {
+					delete(s.bannedHashes, h)
+					found = true
+					break
+				}
+			}
+			s.mu.Unlock()
+			if found {
+				addMessage(fmt.Sprintf("Unbanned hash prefix: %s", hash), ui.MsgServer)
+			} else {
+				addMessage("Ban not found.", ui.MsgServer)
+			}
+			return true
+		case "banlist":
+			if !s.isOperator(p.PubKey) {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("You do not have operator privileges.", ui.MsgServer)
+				return true
+			}
+			addMessage("--- Banned Users ---", ui.MsgServer)
+			s.mu.RLock()
+			for h, r := range s.bannedHashes {
+				addMessage(fmt.Sprintf("%s: %s", h[:12], r), ui.MsgServer)
+			}
+			s.mu.RUnlock()
+			return true
+		case "lock":
+			if !s.isOperator(p.PubKey) {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("You do not have operator privileges.", ui.MsgServer)
+				return true
+			}
+			if len(parts) < 2 {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("Usage: /lock <key>", ui.MsgServer)
+				return true
+			}
+			key := strings.TrimSpace(parts[1])
+			s.mu.Lock()
+			s.roomLockKey = key
+			s.mu.Unlock()
+			s.Broadcast("Server", fmt.Sprintf("*** @%s locked the room ***", p.Username))
+			return true
+		case "unlock":
+			if !s.isOperator(p.PubKey) {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("You do not have operator privileges.", ui.MsgServer)
+				return true
+			}
+			s.mu.Lock()
+			s.roomLockKey = ""
+			s.mu.Unlock()
+			s.Broadcast("Server", fmt.Sprintf("*** @%s unlocked the room ***", p.Username))
+			return true
+		case "kickall":
+			if !s.isOperator(p.PubKey) {
+				addMessage(cmd, ui.MsgCommand)
+				addMessage("You do not have operator privileges.", ui.MsgServer)
+				return true
+			}
+			reason := "All users kicked."
+			if len(parts) > 1 {
+				reason = strings.TrimSpace(parts[1])
+			}
+			s.Broadcast("Server", fmt.Sprintf("*** @%s is kicking everyone: %s ***", p.Username, reason))
+
+			s.mu.Lock()
+			for _, person := range s.people {
+				if !s.isOperator(person.PubKey) {
+					person.Conn.Close()
+				}
+			}
+			s.mu.Unlock()
 			return true
 		case "get":
 			addMessage(cmd, ui.MsgCommand)
@@ -655,27 +1006,41 @@ func (s *Server) handleInternalCommand(v *Visitor, cmd string) bool {
 				return true
 			}
 			fname := strings.TrimSpace(parts[1])
-			v.PendingDownload = filepath.Clean(fname)
-			v.ChatUI.Close(true)
+			p.PendingDownload = filepath.Clean(fname)
+			p.ChatUI.Close(true)
 			return true
 		case "clear":
 			s.mu.Lock()
 			delete(s.histories, pubHash)
 			s.mu.Unlock()
-			v.ChatUI.ClearMessages()
+			p.ChatUI.ClearMessages()
 			return true
 		case "doors":
 			addMessage(cmd, ui.MsgCommand)
 			doorList := s.doorManager.List()
 			addMessage("--- Available doors ---", ui.MsgServer)
 			for _, door := range doorList {
-				addMessage("/"+door, ui.MsgServer)
+				addMessage("• "+door, ui.MsgServer)
 			}
+			addMessage("Type /open <door> to launch a program.", ui.MsgServer)
 			return true
 		case "files":
 			addMessage(cmd, ui.MsgCommand)
-			s.showFiles(v.ChatUI)
+			s.showFiles(p.ChatUI)
 			return true
+		case "open":
+			addMessage(cmd, ui.MsgCommand)
+			if len(parts) < 2 {
+				addMessage("Usage: /open <door>", ui.MsgServer)
+				return true
+			}
+			doorName := strings.TrimSpace(parts[1])
+			if _, ok := s.doorManager.Get(doorName); !ok {
+				addMessage(fmt.Sprintf("Door not found: %s", doorName), ui.MsgServer)
+				return true
+			}
+			// Door exists, return false to exit TUI and execute it in handleCommand
+			return false
 		default:
 		}
 	}
@@ -712,11 +1077,11 @@ func generateHostKey(path string) (ssh.Signer, error) {
 
 func (s *Server) showFiles(chatUI *ui.ChatUI) {
 	s.mu.RLock()
-	// Identify current visitor to log to history
+	// Identify current person to log to history
 	var pubHash string
-	for _, v := range s.visitors {
-		if v.ChatUI == chatUI {
-			pubHash = s.getPubKeyHash(v.PubKey)
+	for _, p := range s.people {
+		if p.ChatUI == chatUI {
+			pubHash = s.getPubKeyHash(p.PubKey)
 			break
 		}
 	}
@@ -771,7 +1136,7 @@ func (s *Server) showFiles(chatUI *ui.ChatUI) {
 	addMessage("-----------------------", ui.MsgServer)
 }
 
-func (s *Server) showDownloadInfo(v *Visitor, filename string) {
+func (s *Server) showDownloadInfo(p *Person, filename string) {
 	if filename == "" {
 		return
 	}
@@ -784,12 +1149,12 @@ func (s *Server) showDownloadInfo(v *Visitor, filename string) {
 	absBase, _ := filepath.Abs(s.filesDir)
 	absPath, _ := filepath.Abs(path)
 	if !strings.HasPrefix(absPath, absBase) {
-		fmt.Fprintf(v.Bus, "\033[1;31mAccess denied: %s\033[0m\r\n", filename)
+		fmt.Fprintf(p.Bus, "\033[1;31mAccess denied: %s\033[0m\r\n", filename)
 		return
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fmt.Fprintf(v.Bus, "\033[1;31mFile not found: %s\033[0m\r\n", filename)
+		fmt.Fprintf(p.Bus, "\033[1;31mFile not found: %s\033[0m\r\n", filename)
 		return
 	}
 
@@ -804,7 +1169,7 @@ func (s *Server) showDownloadInfo(v *Visitor, filename string) {
 
 	filePort, err := fileserver.StartOneShot(fileserver.Options{
 		HostKey:     s.hostKey,
-		ClientKey:   v.PubKey,
+		ClientKey:   p.PubKey,
 		Filename:    filename,
 		BaseDir:     s.filesDir,
 		TransferID:  transferID,
@@ -812,27 +1177,27 @@ func (s *Server) showDownloadInfo(v *Visitor, filename string) {
 		UploadLimit: s.uploadLimit,
 	})
 	if err != nil {
-		fmt.Fprintf(v.Bus, "\033[1;31mFailed to start download server: %v\033[0m\r\n", err)
+		fmt.Fprintf(p.Bus, "\033[1;31mFailed to start download server: %v\033[0m\r\n", err)
 		return
 	}
 
 	// Always clear screen before showing download info
 	// First reset colors to avoid the black background from sticking around
-	fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
+	fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 
 	// Calculate file signature early to include it in the wrapper's download block
 	sig := s.calculateFileSHA256(absPath)
 
-	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
-	fmt.Fprintf(v.Bus, "[DOWNLOAD FILE]\r\n%s\r\n%d\r\n%s\r\n%s\r\n[/DOWNLOAD FILE]\r\n", filename, filePort, transferID, sig)
-	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
+	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
+	fmt.Fprintf(p.Bus, "[DOWNLOAD FILE]\r\n%s\r\n%d\r\n%s\r\n%s\r\n[/DOWNLOAD FILE]\r\n", filename, filePort, transferID, sig)
+	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
 
-	fmt.Fprintf(v.Bus, "\033[1;32mUNN DOWNLOAD READY\033[0m\r\n\r\n")
-	fmt.Fprintf(v.Bus, "The wrapper is automatically downloading the file to your Downloads folder.\r\n")
+	fmt.Fprintf(p.Bus, "\033[1;32mUNN DOWNLOAD READY\033[0m\r\n\r\n")
+	fmt.Fprintf(p.Bus, "The wrapper is automatically downloading the file to your Downloads folder.\r\n")
 
-	fmt.Fprintf(v.Bus, "\033[1;33mNote: The transfer must start within %d seconds.\033[0m\r\n", int(dt.Seconds()))
+	fmt.Fprintf(p.Bus, "\033[1;33mNote: The transfer must start within %d seconds.\033[0m\r\n", int(dt.Seconds()))
 
-	fmt.Fprintf(v.Bus, "If the wrapper fails, you can download manually using:\r\n\r\n")
+	fmt.Fprintf(p.Bus, "If the wrapper fails, you can download manually using:\r\n\r\n")
 
 	// Get actual address for manual instruction
 	host, _, _ := net.SplitHostPort(s.address)
@@ -840,24 +1205,24 @@ func (s *Server) showDownloadInfo(v *Visitor, filename string) {
 		host = "localhost"
 	}
 
-	fmt.Fprintf(v.Bus, "  \033[1;36mscp -P %d %s:%s ~/Downloads/%s\033[0m\r\n\r\n", filePort, host, transferID, filepath.Base(filename))
+	fmt.Fprintf(p.Bus, "  \033[1;36mscp -P %d %s:%s ~/Downloads/%s\033[0m\r\n\r\n", filePort, host, transferID, filepath.Base(filename))
 
 	// Display the host key fingerprint so the user can verify it
 	fingerprint := s.calculateHostKeyFingerprint()
-	fmt.Fprintf(v.Bus, "\033[1mHost Verification Fingerprint (tunnel):\033[0m\r\n")
-	fmt.Fprintf(v.Bus, "\033[1;36m%s\033[0m\r\n\r\n", fingerprint)
+	fmt.Fprintf(p.Bus, "\033[1mHost Verification Fingerprint (tunnel):\033[0m\r\n")
+	fmt.Fprintf(p.Bus, "\033[1;36m%s\033[0m\r\n\r\n", fingerprint)
 
 	// Display the file signature (matching entrypoint style)
-	fmt.Fprintf(v.Bus, "\033[1mFile Verification Signature:\033[0m\r\n")
-	fmt.Fprintf(v.Bus, "\033[1;36m%s  %s\033[0m\r\n\r\n", sig, filename)
+	fmt.Fprintf(p.Bus, "\033[1mFile Verification Signature:\033[0m\r\n")
+	fmt.Fprintf(p.Bus, "\033[1;36m%s  %s\033[0m\r\n\r\n", sig, filename)
 
-	fmt.Fprintf(v.Bus, "Disconnecting to allow the transfer...\r\n")
+	fmt.Fprintf(p.Bus, "Disconnecting to allow the transfer...\r\n")
 
 	// Consume the data
-	v.PendingDownload = ""
+	p.PendingDownload = ""
 
 	// Give the wrapper documentation and time to start the download.
-	// The connection will stay open until the visitor disconnects.
+	// The connection will stay open until the person disconnects.
 }
 
 func (s *Server) calculateFileSHA256(path string) string {

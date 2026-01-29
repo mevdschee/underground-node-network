@@ -12,7 +12,7 @@ const (
 	MsgTypeError      = "error"
 
 	// Hole-punching signaling
-	MsgTypePunchRequest = "punch_request" // Visitor requests to punch to room
+	MsgTypePunchRequest = "punch_request" // Person requests to punch to room
 	MsgTypePunchOffer   = "punch_offer"   // Entry point forwards to room
 	MsgTypePunchAnswer  = "punch_answer"  // Room sends candidates back
 	MsgTypePunchStart   = "punch_start"   // Both sides start punching
@@ -53,23 +53,23 @@ type ErrorPayload struct {
 	Message string `json:"message"`
 }
 
-// PunchRequestPayload is sent by visitor to initiate hole-punching
+// PunchRequestPayload is sent by person to initiate hole-punching
 type PunchRequestPayload struct {
 	RoomName   string   `json:"room_name"`
-	Candidates []string `json:"candidates"` // Visitor's candidates
-	VisitorID  string   `json:"visitor_id"` // Unique ID for this punch session
+	Candidates []string `json:"candidates"` // Person's candidates
+	PersonID   string   `json:"person_id"`  // Unique ID for this punch session
 }
 
 // PunchOfferPayload is forwarded from entry point to room operator
 type PunchOfferPayload struct {
-	VisitorID  string   `json:"visitor_id"`
+	PersonID   string   `json:"person_id"`
 	Candidates []string `json:"candidates"`
-	VisitorKey string   `json:"visitor_key"` // Visitor's public key for P2P auth
+	PersonKey  string   `json:"person_key"` // Person's public key for P2P auth
 }
 
 // PunchAnswerPayload is sent by room operator back to entry point
 type PunchAnswerPayload struct {
-	VisitorID  string   `json:"visitor_id"`
+	PersonID   string   `json:"person_id"`
 	Candidates []string `json:"candidates"`
 	SSHPort    int      `json:"ssh_port"`
 }

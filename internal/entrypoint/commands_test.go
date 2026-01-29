@@ -25,14 +25,14 @@ func TestEntrypointCommands(t *testing.T) {
 
 	screen := tcell.NewSimulationScreen("")
 	screen.Init()
-	v := &Visitor{
+	p := &Person{
 		Username: "bob",
 		UI:       ui.NewEntryUI(screen, "bob", "127.0.0.1"),
 	}
 
 	t.Run("help", func(t *testing.T) {
-		s.handleVisitorCommand(v, nil, "/help")
-		logs := v.UI.GetLogs()
+		s.handlePersonCommand(p, nil, "/help")
+		logs := p.UI.GetLogs()
 		found := false
 		for _, l := range logs {
 			if strings.Contains(l.Text, "/rooms") && strings.Contains(l.Text, "List all active rooms") {
@@ -46,8 +46,8 @@ func TestEntrypointCommands(t *testing.T) {
 	})
 
 	t.Run("rooms empty", func(t *testing.T) {
-		s.handleVisitorCommand(v, nil, "/rooms")
-		logs := v.UI.GetLogs()
+		s.handlePersonCommand(p, nil, "/rooms")
+		logs := p.UI.GetLogs()
 		found := false
 		for _, l := range logs {
 			if strings.Contains(l.Text, "No active rooms.") {
@@ -67,8 +67,8 @@ func TestEntrypointCommands(t *testing.T) {
 		}
 		s.mu.Unlock()
 
-		s.handleVisitorCommand(v, nil, "/rooms")
-		logs := v.UI.GetLogs()
+		s.handlePersonCommand(p, nil, "/rooms")
+		logs := p.UI.GetLogs()
 		found := false
 		for _, l := range logs {
 			if strings.Contains(l.Text, "myroom") && strings.Contains(l.Text, "alice") {
@@ -82,8 +82,8 @@ func TestEntrypointCommands(t *testing.T) {
 	})
 
 	t.Run("join non-existent", func(t *testing.T) {
-		s.handleVisitorCommand(v, nil, "nonexistent")
-		logs := v.UI.GetLogs()
+		s.handlePersonCommand(p, nil, "nonexistent")
+		logs := p.UI.GetLogs()
 		found := false
 		for _, l := range logs {
 			if strings.Contains(l.Text, "Room not found: nonexistent") {
@@ -97,8 +97,8 @@ func TestEntrypointCommands(t *testing.T) {
 	})
 
 	t.Run("register usage", func(t *testing.T) {
-		s.handleVisitorCommand(v, nil, "/register")
-		logs := v.UI.GetLogs()
+		s.handlePersonCommand(p, nil, "/register")
+		logs := p.UI.GetLogs()
 		found := false
 		for _, l := range logs {
 			if strings.Contains(l.Text, "Usage: /register <public_key>") {

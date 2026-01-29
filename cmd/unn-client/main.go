@@ -185,12 +185,12 @@ func main() {
 
 				// Listen for messages (this blocks until the connection is lost)
 				err = epClient.ListenForMessages(nil, func(offer protocol.PunchOfferPayload) {
-					if offer.VisitorKey != "" {
-						pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(offer.VisitorKey))
+					if offer.PersonKey != "" {
+						pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(offer.PersonKey))
 						if err == nil {
 							server.AuthorizeKey(pubKey)
 						} else {
-							log.Printf("Warning: Failed to parse visitor public key: %v", err)
+							log.Printf("Warning: Failed to parse person public key: %v", err)
 						}
 					}
 				}, nil, actualPort, candidateStrs)

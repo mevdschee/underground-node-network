@@ -18,6 +18,8 @@ const (
 	MsgCommand
 	MsgServer
 	MsgSystem
+	MsgAction
+	MsgWhisper
 )
 
 type Message struct {
@@ -28,7 +30,7 @@ type Message struct {
 type ChatUI struct {
 	screen     tcell.Screen
 	messages   []Message
-	visitors   []string
+	people     []string
 	doors      []string
 	input      string
 	history    []string
@@ -53,7 +55,7 @@ func NewChatUI(screen tcell.Screen) *ChatUI {
 	return &ChatUI{
 		screen:    screen,
 		messages:  make([]Message, 0),
-		visitors:  make([]string, 0),
+		people:    make([]string, 0),
 		doors:     make([]string, 0),
 		drawChan:  make(chan struct{}, 1),
 		closeChan: make(chan struct{}, 1),
@@ -106,9 +108,9 @@ func (ui *ChatUI) OnCmd(cb func(string) bool) {
 	ui.mu.Unlock()
 }
 
-func (ui *ChatUI) SetVisitors(visitors []string) {
+func (ui *ChatUI) SetPeople(people []string) {
 	ui.mu.Lock()
-	ui.visitors = visitors
+	ui.people = people
 	screen := ui.screen
 	ui.mu.Unlock()
 
@@ -458,12 +460,16 @@ func (ui *ChatUI) Draw() {
 			style = blackStyle.Foreground(tcell.ColorDimGray)
 		case MsgChat:
 			style = blackStyle.Foreground(tcell.ColorYellow)
+		case MsgAction:
+			style = blackStyle.Foreground(tcell.ColorLightBlue).Italic(true)
+		case MsgWhisper:
+			style = blackStyle.Foreground(tcell.ColorLightPink)
 		}
 
 		ui.drawText(1, contentY+i, displayMsg, mainW-1, style)
 	}
 
-	// Draw Sidebar (Visitors)
+	// Draw Sidebar (Connect People)
 	if sidebarW > 0 {
 		// Vertical separator
 		for y := 2; y < h-2; y++ {
@@ -480,19 +486,19 @@ func (ui *ChatUI) Draw() {
 				break
 			}
 			displayName := truncateString(door, sidebarW-2)
-			ui.drawText(mainW+2, sidebarStartY+1+i, "• /"+displayName, sidebarW-2, sidebarStyle)
+			ui.drawText(mainW+2, sidebarStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
 			doorCount++
 		}
 
-		visitorStartY := sidebarStartY + doorCount + 1
-		if visitorStartY < h-2 {
-			ui.drawText(mainW+1, visitorStartY, " Visitors:      ", sidebarW, blackStyle)
-			for i, visitor := range ui.visitors {
-				if visitorStartY+1+i >= h-2 {
+		peopleStartY := sidebarStartY + doorCount + 1
+		if peopleStartY < h-2 {
+			ui.drawText(mainW+1, peopleStartY, " People:        ", sidebarW, blackStyle)
+			for i, person := range ui.people {
+				if peopleStartY+1+i >= h-2 {
 					break
 				}
-				displayName := truncateString(visitor, sidebarW-2)
-				ui.drawText(mainW+2, visitorStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
+				displayName := truncateString(person, sidebarW-2)
+				ui.drawText(mainW+2, peopleStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
 			}
 		}
 		// Clear rest of sidebar

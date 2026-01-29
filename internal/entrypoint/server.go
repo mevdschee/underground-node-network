@@ -33,12 +33,12 @@ type Room struct {
 
 // PunchSession tracks an active hole-punch negotiation
 type PunchSession struct {
-	VisitorID   string
-	RoomName    string
-	VisitorChan chan *protocol.Message // Send punch_start to visitor
+	PersonID   string
+	RoomName   string
+	PersonChan chan *protocol.Message // Send punch_start to person
 }
 
-type Visitor struct {
+type Person struct {
 	SessionID    string
 	Username     string
 	TeleportData *protocol.PunchStartPayload
@@ -53,8 +53,8 @@ type Server struct {
 	usersDir      string
 	config        *ssh.ServerConfig
 	rooms         map[string]*Room
-	visitors      map[string]*Visitor
-	punchSessions map[string]*PunchSession // keyed by visitor ID
+	people        map[string]*Person
+	punchSessions map[string]*PunchSession // keyed by person ID
 	banner        []string
 	mu            sync.RWMutex
 	listener      net.Listener
@@ -115,7 +115,7 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		usersDir:      usersDir,
 		config:        config,
 		rooms:         make(map[string]*Room),
-		visitors:      make(map[string]*Visitor),
+		people:        make(map[string]*Person),
 		punchSessions: make(map[string]*PunchSession),
 	}
 
@@ -228,7 +228,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 	var roomName string
 	var isOperator bool
 
-	// Process first request to determine if operator or visitor
+	// Process first request to determine if operator or person
 	for req := range requests {
 		switch req.Type {
 		case "subsystem":
@@ -245,7 +245,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 					delete(s.rooms, roomName)
 					s.mu.Unlock()
 					log.Printf("Room unregistered: %s", roomName)
-					s.updateAllVisitors()
+					s.updateAllPeople()
 				}
 				return
 			} else {
@@ -261,30 +261,30 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 			}
 			req.Reply(true, nil)
 
-			// This is a visitor
+			// This is a person
 			if !isOperator {
-				log.Printf("Visitor connected: %s", username)
+				log.Printf("Person connected: %s", username)
 
 				sessionID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
 				bridge := ui.NewInputBridge(channel)
-				v := &Visitor{
+				p := &Person{
 					SessionID: sessionID,
 					Username:  username,
 					Bridge:    bridge,
 					Bus:       ui.NewSSHBus(bridge, int(initialW), int(initialH)),
 				}
-				v.UI = ui.NewEntryUI(nil, v.Username, s.address)
-				v.UI.Headless = s.headless
-				v.UI.Input = v.Bus
+				p.UI = ui.NewEntryUI(nil, p.Username, s.address)
+				p.UI.Headless = s.headless
+				p.UI.Input = p.Bus
 				s.mu.Lock()
-				s.visitors[sessionID] = v
+				s.people[sessionID] = p
 				s.mu.Unlock()
 
 				defer func() {
 					s.mu.Lock()
 					// Only delete if it's still our session
-					if current, ok := s.visitors[sessionID]; ok && current == v {
-						delete(s.visitors, sessionID)
+					if current, ok := s.people[sessionID]; ok && current == p {
+						delete(s.people, sessionID)
 					}
 					s.mu.Unlock()
 				}()
@@ -295,12 +295,12 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 						switch r.Type {
 						case "pty-req":
 							if w, h, ok := ui.ParsePtyRequest(r.Payload); ok {
-								v.Bus.Resize(int(w), int(h))
+								p.Bus.Resize(int(w), int(h))
 							}
 							r.Reply(true, nil)
 						case "window-change":
 							if w, h, ok := ui.ParseWindowChange(r.Payload); ok {
-								v.Bus.Resize(int(w), int(h))
+								p.Bus.Resize(int(w), int(h))
 							}
 							r.Reply(true, nil)
 						case "shell":
@@ -310,8 +310,8 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 						}
 					}
 				}()
-				s.handleVisitor(v, conn)
-				v.Bus.ForceClose() // Ensure channel close after visitor done
+				s.handlePerson(p, conn)
+				p.Bus.ForceClose() // Ensure channel close after person done
 				return
 			}
 		default:
@@ -369,7 +369,7 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 
 			// Send back room list
 			s.sendRoomList(encoder)
-			s.updateAllVisitors()
+			s.updateAllPeople()
 
 		case protocol.MsgTypeUnregister:
 			if *roomName != "" {
@@ -388,7 +388,7 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 			}
 
 			s.mu.RLock()
-			session, ok := s.punchSessions[payload.VisitorID]
+			session, ok := s.punchSessions[payload.PersonID]
 			s.mu.RUnlock()
 
 			if ok {
@@ -400,7 +400,7 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 				}
 				s.mu.RUnlock()
 
-				// Send punch_start to visitor with room's candidates
+				// Send punch_start to person with room's candidates
 				startPayload := protocol.PunchStartPayload{
 					RoomName:   session.RoomName,
 					Candidates: payload.Candidates,
@@ -408,24 +408,24 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 					PublicKeys: publicKeys,
 				}
 				startMsg, _ := protocol.NewMessage(protocol.MsgTypePunchStart, startPayload)
-				session.VisitorChan <- startMsg
-				log.Printf("Punch start sent to visitor %s", payload.VisitorID)
+				session.PersonChan <- startMsg
+				log.Printf("Punch start sent to person %s", payload.PersonID)
 			}
 		}
 	}
 }
 
-func (s *Server) handleVisitor(v *Visitor, conn *ssh.ServerConn) {
-	entryUI := v.UI
+func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
+	entryUI := p.UI
 
 	if !s.headless {
-		screen, err := tcell.NewTerminfoScreenFromTty(v.Bus)
+		screen, err := tcell.NewTerminfoScreenFromTty(p.Bus)
 		if err != nil {
-			log.Printf("Failed to create screen for %s: %v", v.Username, err)
+			log.Printf("Failed to create screen for %s: %v", p.Username, err)
 			return
 		}
 		if err := screen.Init(); err != nil {
-			log.Printf("Failed to init screen for %s: %v", v.Username, err)
+			log.Printf("Failed to init screen for %s: %v", p.Username, err)
 			return
 		}
 		entryUI.SetScreen(screen)
@@ -436,16 +436,16 @@ func (s *Server) handleVisitor(v *Visitor, conn *ssh.ServerConn) {
 	}
 
 	entryUI.OnCmd(func(cmd string) {
-		s.handleVisitorCommand(v, conn, cmd)
+		s.handlePersonCommand(p, conn, cmd)
 	})
 
 	// Add OnClose callback to break terminal deadlock
 	entryUI.OnClose(func() {
-		v.Bus.SignalExit()
+		p.Bus.SignalExit()
 	})
 
 	// Initial room list
-	s.updateVisitorRooms(v)
+	s.updatePersonRooms(p)
 
 	success := entryUI.Run()
 
@@ -454,33 +454,33 @@ func (s *Server) handleVisitor(v *Visitor, conn *ssh.ServerConn) {
 	if !s.headless && entryUI.GetScreen() != nil {
 		entryUI.GetScreen().Fini()
 		// Send ANSI reset to ensure the terminal background is restored
-		fmt.Fprint(v.Bus, "\033[m")
+		fmt.Fprint(p.Bus, "\033[m")
 	}
 	s.mu.RUnlock()
 
 	// Now that we've exited the TUI and restored terminal state:
 	// Only show teleport info if we actually joined a room (success=true)
-	if success && v.TeleportData != nil {
-		s.showTeleportInfo(v)
+	if success && p.TeleportData != nil {
+		s.showTeleportInfo(p)
 	} else {
 		// Clear screen only on manual exit to clean up the TUI artifacts
 		// First reset colors to avoid black background spill
-		fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
+		fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 	}
 
 	conn.Close() // Ensure immediate disconnect
 }
 
-func (s *Server) updateAllVisitors() {
+func (s *Server) updateAllPeople() {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, v := range s.visitors {
-		s.updateVisitorRooms(v)
+	for _, p := range s.people {
+		s.updatePersonRooms(p)
 	}
 }
 
-func (s *Server) updateVisitorRooms(v *Visitor) {
-	if v.UI == nil {
+func (s *Server) updatePersonRooms(p *Person) {
+	if p.UI == nil {
 		return
 	}
 	rooms := s.GetRooms()
@@ -492,13 +492,13 @@ func (s *Server) updateVisitorRooms(v *Visitor) {
 			Doors: r.Doors,
 		})
 	}
-	v.UI.SetRooms(uiRooms)
+	p.UI.SetRooms(uiRooms)
 }
 
-func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input string) {
-	log.Printf("Visitor %s command: %s", v.Username, input)
+func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input string) {
+	log.Printf("Person %s command: %s", p.Username, input)
 	input = strings.TrimSpace(input)
-	v.UI.ShowMessage(fmt.Sprintf("> %s", input), ui.MsgCommand)
+	p.UI.ShowMessage(fmt.Sprintf("> %s", input), ui.MsgCommand)
 
 	if strings.HasPrefix(input, "/") {
 		cmdLine := strings.TrimPrefix(input, "/")
@@ -510,41 +510,48 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 
 		switch command {
 		case "help":
-			v.UI.ShowMessage("/help               - Show this help message", ui.MsgServer)
-			v.UI.ShowMessage("/rooms              - List all active rooms", ui.MsgServer)
-			v.UI.ShowMessage("/register <pubkey>  - Register your SSH public key", ui.MsgServer)
-			v.UI.ShowMessage("<room_name>         - Join a room by name", ui.MsgServer)
-			v.UI.ShowMessage("Ctrl+C              - Exit", ui.MsgServer)
+			p.UI.ShowMessage("/help               - Show this help message", ui.MsgServer)
+			p.UI.ShowMessage("/rooms              - List all active rooms", ui.MsgServer)
+			p.UI.ShowMessage("/register <pubkey>  - Register your SSH public key", ui.MsgServer)
+			p.UI.ShowMessage("<room_name>         - Join a room by name", ui.MsgServer)
+			p.UI.ShowMessage("Ctrl+C              - Exit", ui.MsgServer)
 		case "rooms":
 			s.mu.RLock()
 			if len(s.rooms) == 0 {
-				v.UI.ShowMessage("No active rooms.", ui.MsgServer)
+				p.UI.ShowMessage("No active rooms.", ui.MsgServer)
 			} else {
-				v.UI.ShowMessage("Active Rooms:", ui.MsgServer)
+				p.UI.ShowMessage("Active Rooms:", ui.MsgServer)
 				for _, room := range s.rooms {
-					v.UI.ShowMessage(fmt.Sprintf(" - %s (owned by %s)", room.Info.Name, room.Info.Owner), ui.MsgServer)
+					hash := "anonymous"
+					if len(room.Info.PublicKeys) > 0 {
+						hash = s.getPubKeyHash(room.Info.PublicKeys[0])
+						if len(hash) > 8 {
+							hash = hash[:8]
+						}
+					}
+					p.UI.ShowMessage(fmt.Sprintf(" - %s (%s) [owned by %s]", room.Info.Name, hash, room.Info.Owner), ui.MsgServer)
 				}
 			}
 			s.mu.RUnlock()
 		case "register":
 			if len(parts) < 2 {
-				v.UI.ShowMessage("Usage: /register <public_key>", ui.MsgServer)
+				p.UI.ShowMessage("Usage: /register <public_key>", ui.MsgServer)
 				return
 			}
 			keyStr := strings.Join(parts[1:], " ")
 			pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyStr))
 			if err != nil {
-				v.UI.ShowMessage(fmt.Sprintf("Invalid key: %v", err), ui.MsgServer)
+				p.UI.ShowMessage(fmt.Sprintf("Invalid key: %v", err), ui.MsgServer)
 				return
 			}
-			keyPath := filepath.Join(s.usersDir, v.Username)
+			keyPath := filepath.Join(s.usersDir, p.Username)
 			if err := registerUserKey(keyPath, pubKey); err != nil {
-				v.UI.ShowMessage(fmt.Sprintf("Failed: %v", err), ui.MsgServer)
+				p.UI.ShowMessage(fmt.Sprintf("Failed: %v", err), ui.MsgServer)
 			} else {
-				v.UI.ShowMessage("Successfully registered.", ui.MsgServer)
+				p.UI.ShowMessage("Successfully registered.", ui.MsgServer)
 			}
 		default:
-			v.UI.ShowMessage(fmt.Sprintf("Unknown command: %s", command), ui.MsgServer)
+			p.UI.ShowMessage(fmt.Sprintf("Unknown command: %s", command), ui.MsgServer)
 		}
 		return
 	}
@@ -555,38 +562,38 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 	s.mu.RUnlock()
 
 	if !ok {
-		v.UI.ShowMessage(fmt.Sprintf("Room not found: %s", input), ui.MsgServer)
+		p.UI.ShowMessage(fmt.Sprintf("Room not found: %s", input), ui.MsgServer)
 		return
 	}
 
-	// Generate visitor ID
-	visitorID := fmt.Sprintf("%s-%d", v.Username, time.Now().UnixNano())
+	// Generate person ID
+	personID := fmt.Sprintf("%s-%d", p.Username, time.Now().UnixNano())
 
 	// Create punch session
-	visitorChan := make(chan *protocol.Message, 1)
+	personChan := make(chan *protocol.Message, 1)
 	s.mu.Lock()
-	s.punchSessions[visitorID] = &PunchSession{
-		VisitorID:   visitorID,
-		RoomName:    input,
-		VisitorChan: visitorChan,
+	s.punchSessions[personID] = &PunchSession{
+		PersonID:   personID,
+		RoomName:   input,
+		PersonChan: personChan,
 	}
 	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()
-		delete(s.punchSessions, visitorID)
+		delete(s.punchSessions, personID)
 		s.mu.Unlock()
 	}()
 
-	visitorKey := ""
+	personKey := ""
 	if conn.Permissions != nil {
-		visitorKey = conn.Permissions.Extensions["pubkey"]
+		personKey = conn.Permissions.Extensions["pubkey"]
 	}
 
 	offerPayload := protocol.PunchOfferPayload{
-		VisitorID:  visitorID,
+		PersonID:   personID,
 		Candidates: []string{},
-		VisitorKey: visitorKey,
+		PersonKey:  personKey,
 	}
 	offerMsg, _ := protocol.NewMessage(protocol.MsgTypePunchOffer, offerPayload)
 
@@ -597,24 +604,24 @@ func (s *Server) handleVisitorCommand(v *Visitor, conn *ssh.ServerConn, input st
 	s.mu.RUnlock()
 
 	select {
-	case startMsg := <-visitorChan:
+	case startMsg := <-personChan:
 		var startPayload protocol.PunchStartPayload
 		if err := startMsg.ParsePayload(&startPayload); err != nil {
-			v.UI.ShowMessage(fmt.Sprintf("\033[1;31mError: %v\033[0m", err), ui.MsgServer)
+			p.UI.ShowMessage(fmt.Sprintf("\033[1;31mError: %v\033[0m", err), ui.MsgServer)
 			return
 		}
 
 		// Store data for capture after TUI exit
-		v.TeleportData = &startPayload
+		p.TeleportData = &startPayload
 
 		// Final TUI message
-		v.UI.ShowMessage("", ui.MsgSystem)
-		v.UI.ShowMessage(" \033[1;32m✔ Room joined! Teleporting...\033[0m", ui.MsgSystem)
+		p.UI.ShowMessage("", ui.MsgSystem)
+		p.UI.ShowMessage(" \033[1;32m✔ Room joined! Teleporting...\033[0m", ui.MsgSystem)
 
 		// Close the TUI loop immediately
-		v.UI.Close(true)
+		p.UI.Close(true)
 	case <-time.After(10 * time.Second):
-		v.UI.ShowMessage("Timeout waiting for room operator.", ui.MsgServer)
+		p.UI.ShowMessage("Timeout waiting for room operator.", ui.MsgServer)
 	}
 }
 
@@ -697,44 +704,44 @@ func verifyUserKey(path string, offeredKey ssh.PublicKey) (bool, error) {
 	return bytes.Equal(storedKey.Marshal(), offeredKey.Marshal()), nil
 }
 
-func (s *Server) showTeleportInfo(v *Visitor) {
-	data := v.TeleportData
+func (s *Server) showTeleportInfo(p *Person) {
+	data := p.TeleportData
 	if data == nil {
 		return
 	}
 
 	// Always clear screen before showing teleport info
 	// First reset colors to avoid the black background from sticking around
-	fmt.Fprint(v.Bus, "\033[m\033[2J\033[H")
+	fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 
 	// Use yaml library for robust formatting
 	yamlData, _ := yaml.Marshal(data)
 	yamlStr := strings.ReplaceAll(string(yamlData), "\n", "\r\n")
 
 	// The wrapper looks for these markers to capture connection info
-	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
-	fmt.Fprintf(v.Bus, "[CONNECTION DATA]\r\n")
-	fmt.Fprintf(v.Bus, "%s", yamlStr)
-	fmt.Fprintf(v.Bus, "[/CONNECTION DATA]\r\n")
-	fmt.Fprintf(v.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
+	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
+	fmt.Fprintf(p.Bus, "[CONNECTION DATA]\r\n")
+	fmt.Fprintf(p.Bus, "%s", yamlStr)
+	fmt.Fprintf(p.Bus, "[/CONNECTION DATA]\r\n")
+	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
 
-	fmt.Fprintf(v.Bus, "\033[1;32mUNN TELEPORTATION READY\033[0m\r\n\r\n")
-	fmt.Fprintf(v.Bus, "The wrapper is automatically reconnecting you to the room.\r\n")
-	fmt.Fprintf(v.Bus, "If the wrapper fails, you can connect manually using:\r\n\r\n")
+	fmt.Fprintf(p.Bus, "\033[1;32mUNN TELEPORTATION READY\033[0m\r\n\r\n")
+	fmt.Fprintf(p.Bus, "The wrapper is automatically reconnecting you to the room.\r\n")
+	fmt.Fprintf(p.Bus, "If the wrapper fails, you can connect manually using:\r\n\r\n")
 
 	for _, candidate := range data.Candidates {
-		fmt.Fprintf(v.Bus, "\033[1;36mssh -p %d %s\033[0m\r\n", data.SSHPort, candidate)
+		fmt.Fprintf(p.Bus, "\033[1;36mssh -p %d %s\033[0m\r\n", data.SSHPort, candidate)
 	}
 
-	fmt.Fprintf(v.Bus, "\r\n\033[1mHost Verification Fingerprints:\033[0m\r\n\r\n")
+	fmt.Fprintf(p.Bus, "\r\n\033[1mHost Verification Fingerprints:\033[0m\r\n\r\n")
 	for _, key := range data.PublicKeys {
 		fingerprint := s.calculateSHA256Fingerprint(key)
-		fmt.Fprintf(v.Bus, "\033[1;36m%s\033[0m\r\n", fingerprint)
+		fmt.Fprintf(p.Bus, "\033[1;36m%s\033[0m\r\n", fingerprint)
 	}
-	fmt.Fprintf(v.Bus, "\r\n")
+	fmt.Fprintf(p.Bus, "\r\n")
 
 	// Consume the data so it's not shown again if we disconnect for other reasons
-	v.TeleportData = nil
+	p.TeleportData = nil
 }
 
 func (s *Server) calculateSHA256Fingerprint(keyStr string) string {
@@ -746,4 +753,12 @@ func (s *Server) calculateSHA256Fingerprint(keyStr string) string {
 	hash := sha256.Sum256(pubKey.Marshal())
 	fingerprint := "SHA256:" + base64.StdEncoding.WithPadding(base64.NoPadding).EncodeToString(hash[:])
 	return fmt.Sprintf("%s key fingerprint is %s.", algo, fingerprint)
+}
+func (s *Server) getPubKeyHash(keyStr string) string {
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyStr))
+	if err != nil {
+		return "invalid"
+	}
+	hash := sha256.Sum256(pubKey.Marshal())
+	return fmt.Sprintf("%x", hash)
 }

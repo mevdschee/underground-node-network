@@ -5,18 +5,18 @@ The UNN Entry Point is the quiet backbone of the Underground Network. It serves 
 ## Key Functions
 
 ### 1. Rendezvous & Discovery
-Entry points maintain the directory of active rooms and announce them to visitors. They can also sync with other entry points to form a unified network.
+Entry points maintain the directory of active rooms and announce them to people. They can also sync with other entry points to form a unified network.
 
 ### 2. Signaling Hub
-The server coordinates hole-punching by relaying candidates and visitor identities. It never proxies room traffic; it only "introduces" peers so they can connect directly.
+The server coordinates hole-punching by relaying candidates and person identities. It never proxies room traffic; it only "introduces" peers so they can connect directly.
 
 ### 3. Identity Verification
 Entry points enforce a **Manual Registration** policy. Once a user registers their public key (via `/register`), their username is claimed and protected.
 
-## Visitor Handover
+## Person Handover
 
-When a visitor connects to a room:
-1. The entry point verifies the visitor's identity using their public key.
+When a person connects to a room:
+1. The entry point verifies the person's identity using their public key.
 2. The verification status and the **marshaled public key** are signaled to the room operator.
 3. This allows room operators to enforce strict public key authentication even in P2P mode.
 

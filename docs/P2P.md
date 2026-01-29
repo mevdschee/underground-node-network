@@ -3,8 +3,8 @@ Yes — the direct TCP stream can absolutely be an SSH connection, and in fact i
 Here’s the essence of it:
 1. The entry point helps two peers discover each other.
 2. The client (node operator) exposes a reachable TCP port through traversal.
-3. The visitor connects to that port.
-4. The visitor then performs a normal SSH handshake directly with the node.
+3. The person connects to that port.
+4. The person then performs a normal SSH handshake directly with the node.
 
 From that moment on, the entry point is out of the picture.
 
@@ -21,7 +21,7 @@ You don’t need to invent a secure protocol. SSH gives you:
 - subsystem support
 
 ### 2. It keeps the “normal terminal” experience intact
-Visitors still see a terminal session when they enter a node. They don’t need a special client. They don’t need to know they’re in a P2P link.
+persons still see a terminal session when they enter a node. They don’t need a special client. They don’t need to know they’re in a P2P link.
 
 ### 3. Identity Handover & Trust
 The UNN uses a **trust-forwarding** model. Because you are already authenticated at the entry point, your public key is known.
@@ -30,7 +30,7 @@ The UNN uses a **trust-forwarding** model. Because you are already authenticated
 - This ensures that only users who have "jumped" through an entry point can enter a room.
 
 ### 4. Direct Verification
-Visitors verify the room's ephemeral host key using data provided by the entry point. This provides a secure, zero-TOFU experience even when connecting to random user nodes.
+persons verify the room's ephemeral host key using data provided by the entry point. This provides a secure, zero-TOFU experience even when connecting to random user nodes.
 
 ## How it fits into the UNN model
 
@@ -43,8 +43,8 @@ The UNN client runs a lightweight SSH server locally, bound to an ephemeral port
 ### 3. Traversal = exposing that port
 The client advertises candidates (public IP guess, LAN IP, reverse tunnels). The entry point coordinates hole‑punching.
 
-### 4. Visitor = direct SSH connection
-Once traversal succeeds, the visitor connects.
+### 4. person = direct SSH connection
+Once traversal succeeds, the person connects.
 The **UNN SSH Wrapper (`unn-ssh`)** automates this:
 1. **Candidate Probing**: Tests each candidate IP/port.
 2. **Auth Handover**: Uses the entry point session identity to authenticate with the node.

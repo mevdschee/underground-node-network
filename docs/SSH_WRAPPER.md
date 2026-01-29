@@ -54,7 +54,7 @@ The wrapper is designed for seamless navigation:
 
 - **Handover**: The wrapper uses the same identity (SSH key) for both the entry point and the room.
 - **Strict Verification**: It extract host keys from the entry point signaling and enforces `StrictHostKeyChecking=yes` automatically.
-- **P2P Auth**: Only visitors authenticated by the entry point can complete the P2P connection to a room.
+- **P2P Auth**: Only people authenticated by the entry point can complete the P2P connection to a room.
 
 ## Technical Features
 

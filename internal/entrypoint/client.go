@@ -171,7 +171,7 @@ func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), onPunch
 
 			// Send punch_answer with our candidates
 			answerPayload := protocol.PunchAnswerPayload{
-				VisitorID:  offerPayload.VisitorID,
+				PersonID:   offerPayload.PersonID,
 				Candidates: candidates,
 				SSHPort:    sshPort,
 			}
