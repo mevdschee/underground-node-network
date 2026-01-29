@@ -28,29 +28,32 @@ type Message struct {
 }
 
 type ChatUI struct {
-	screen       tcell.Screen
-	messages     []Message
-	people       []string
-	doors        []string
-	input        string
-	history      []string
-	hIndex       int
-	mu           sync.Mutex
-	username     string
-	title        string
-	onSend       func(string)
-	onExit       func()
-	onClose      func()
-	onCmd        func(string) bool
-	drawChan     chan struct{}
-	closeChan    chan struct{}
-	scrollOffset int
-	cursorIdx    int
-	pendingCmd   string
-	success      bool
-	firstDraw    bool
-	Headless     bool
-	Input        io.ReadWriter
+	screen        tcell.Screen
+	messages      []Message
+	people        []string
+	doors         []string
+	input         string
+	history       []string
+	hIndex        int
+	mu            sync.Mutex
+	username      string
+	title         string
+	onSend        func(string)
+	onExit        func()
+	onClose       func()
+	onCmd         func(string) bool
+	drawChan      chan struct{}
+	closeChan     chan struct{}
+	scrollOffset  int
+	cursorIdx     int
+	physicalLines []Message
+	lastWidth     int
+	lastMsgCount  int
+	pendingCmd    string
+	success       bool
+	firstDraw     bool
+	Headless      bool
+	Input         io.ReadWriter
 }
 
 func NewChatUI(screen tcell.Screen) *ChatUI {
@@ -194,6 +197,9 @@ func (ui *ChatUI) Reset() {
 	ui.firstDraw = true
 	ui.cursorIdx = 0
 	ui.scrollOffset = 0
+	ui.lastWidth = 0
+	ui.lastMsgCount = 0
+	ui.physicalLines = nil
 }
 
 func (ui *ChatUI) Run() string {
@@ -451,7 +457,9 @@ func (ui *ChatUI) Draw() {
 		mainH = 0
 	}
 	// Draw messages (Main Pane)
-	viewEnd := len(ui.messages) - ui.scrollOffset
+	ui.updatePhysicalLines(mainW)
+
+	viewEnd := len(ui.physicalLines) - ui.scrollOffset
 	if viewEnd < 0 {
 		viewEnd = 0
 	}
@@ -460,11 +468,11 @@ func (ui *ChatUI) Draw() {
 		viewStart = 0
 	}
 
-	for i, msg := range ui.messages[viewStart:viewEnd] {
+	for i, msg := range ui.physicalLines[viewStart:viewEnd] {
 		if i >= mainH {
 			break
 		}
-		// Truncate and pad
+		// Pad
 		displayMsg := msg.Text
 		if len([]rune(displayMsg)) > mainW {
 			displayMsg = truncateString(displayMsg, mainW)
@@ -580,8 +588,8 @@ func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
 	case tcell.KeyPgUp:
 		_, h := ui.screen.Size()
 		ui.scrollOffset += (h - 4)
-		if ui.scrollOffset > len(ui.messages) {
-			ui.scrollOffset = len(ui.messages)
+		if ui.scrollOffset > len(ui.physicalLines) {
+			ui.scrollOffset = len(ui.physicalLines)
 		}
 	case tcell.KeyPgDn:
 		_, h := ui.screen.Size()
@@ -611,6 +619,25 @@ func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
 		ui.cursorIdx++
 	}
 	return false
+}
+
+func (ui *ChatUI) updatePhysicalLines(width int) {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+
+	if width == ui.lastWidth && len(ui.messages) == ui.lastMsgCount {
+		return
+	}
+
+	ui.physicalLines = nil
+	for _, msg := range ui.messages {
+		wrapped := wrapText(msg.Text, width-1)
+		for _, line := range wrapped {
+			ui.physicalLines = append(ui.physicalLines, Message{Text: line, Type: msg.Type})
+		}
+	}
+	ui.lastWidth = width
+	ui.lastMsgCount = len(ui.messages)
 }
 
 func (ui *ChatUI) drawText(x, y int, text string, width int, style tcell.Style) {

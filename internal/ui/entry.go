@@ -27,6 +27,9 @@ type EntryUI struct {
 	hIndex       int
 	cursorIdx    int
 	scrollOffset int
+	physicalLogs []Message
+	lastWidth    int
+	lastLogCount int
 	mu           sync.Mutex
 	onCmd        func(string)
 	onExit       func()
@@ -324,7 +327,9 @@ func (ui *EntryUI) Draw() {
 	// Draw Main Pane (Left) - Messages (including Banner)
 	logH := h - 2 - contentStartY
 	if logH > 0 {
-		logEnd := len(ui.logs) - ui.scrollOffset
+		ui.updatePhysicalLogs(mainW)
+
+		logEnd := len(ui.physicalLogs) - ui.scrollOffset
 		if logEnd < 0 {
 			logEnd = 0
 		}
@@ -332,7 +337,7 @@ func (ui *EntryUI) Draw() {
 		if logStart < 0 {
 			logStart = 0
 		}
-		for i, logMsg := range ui.logs[logStart:logEnd] {
+		for i, logMsg := range ui.physicalLogs[logStart:logEnd] {
 			if contentStartY+i >= h-2 {
 				break
 			}
@@ -430,8 +435,8 @@ func (ui *EntryUI) handleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 	case tcell.KeyPgUp:
 		_, h := ui.screen.Size()
 		ui.scrollOffset += (h - 4)
-		if ui.scrollOffset > len(ui.logs) {
-			ui.scrollOffset = len(ui.logs)
+		if ui.scrollOffset > len(ui.physicalLogs) {
+			ui.scrollOffset = len(ui.physicalLogs)
 		}
 	case tcell.KeyPgDn:
 		_, h := ui.screen.Size()
@@ -480,4 +485,20 @@ func (ui *EntryUI) fillRegion(x, y, w, h int, r rune, style tcell.Style) {
 			ui.screen.SetContent(x+col, y+row, r, nil, style)
 		}
 	}
+}
+
+func (ui *EntryUI) updatePhysicalLogs(width int) {
+	if width == ui.lastWidth && len(ui.logs) == ui.lastLogCount {
+		return
+	}
+
+	ui.physicalLogs = nil
+	for _, msg := range ui.logs {
+		wrapped := wrapText(msg.Text, width-4) // Account for padding
+		for _, line := range wrapped {
+			ui.physicalLogs = append(ui.physicalLogs, Message{Text: line, Type: msg.Type})
+		}
+	}
+	ui.lastWidth = width
+	ui.lastLogCount = len(ui.logs)
 }
