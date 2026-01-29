@@ -16,7 +16,7 @@ func main() {
 	port := flag.Int("port", 44322, "SSH server port")
 	bind := flag.String("bind", "0.0.0.0", "Address to bind to")
 	hostKey := flag.String("hostkey", "", "Path to SSH host key")
-	usersDir := flag.String("users", "", "Path to users directory (defaults to <hostkey_dir>/users)")
+	usersDir := flag.String("users", "", "Path to users directory (defaults to <hostkey_dir>)")
 	headless := flag.Bool("headless", false, "Disable TUI (headless mode)")
 	flag.Parse()
 
@@ -34,7 +34,8 @@ func main() {
 	}
 
 	if *usersDir == "" {
-		*usersDir = filepath.Join(filepath.Dir(*hostKey), "users")
+		homeDir, _ := os.UserHomeDir()
+		*usersDir = filepath.Join(homeDir, ".unn")
 	}
 	address := fmt.Sprintf("%s:%d", *bind, *port)
 	server, err := entrypoint.NewServer(address, *hostKey, *usersDir)

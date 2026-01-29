@@ -10,6 +10,11 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+type FormField struct {
+	Label string
+	Value string
+}
+
 type RoomInfo struct {
 	Name  string
 	Owner string
@@ -44,6 +49,9 @@ type EntryUI struct {
 	success        bool
 	Headless       bool
 	Input          io.ReadWriter
+	InFormMode     bool
+	FormFields     []FormField
+	FormActiveIdx  int
 }
 
 func NewEntryUI(screen tcell.Screen, username, addr string) *EntryUI {
@@ -55,6 +63,7 @@ func NewEntryUI(screen tcell.Screen, username, addr string) *EntryUI {
 		logs:       make([]Message, 0),
 		closeChan:  make(chan struct{}, 1),
 		promptChan: make(chan string),
+		FormFields: make([]FormField, 0),
 	}
 }
 
@@ -137,6 +146,9 @@ func (ui *EntryUI) ShowMessage(msg string, msgType MessageType) {
 func (ui *EntryUI) Prompt(q string) string {
 	ui.mu.Lock()
 	ui.prompt = q
+	ui.input = ""
+	ui.cursorIdx = 0
+	ui.inputOffset = 0
 	ui.LogsOnly = true
 	ui.CenteredPrompt = true
 	ui.mu.Unlock()
@@ -145,16 +157,36 @@ func (ui *EntryUI) Prompt(q string) string {
 		ui.screen.PostEvent(&tcell.EventInterrupt{})
 	}
 
-	if ui.Headless && ui.Input != nil {
-		fmt.Fprintf(ui.Input, "%s ", q)
-	}
-
 	res := <-ui.promptChan
 	ui.mu.Lock()
 	ui.prompt = ""
 	ui.CenteredPrompt = false
 	ui.mu.Unlock()
 	return res
+}
+
+func (ui *EntryUI) PromptForm(fields []FormField) []string {
+	ui.mu.Lock()
+	ui.FormFields = fields
+	ui.InFormMode = true
+	ui.FormActiveIdx = 0
+	ui.cursorIdx = 0
+	ui.inputOffset = 0
+	ui.mu.Unlock()
+
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
+
+	resStr := <-ui.promptChan
+	parts := strings.Split(resStr, "\x00")
+
+	ui.mu.Lock()
+	ui.InFormMode = false
+	ui.FormFields = nil
+	ui.mu.Unlock()
+
+	return parts
 }
 
 func (ui *EntryUI) GetLogs() []Message {
@@ -315,10 +347,10 @@ func (ui *EntryUI) Draw() {
 
 	sepY := 1
 
-	if ui.CenteredPrompt && ui.prompt != "" {
-		// Draw centered registration box
-		boxW := 50
-		boxH := 8
+	if ui.InFormMode && len(ui.FormFields) > 0 {
+		// Draw centered multi-field form
+		boxW := 55
+		boxH := 4 + (len(ui.FormFields) * 3)
 		if w < boxW+4 {
 			boxW = w - 4
 		}
@@ -354,43 +386,37 @@ func (ui *EntryUI) Draw() {
 		title := " IDENTITY VERIFICATION "
 		ui.drawText(startX+(boxW-len(title))/2, startY, title, len(title), borderStyle.Bold(true))
 
-		// Prompt text
-		wrappedPrompt := wrapText(ui.prompt, boxW-4)
-		for i, line := range wrappedPrompt {
-			if i >= 3 {
-				break
+		for i, field := range ui.FormFields {
+			fieldY := startY + 2 + (i * 3)
+			label := field.Label
+			if i == ui.FormActiveIdx {
+				label = fmt.Sprintf("▶ %s", label)
+			} else {
+				label = fmt.Sprintf("  %s", label)
 			}
-			ui.drawText(startX+2, startY+2+i, line, boxW-4, boxStyle)
-		}
+			ui.drawText(startX+2, fieldY, label, boxW-4, boxStyle)
 
-		// Input field
-		inputY := startY + boxH - 3
-		ui.drawText(startX+2, inputY, "> ", 2, boxStyle.Foreground(tcell.ColorYellow))
-
-		runes := []rune(ui.input)
-		availWidth := boxW - 6
-		inputOffset := ui.cursorIdx - availWidth/2
-		if inputOffset < 0 {
-			inputOffset = 0
-		}
-		maxOff := len(runes) - availWidth
-		if inputOffset > maxOff {
-			inputOffset = maxOff
-		}
-		if inputOffset < 0 {
-			inputOffset = 0
-		}
-
-		visibleInput := ""
-		if inputOffset < len(runes) {
-			endIdx := inputOffset + availWidth
-			if endIdx > len(runes) {
-				endIdx = len(runes)
+			// Value field
+			valueStyle := boxStyle.Background(tcell.ColorBlack).Foreground(tcell.ColorWhite)
+			if i == ui.FormActiveIdx {
+				valueStyle = valueStyle.Underline(true).Foreground(tcell.ColorYellow)
 			}
-			visibleInput = string(runes[inputOffset:endIdx])
+			valW := boxW - 6
+			ui.fillRegion(startX+4, fieldY+1, valW, 1, ' ', valueStyle)
+			ui.drawText(startX+4, fieldY+1, field.Value, valW, valueStyle)
+
+			if i == ui.FormActiveIdx {
+				runes := []rune(field.Value)
+				cursorPos := ui.cursorIdx
+				if cursorPos > len(runes) {
+					cursorPos = len(runes)
+				}
+				s.ShowCursor(startX+4+cursorPos, fieldY+1)
+			}
 		}
-		ui.drawText(startX+4, inputY, visibleInput, availWidth, boxStyle.Underline(true))
-		s.ShowCursor(startX+4+ui.cursorIdx-inputOffset, inputY)
+
+		hint := "TAB to move • ENTER to submit"
+		ui.drawText(startX+(boxW-len(hint))/2, startY+boxH-1, fmt.Sprintf(" %s ", hint), len(hint)+2, borderStyle)
 
 		s.Show()
 		return
@@ -546,12 +572,58 @@ func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 	defer ui.mu.Unlock()
 
 	runes := []rune(ui.input)
+	if ui.InFormMode && len(ui.FormFields) > 0 {
+		runes = []rune(ui.FormFields[ui.FormActiveIdx].Value)
+	}
+
+	// Defensive clamping: ensure cursorIdx is within bounds of current runes
+	if ui.cursorIdx > len(runes) {
+		ui.cursorIdx = len(runes)
+	}
+	if ui.cursorIdx < 0 {
+		ui.cursorIdx = 0
+	}
 
 	switch ev.Key() {
 	case tcell.KeyCtrlC, tcell.KeyEscape:
 		go ui.Close(false) // Trigger clean exit via closeChan
 		return true, false
+	case tcell.KeyTab, tcell.KeyDown:
+		if ui.InFormMode && len(ui.FormFields) > 0 {
+			ui.FormActiveIdx = (ui.FormActiveIdx + 1) % len(ui.FormFields)
+			ui.cursorIdx = len([]rune(ui.FormFields[ui.FormActiveIdx].Value))
+		} else if ev.Key() == tcell.KeyDown {
+			if ui.hIndex < len(ui.history)-1 {
+				ui.hIndex++
+				ui.input = ui.history[ui.hIndex]
+				ui.cursorIdx = len([]rune(ui.input))
+			} else if ui.hIndex == len(ui.history)-1 {
+				ui.hIndex++
+				ui.input = ui.draft
+				ui.cursorIdx = len([]rune(ui.input))
+			}
+		}
+	case tcell.KeyUp:
+		if ui.InFormMode && len(ui.FormFields) > 0 {
+			ui.FormActiveIdx = (ui.FormActiveIdx - 1 + len(ui.FormFields)) % len(ui.FormFields)
+			ui.cursorIdx = len([]rune(ui.FormFields[ui.FormActiveIdx].Value))
+		} else if ui.hIndex > 0 {
+			if ui.hIndex == len(ui.history) {
+				ui.draft = ui.input
+			}
+			ui.hIndex--
+			ui.input = ui.history[ui.hIndex]
+			ui.cursorIdx = len([]rune(ui.input))
+		}
 	case tcell.KeyEnter:
+		if ui.InFormMode {
+			var vals []string
+			for _, f := range ui.FormFields {
+				vals = append(vals, f.Value)
+			}
+			ui.promptChan <- strings.Join(vals, "\x00")
+			return false, false
+		}
 		if len(ui.input) > 0 {
 			cmd := ui.input
 			ui.input = ""
@@ -575,13 +647,21 @@ func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if ui.cursorIdx > 0 {
 			runes = append(runes[:ui.cursorIdx-1], runes[ui.cursorIdx:]...)
-			ui.input = string(runes)
+			if ui.InFormMode {
+				ui.FormFields[ui.FormActiveIdx].Value = string(runes)
+			} else {
+				ui.input = string(runes)
+			}
 			ui.cursorIdx--
 		}
 	case tcell.KeyDelete:
 		if ui.cursorIdx < len(runes) {
 			runes = append(runes[:ui.cursorIdx], runes[ui.cursorIdx+1:]...)
-			ui.input = string(runes)
+			if ui.InFormMode {
+				ui.FormFields[ui.FormActiveIdx].Value = string(runes)
+			} else {
+				ui.input = string(runes)
+			}
 		}
 	case tcell.KeyLeft:
 		if ui.cursorIdx > 0 {
@@ -607,28 +687,13 @@ func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 		if ui.scrollOffset < 0 {
 			ui.scrollOffset = 0
 		}
-	case tcell.KeyUp:
-		if ui.hIndex > 0 {
-			if ui.hIndex == len(ui.history) {
-				ui.draft = ui.input
-			}
-			ui.hIndex--
-			ui.input = ui.history[ui.hIndex]
-			ui.cursorIdx = len([]rune(ui.input))
-		}
-	case tcell.KeyDown:
-		if ui.hIndex < len(ui.history)-1 {
-			ui.hIndex++
-			ui.input = ui.history[ui.hIndex]
-			ui.cursorIdx = len([]rune(ui.input))
-		} else if ui.hIndex == len(ui.history)-1 {
-			ui.hIndex++
-			ui.input = ui.draft
-			ui.cursorIdx = len([]rune(ui.input))
-		}
 	case tcell.KeyRune:
 		runes = append(runes[:ui.cursorIdx], append([]rune{ev.Rune()}, runes[ui.cursorIdx:]...)...)
-		ui.input = string(runes)
+		if ui.InFormMode {
+			ui.FormFields[ui.FormActiveIdx].Value = string(runes)
+		} else {
+			ui.input = string(runes)
+		}
 		ui.cursorIdx++
 	}
 

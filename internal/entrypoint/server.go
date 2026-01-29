@@ -61,8 +61,8 @@ type Server struct {
 	listener      net.Listener
 	headless      bool
 	httpClient    *http.Client
-	identities    map[string]string // keyHash -> "username@platform"
-	users         map[string]string // unnUsername -> keyHash
+	identities    map[string]string // keyHash -> "unnUsername platform_username@platform"
+	usernames     map[string]string // unnUsername -> keyHash
 }
 
 // NewServer creates a new entry point server
@@ -87,11 +87,10 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		punchSessions: make(map[string]*PunchSession),
 		httpClient:    http.DefaultClient,
 		identities:    make(map[string]string),
-		users:         make(map[string]string),
+		usernames:     make(map[string]string),
 	}
 
-	// Load identities and users from single files
-	s.loadIdentities()
+	// Load users from single file
 	s.loadUsers()
 
 	config.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
@@ -100,7 +99,7 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 
 		s.mu.RLock()
 		identity, verified := s.identities[pubKeyHash]
-		ownerHash, taken := s.users[requestedUser]
+		ownerHash, taken := s.usernames[requestedUser]
 		s.mu.RUnlock()
 
 		perms := &ssh.Permissions{
@@ -111,10 +110,16 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		}
 
 		if verified {
-			parts := strings.Split(identity, "@")
+			// identity is "unnUsername platform_username@platform"
+			parts := strings.SplitN(identity, " ", 2)
+			verifiedUsername := parts[0]
+			platformInfo := parts[1]
+
 			perms.Extensions["verified"] = "true"
-			perms.Extensions["username"] = parts[0]
-			perms.Extensions["platform"] = parts[1]
+			perms.Extensions["username"] = verifiedUsername
+
+			pParts := strings.Split(platformInfo, "@")
+			perms.Extensions["platform"] = pParts[1]
 		} else {
 			perms.Extensions["verified"] = "false"
 		}
@@ -203,6 +208,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer sshConn.Close()
 
 	username := sshConn.User()
+	if sshConn.Permissions != nil && sshConn.Permissions.Extensions["verified"] == "true" {
+		username = sshConn.Permissions.Extensions["username"]
+	}
 	log.Printf("Connection from: %s", username)
 
 	// Discard global requests
@@ -425,7 +433,6 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 
 func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 	entryUI := p.UI
-
 	if !s.headless {
 		screen, err := tcell.NewTerminfoScreenFromTty(p.Bus)
 		if err != nil {
@@ -439,21 +446,31 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 		entryUI.SetScreen(screen)
 	}
 
-	if len(s.banner) > 0 {
-		entryUI.SetBanner(s.banner)
-	}
-
-	// Check if verified or if username is taken
+	// Handle verification and command setup in background so entryUI.Run() can start
 	go func() {
 		verified := conn.Permissions != nil && conn.Permissions.Extensions["verified"] == "true"
 		taken := conn.Permissions != nil && conn.Permissions.Extensions["taken"] == "true"
 
 		if !verified {
-			if !s.handleOnboarding(p, conn) {
+			if !s.handleOnboardingForm(p, conn) {
+				s.mu.RLock()
+				if !s.headless && entryUI.GetScreen() != nil {
+					entryUI.GetScreen().Fini()
+				}
+				s.mu.RUnlock()
 				entryUI.Close(false)
 				return
 			}
-		} else if taken {
+			verified = true
+			taken = false
+		}
+
+		if len(s.banner) > 0 {
+			entryUI.SetBanner(s.banner)
+		}
+
+		// Check for username conflict if verified but taken
+		if taken {
 			// Identity is verified but they connected with a username owned by someone else
 			eui := p.UI
 			eui.ShowMessage("--- Username Conflict ---", ui.MsgServer)
@@ -466,21 +483,23 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 				}
 
 				s.mu.Lock()
-				_, exists := s.users[newUsername]
+				_, exists := s.usernames[newUsername]
 				if !exists {
 					// Update mapping
 					pubKeyHash := conn.Permissions.Extensions["pubkeyhash"]
+					platform := conn.Permissions.Extensions["platform"]
 
 					// Free old username if we were the owner
-					for u, h := range s.users {
+					for u, h := range s.usernames {
 						if h == pubKeyHash {
-							delete(s.users, u)
+							delete(s.usernames, u)
 							break
 						}
 					}
 
-					s.users[newUsername] = pubKeyHash
+					s.usernames[newUsername] = pubKeyHash
 					p.Username = newUsername
+					s.identities[pubKeyHash] = fmt.Sprintf("%s %s@%s", newUsername, newUsername, platform)
 					s.saveUsers()
 					s.mu.Unlock()
 
@@ -491,19 +510,19 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 				eui.ShowMessage("That username is also taken. Please try another.", ui.MsgServer)
 			}
 		}
-	}()
 
-	entryUI.OnCmd(func(cmd string) {
-		s.handlePersonCommand(p, conn, cmd)
-	})
+		entryUI.OnCmd(func(cmd string) {
+			s.handlePersonCommand(p, conn, cmd)
+		})
+
+		// Initial room list
+		s.updatePersonRooms(p)
+	}()
 
 	// Add OnClose callback to break terminal deadlock
 	entryUI.OnClose(func() {
 		p.Bus.SignalExit()
 	})
-
-	// Initial room list
-	s.updatePersonRooms(p)
 
 	success := entryUI.Run()
 
@@ -527,98 +546,6 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 	}
 
 	conn.Close() // Ensure immediate disconnect
-}
-
-func (s *Server) handleOnboarding(p *Person, conn *ssh.ServerConn) bool {
-	eui := p.UI
-	eui.ShowMessage("--- Identity Verification Required ---", ui.MsgServer)
-	eui.ShowMessage("Welcome to the Underground Node Network!", ui.MsgServer)
-	eui.ShowMessage("To participate, you must verify your identity using one of the supported platforms.", ui.MsgServer)
-	eui.ShowMessage("", ui.MsgServer)
-
-	platforms := []string{"github", "gitlab", "sourcehut", "codeberg"}
-
-	for {
-		platform := strings.ToLower(eui.Prompt("Enter platform (github/gitlab/sourcehut/codeberg):"))
-		valid := false
-		for _, p := range platforms {
-			if platform == p {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			eui.ShowMessage("Invalid platform.", ui.MsgServer)
-			continue
-		}
-
-		username := eui.Prompt(fmt.Sprintf("Enter your %s username:", platform))
-		if username == "" {
-			continue
-		}
-
-		eui.ShowMessage(fmt.Sprintf("Checking %s for public keys of user '%s'...", platform, username), ui.MsgServer)
-
-		pubKeyStr := conn.Permissions.Extensions["pubkey"]
-		offeredKey, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(pubKeyStr))
-
-		matched, err := s.VerifyIdentity(platform, username, offeredKey)
-		if err != nil {
-			eui.ShowMessage(fmt.Sprintf("Error during verification: %v", err), ui.MsgServer)
-			continue
-		}
-
-		if matched {
-			eui.ShowMessage("Identity verified successfully!", ui.MsgServer)
-
-			// Now let them choose a username if the current one is taken or they want to change it
-			pubKeyHash := s.calculatePubKeyHash(offeredKey)
-
-			for {
-				requestedUser := p.Username
-				s.mu.RLock()
-				ownerHash, taken := s.users[requestedUser]
-				s.mu.RUnlock()
-
-				if !taken || ownerHash == pubKeyHash {
-					break
-				}
-
-				eui.ShowMessage(fmt.Sprintf("Username '%s' is taken. Please choose another.", requestedUser), ui.MsgServer)
-				newUser := eui.Prompt("Enter new UNN username:")
-				if newUser != "" {
-					p.Username = newUser
-				}
-			}
-
-			s.mu.Lock()
-			// Update both maps
-			s.identities[pubKeyHash] = fmt.Sprintf("%s@%s", username, platform)
-
-			// Remove any old username mappings for this key
-			for u, h := range s.users {
-				if h == pubKeyHash {
-					delete(s.users, u)
-				}
-			}
-			s.users[p.Username] = pubKeyHash
-
-			s.saveIdentities()
-			s.saveUsers()
-			s.mu.Unlock()
-
-			// Update current session permissions
-			conn.Permissions.Extensions["verified"] = "true"
-			conn.Permissions.Extensions["platform"] = platform
-			conn.Permissions.Extensions["username"] = username
-			eui.Lock()
-			eui.LogsOnly = false
-			eui.Unlock()
-			return true
-		} else {
-			eui.ShowMessage("Your public key was NOT found on that platform for that user.", ui.MsgServer)
-		}
-	}
 }
 
 func (s *Server) VerifyIdentity(platform, username string, offeredKey ssh.PublicKey) (bool, error) {
@@ -855,41 +782,6 @@ func (s *Server) calculatePubKeyHash(key ssh.PublicKey) string {
 	return fmt.Sprintf("%x", hash)
 }
 
-func (s *Server) loadIdentities() {
-	path := filepath.Join(s.usersDir, "identities")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) == 2 {
-			s.identities[parts[0]] = parts[1]
-		}
-	}
-}
-
-func (s *Server) saveIdentities() error {
-	if err := os.MkdirAll(s.usersDir, 0700); err != nil {
-		log.Printf("Error creating users directory: %v", err)
-		return err
-	}
-	var buf bytes.Buffer
-	for hash, id := range s.identities {
-		buf.WriteString(fmt.Sprintf("%s %s\n", hash, id))
-	}
-	err := os.WriteFile(filepath.Join(s.usersDir, "identities"), buf.Bytes(), 0600)
-	if err != nil {
-		log.Printf("Error saving identities: %v", err)
-	}
-	return err
-}
-
 func (s *Server) loadUsers() {
 	path := filepath.Join(s.usersDir, "users")
 	data, err := os.ReadFile(path)
@@ -902,9 +794,14 @@ func (s *Server) loadUsers() {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) == 2 {
-			s.users[parts[0]] = parts[1]
+		// format: hash unn_username platform_username@platform
+		parts := strings.SplitN(line, " ", 3)
+		if len(parts) == 3 {
+			hash := parts[0]
+			unnName := parts[1]
+			platformId := parts[2]
+			s.identities[hash] = fmt.Sprintf("%s %s", unnName, platformId)
+			s.usernames[unnName] = hash
 		}
 	}
 }
@@ -915,8 +812,11 @@ func (s *Server) saveUsers() error {
 		return err
 	}
 	var buf bytes.Buffer
-	for user, hash := range s.users {
-		buf.WriteString(fmt.Sprintf("%s %s\n", user, hash))
+	// We want to save both maps into the single file.
+	// Since identities map contains info for all hashes, we iterate it.
+	for hash, info := range s.identities {
+		// info is "unnUsername platform_username@platform"
+		buf.WriteString(fmt.Sprintf("%s %s\n", hash, info))
 	}
 	err := os.WriteFile(filepath.Join(s.usersDir, "users"), buf.Bytes(), 0600)
 	if err != nil {
@@ -982,4 +882,71 @@ func (s *Server) getPubKeyHash(keyStr string) string {
 	}
 	hash := sha256.Sum256(pubKey.Marshal())
 	return fmt.Sprintf("%x", hash)
+}
+func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
+	eui := p.UI
+	sshUser := conn.User()
+
+	fields := []ui.FormField{
+		{Label: "Platform (github, gitlab, sourcehut, codeberg)", Value: "github"},
+		{Label: "Platform Username", Value: ""},
+		{Label: "UNN Username", Value: sshUser},
+	}
+
+	for {
+		results := eui.PromptForm(fields)
+		if len(results) < 3 {
+			return false
+		}
+		platform := strings.ToLower(strings.TrimSpace(results[0]))
+		platformUser := strings.TrimSpace(results[1])
+		unnUsername := strings.TrimSpace(results[2])
+
+		if platform == "" || platformUser == "" || unnUsername == "" {
+			continue
+		}
+
+		platforms := []string{"github", "gitlab", "sourcehut", "codeberg"}
+		validPlatform := false
+		for _, v := range platforms {
+			if platform == v {
+				validPlatform = true
+				break
+			}
+		}
+		if !validPlatform {
+			continue
+		}
+
+		pubKeyStr := conn.Permissions.Extensions["pubkey"]
+		offeredKey, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(pubKeyStr))
+
+		matched, err := s.VerifyIdentity(platform, platformUser, offeredKey)
+		if err != nil {
+			continue
+		}
+
+		if matched {
+			pubKeyHash := s.calculatePubKeyHash(offeredKey)
+			s.mu.RLock()
+			ownerHash, taken := s.usernames[unnUsername]
+			s.mu.RUnlock()
+
+			if taken && ownerHash != pubKeyHash {
+				continue
+			}
+
+			s.mu.Lock()
+			s.usernames[unnUsername] = pubKeyHash
+			s.identities[pubKeyHash] = fmt.Sprintf("%s %s@%s", unnUsername, platformUser, platform)
+			s.saveUsers()
+			s.mu.Unlock()
+
+			p.Username = unnUsername
+			conn.Permissions.Extensions["verified"] = "true"
+			conn.Permissions.Extensions["platform"] = platform
+			conn.Permissions.Extensions["username"] = unnUsername
+			return true
+		}
+	}
 }

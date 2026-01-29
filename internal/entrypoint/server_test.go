@@ -106,29 +106,24 @@ func TestStorage(t *testing.T) {
 	s := &Server{
 		usersDir:   tmpDir,
 		identities: make(map[string]string),
-		users:      make(map[string]string),
+		usernames:  make(map[string]string),
 	}
 
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	sshPubKey, _ := ssh.NewPublicKey(pub)
 	hash := s.calculatePubKeyHash(sshPubKey)
 
-	// Save identity and username
+	// Save unified user info
 	s.mu.Lock()
-	s.identities[hash] = "testuser@github"
-	s.users["maurits"] = hash
-	s.saveIdentities()
+	s.identities[hash] = "maurits testuser@github"
+	s.usernames["maurits"] = hash
 	s.saveUsers()
 	s.mu.Unlock()
 
-	// Verify files
-	idData, _ := os.ReadFile(filepath.Join(tmpDir, "identities"))
-	if !strings.Contains(string(idData), hash+" testuser@github") {
-		t.Errorf("Identities file missing data. Got: %s", string(idData))
-	}
-
+	// Verify file
 	userData, _ := os.ReadFile(filepath.Join(tmpDir, "users"))
-	if !strings.Contains(string(userData), "maurits "+hash) {
+	expected := fmt.Sprintf("%s maurits testuser@github\n", hash)
+	if !strings.Contains(string(userData), expected) {
 		t.Errorf("Users file missing data. Got: %s", string(userData))
 	}
 
@@ -136,23 +131,22 @@ func TestStorage(t *testing.T) {
 	s2 := &Server{
 		usersDir:   tmpDir,
 		identities: make(map[string]string),
-		users:      make(map[string]string),
+		usernames:  make(map[string]string),
 	}
-	s2.loadIdentities()
 	s2.loadUsers()
 
-	if s2.identities[hash] != "testuser@github" {
+	if s2.identities[hash] != "maurits testuser@github" {
 		t.Errorf("Failed to load identity. Got: %s", s2.identities[hash])
 	}
-	if s2.users["maurits"] != hash {
-		t.Errorf("Failed to load username. Got: %s", s2.users["maurits"])
+	if s2.usernames["maurits"] != hash {
+		t.Errorf("Failed to load username. Got: %s", s2.usernames["maurits"])
 	}
 }
 
 func TestUsernameUniqueness(t *testing.T) {
 	s := &Server{
 		identities: make(map[string]string),
-		users:      make(map[string]string),
+		usernames:  make(map[string]string),
 	}
 
 	pub1, _, _ := ed25519.GenerateKey(rand.Reader)
@@ -163,18 +157,18 @@ func TestUsernameUniqueness(t *testing.T) {
 	sshPubKey2, _ := ssh.NewPublicKey(pub2)
 	hash2 := s.calculatePubKeyHash(sshPubKey2)
 
-	s.users["taken"] = hash1
+	s.usernames["taken"] = hash1
 
 	// Check PublicKeyCallback logic (simulated)
 	t.Run("UsernameAvailable", func(t *testing.T) {
-		_, taken := s.users["free"]
+		_, taken := s.usernames["free"]
 		if taken {
 			t.Error("Username 'free' should be available")
 		}
 	})
 
 	t.Run("UsernameTakenByOther", func(t *testing.T) {
-		ownerHash, taken := s.users["taken"]
+		ownerHash, taken := s.usernames["taken"]
 		if !taken {
 			t.Fatal("Username 'taken' should be taken")
 		}
@@ -184,11 +178,47 @@ func TestUsernameUniqueness(t *testing.T) {
 	})
 
 	t.Run("UsernameOwnedBySelf", func(t *testing.T) {
-		ownerHash, taken := s.users["taken"]
+		ownerHash, taken := s.usernames["taken"]
 		if !taken || ownerHash != hash1 {
 			t.Error("Username 'taken' should be recognized as owned by self (hash1)")
 		}
 	})
+}
+
+func TestRegisteredUsernamePriority(t *testing.T) {
+	s := &Server{
+		identities: make(map[string]string),
+		usernames:  make(map[string]string),
+	}
+
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	sshPubKey, _ := ssh.NewPublicKey(pub)
+	hash := s.calculatePubKeyHash(sshPubKey)
+
+	// Registered as "realname"
+	s.identities[hash] = "realname platform_user@github"
+	s.usernames["realname"] = hash
+
+	// Connection attempt with "wrongname"
+	requestedUser := "wrongname"
+
+	// Mocking what PublicKeyCallback does
+	perms := &ssh.Permissions{
+		Extensions: map[string]string{
+			"verified": "true",
+			"username": "realname",
+		},
+	}
+
+	// Mocking what handleConnection does
+	username := requestedUser
+	if perms != nil && perms.Extensions["verified"] == "true" {
+		username = perms.Extensions["username"]
+	}
+
+	if username != "realname" {
+		t.Errorf("Expected username to be prioritized to 'realname', got '%s'", username)
+	}
 }
 
 func TestNewServer(t *testing.T) {
@@ -215,7 +245,7 @@ func TestNewServer(t *testing.T) {
 		t.Error("httpClient not initialized")
 	}
 
-	if s.identities == nil || s.users == nil {
+	if s.identities == nil || s.usernames == nil {
 		t.Error("Maps not initialized")
 	}
 }
