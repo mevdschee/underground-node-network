@@ -64,6 +64,38 @@ func TestChatUINavigation(t *testing.T) {
 	if ui.input != "cmd2" || ui.hIndex != 1 {
 		t.Errorf("Expected 'cmd2', hIndex 1. Got '%s', %d", ui.input, ui.hIndex)
 	}
+
+	// Test Horizontal Scrolling
+	// Simulate small screen (w=10). prompt="> " (len 2). availWidth = 10 - 2 - 2 = 6
+	// The availWidth calculation in code is w - len([]rune(prompt)) - 2
+	ui.input = ""
+	ui.cursorIdx = 0
+	ui.inputOffset = 0
+	// For testing, we need to mock ui.screen.Size() or use the actual simulation screen
+	simScreen := ui.screen.(tcell.SimulationScreen)
+	simScreen.SetSize(10, 10)
+
+	// Type 7 chars: "1234567"
+	for _, r := range "1234567" {
+		ui.handleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	// cursorIdx should be 7. availWidth = 10 - 2 - 2 = 6.
+	// inputOffset should trigger: 7 >= 0 + 6 -> inputOffset = 7 - 6 + 1 = 2
+	if ui.inputOffset != 2 {
+		t.Errorf("Expected inputOffset 2, got %d", ui.inputOffset)
+	}
+
+	// Test Home resets offset
+	ui.handleKey(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
+	if ui.inputOffset != 0 {
+		t.Errorf("Expected inputOffset 0 after Home, got %d", ui.inputOffset)
+	}
+
+	// Test End moves offset
+	ui.handleKey(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone))
+	if ui.inputOffset != 2 {
+		t.Errorf("Expected inputOffset 2 after End, got %d", ui.inputOffset)
+	}
 }
 
 func TestEntryUINavigation(t *testing.T) {

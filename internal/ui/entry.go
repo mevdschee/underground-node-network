@@ -27,6 +27,7 @@ type EntryUI struct {
 	hIndex       int
 	cursorIdx    int
 	scrollOffset int
+	inputOffset  int
 	physicalLogs []Message
 	lastWidth    int
 	lastLogCount int
@@ -376,8 +377,18 @@ func (ui *EntryUI) Draw() {
 
 	// Draw input
 	prompt := "> "
-	ui.drawText(1, h-1, prompt+ui.input, w-2, promptStyle)
-	s.ShowCursor(len([]rune(prompt))+ui.cursorIdx+1, h-1)
+	runes := []rune(ui.input)
+	visibleInput := ""
+	if ui.inputOffset < len(runes) {
+		endIdx := ui.inputOffset + (w - len([]rune(prompt)) - 2)
+		if endIdx > len(runes) {
+			endIdx = len(runes)
+		}
+		visibleInput = string(runes[ui.inputOffset:endIdx])
+	}
+
+	ui.drawText(1, h-1, prompt+visibleInput, w-2, promptStyle)
+	s.ShowCursor(1+len([]rune(prompt))+ui.cursorIdx-ui.inputOffset, h-1)
 
 	s.Show()
 }
@@ -398,6 +409,7 @@ func (ui *EntryUI) handleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 			ui.input = ""
 			ui.cursorIdx = 0
 			ui.scrollOffset = 0
+			ui.inputOffset = 0
 
 			// Save to history if not duplicate of last
 			if len(ui.history) == 0 || ui.history[len(ui.history)-1] != cmd {
@@ -465,6 +477,25 @@ func (ui *EntryUI) handleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 		ui.input = string(runes)
 		ui.cursorIdx++
 	}
+
+	// Update inputOffset to follow cursor
+	w, _ := ui.screen.Size()
+	prompt := "> "
+	availWidth := w - len([]rune(prompt)) - 2
+	if availWidth < 1 {
+		availWidth = 1
+	}
+
+	if ui.cursorIdx < ui.inputOffset {
+		ui.inputOffset = ui.cursorIdx
+	}
+	if ui.cursorIdx >= ui.inputOffset+availWidth {
+		ui.inputOffset = ui.cursorIdx - availWidth + 1
+	}
+	if ui.inputOffset < 0 {
+		ui.inputOffset = 0
+	}
+
 	return false, false
 }
 

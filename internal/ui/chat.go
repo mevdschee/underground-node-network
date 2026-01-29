@@ -307,6 +307,7 @@ func (ui *ChatUI) Run() string {
 					ui.input = ""
 					ui.cursorIdx = 0
 					ui.scrollOffset = 0
+					ui.inputOffset = 0
 
 					// Save to history if not empty and different from last
 					if msg != "" && (len(ui.history) == 0 || ui.history[len(ui.history)-1] != msg) {
@@ -548,9 +549,18 @@ func (ui *ChatUI) Draw() {
 
 	// Draw input
 	prompt := "> "
-	fullInput := prompt + ui.input
-	ui.drawText(1, h-1, fullInput, w-2, promptStyle)
-	s.ShowCursor(1+len([]rune(prompt))+ui.cursorIdx, h-1)
+	runes := []rune(ui.input)
+	visibleInput := ""
+	if ui.inputOffset < len(runes) {
+		endIdx := ui.inputOffset + (w - len([]rune(prompt)) - 2)
+		if endIdx > len(runes) {
+			endIdx = len(runes)
+		}
+		visibleInput = string(runes[ui.inputOffset:endIdx])
+	}
+
+	ui.drawText(1, h-1, prompt+visibleInput, w-2, promptStyle)
+	s.ShowCursor(1+len([]rune(prompt))+ui.cursorIdx-ui.inputOffset, h-1)
 
 	s.Show()
 }
@@ -620,6 +630,25 @@ func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
 		ui.input = string(runes)
 		ui.cursorIdx++
 	}
+
+	// Update inputOffset to follow cursor
+	w, _ := ui.screen.Size()
+	prompt := "> "
+	availWidth := w - len([]rune(prompt)) - 2
+	if availWidth < 1 {
+		availWidth = 1
+	}
+
+	if ui.cursorIdx < ui.inputOffset {
+		ui.inputOffset = ui.cursorIdx
+	}
+	if ui.cursorIdx >= ui.inputOffset+availWidth {
+		ui.inputOffset = ui.cursorIdx - availWidth + 1
+	}
+	if ui.inputOffset < 0 {
+		ui.inputOffset = 0
+	}
+
 	return false
 }
 
