@@ -96,37 +96,103 @@ func TestCalculatePubKeyHash(t *testing.T) {
 	}
 }
 
-func TestSaveIdentity(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "unn_test_users")
+func TestStorage(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "unn_test_storage")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	s := &Server{usersDir: tmpDir}
+	s := &Server{
+		usersDir:   tmpDir,
+		identities: make(map[string]string),
+		users:      make(map[string]string),
+	}
 
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	sshPubKey, _ := ssh.NewPublicKey(pub)
-
-	err = s.saveIdentity(sshPubKey, "github", "testuser")
-	if err != nil {
-		t.Fatalf("saveIdentity failed: %v", err)
-	}
-
 	hash := s.calculatePubKeyHash(sshPubKey)
-	path := filepath.Join(tmpDir, hash+".identity")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("Failed to read identity file: %v", err)
+
+	// Save identity and username
+	s.mu.Lock()
+	s.identities[hash] = "testuser@github"
+	s.users["maurits"] = hash
+	s.saveIdentities()
+	s.saveUsers()
+	s.mu.Unlock()
+
+	// Verify files
+	idData, _ := os.ReadFile(filepath.Join(tmpDir, "identities"))
+	if !strings.Contains(string(idData), hash+" testuser@github") {
+		t.Errorf("Identities file missing data. Got: %s", string(idData))
 	}
 
-	if string(data) != "github:testuser" {
-		t.Errorf("Expected 'github:testuser', got '%s'", string(data))
+	userData, _ := os.ReadFile(filepath.Join(tmpDir, "users"))
+	if !strings.Contains(string(userData), "maurits "+hash) {
+		t.Errorf("Users file missing data. Got: %s", string(userData))
+	}
+
+	// Test Loading
+	s2 := &Server{
+		usersDir:   tmpDir,
+		identities: make(map[string]string),
+		users:      make(map[string]string),
+	}
+	s2.loadIdentities()
+	s2.loadUsers()
+
+	if s2.identities[hash] != "testuser@github" {
+		t.Errorf("Failed to load identity. Got: %s", s2.identities[hash])
+	}
+	if s2.users["maurits"] != hash {
+		t.Errorf("Failed to load username. Got: %s", s2.users["maurits"])
 	}
 }
 
+func TestUsernameUniqueness(t *testing.T) {
+	s := &Server{
+		identities: make(map[string]string),
+		users:      make(map[string]string),
+	}
+
+	pub1, _, _ := ed25519.GenerateKey(rand.Reader)
+	sshPubKey1, _ := ssh.NewPublicKey(pub1)
+	hash1 := s.calculatePubKeyHash(sshPubKey1)
+
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	sshPubKey2, _ := ssh.NewPublicKey(pub2)
+	hash2 := s.calculatePubKeyHash(sshPubKey2)
+
+	s.users["taken"] = hash1
+
+	// Check PublicKeyCallback logic (simulated)
+	t.Run("UsernameAvailable", func(t *testing.T) {
+		_, taken := s.users["free"]
+		if taken {
+			t.Error("Username 'free' should be available")
+		}
+	})
+
+	t.Run("UsernameTakenByOther", func(t *testing.T) {
+		ownerHash, taken := s.users["taken"]
+		if !taken {
+			t.Fatal("Username 'taken' should be taken")
+		}
+		if ownerHash == hash2 {
+			t.Error("Username 'taken' should be owned by hash1, not hash2")
+		}
+	})
+
+	t.Run("UsernameOwnedBySelf", func(t *testing.T) {
+		ownerHash, taken := s.users["taken"]
+		if !taken || ownerHash != hash1 {
+			t.Error("Username 'taken' should be recognized as owned by self (hash1)")
+		}
+	})
+}
+
 func TestNewServer(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "unn_test_users")
+	tmpDir, err := os.MkdirTemp("", "unn_test_server")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,5 +213,9 @@ func TestNewServer(t *testing.T) {
 
 	if s.httpClient == nil {
 		t.Error("httpClient not initialized")
+	}
+
+	if s.identities == nil || s.users == nil {
+		t.Error("Maps not initialized")
 	}
 }

@@ -62,7 +62,7 @@ type Server struct {
 	headless      bool
 	httpClient    *http.Client
 	identities    map[string]string // keyHash -> "username@platform"
-	usernames     map[string]string // unnUsername -> keyHash
+	users         map[string]string // unnUsername -> keyHash
 }
 
 // NewServer creates a new entry point server
@@ -87,12 +87,12 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		punchSessions: make(map[string]*PunchSession),
 		httpClient:    http.DefaultClient,
 		identities:    make(map[string]string),
-		usernames:     make(map[string]string),
+		users:         make(map[string]string),
 	}
 
-	// Load identities and usernames from single files
+	// Load identities and users from single files
 	s.loadIdentities()
-	s.loadUsernames()
+	s.loadUsers()
 
 	config.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
 		pubKeyHash := s.calculatePubKeyHash(pubKey)
@@ -100,12 +100,13 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 
 		s.mu.RLock()
 		identity, verified := s.identities[pubKeyHash]
-		ownerHash, taken := s.usernames[requestedUser]
+		ownerHash, taken := s.users[requestedUser]
 		s.mu.RUnlock()
 
 		perms := &ssh.Permissions{
 			Extensions: map[string]string{
-				"pubkey": string(ssh.MarshalAuthorizedKey(pubKey)),
+				"pubkey":     string(ssh.MarshalAuthorizedKey(pubKey)),
+				"pubkeyhash": pubKeyHash,
 			},
 		}
 
@@ -465,22 +466,22 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 				}
 
 				s.mu.Lock()
-				_, exists := s.usernames[newUsername]
+				_, exists := s.users[newUsername]
 				if !exists {
 					// Update mapping
-					pubKeyHash := s.calculatePubKeyHash(conn.PublicKey())
+					pubKeyHash := conn.Permissions.Extensions["pubkeyhash"]
 
 					// Free old username if we were the owner
-					for u, h := range s.usernames {
+					for u, h := range s.users {
 						if h == pubKeyHash {
-							delete(s.usernames, u)
+							delete(s.users, u)
 							break
 						}
 					}
 
-					s.usernames[newUsername] = pubKeyHash
+					s.users[newUsername] = pubKeyHash
 					p.Username = newUsername
-					s.saveUsernames()
+					s.saveUsers()
 					s.mu.Unlock()
 
 					eui.ShowMessage(fmt.Sprintf("Username updated to '%s'.", newUsername), ui.MsgServer)
@@ -576,7 +577,7 @@ func (s *Server) handleOnboarding(p *Person, conn *ssh.ServerConn) bool {
 			for {
 				requestedUser := p.Username
 				s.mu.RLock()
-				ownerHash, taken := s.usernames[requestedUser]
+				ownerHash, taken := s.users[requestedUser]
 				s.mu.RUnlock()
 
 				if !taken || ownerHash == pubKeyHash {
@@ -595,15 +596,15 @@ func (s *Server) handleOnboarding(p *Person, conn *ssh.ServerConn) bool {
 			s.identities[pubKeyHash] = fmt.Sprintf("%s@%s", username, platform)
 
 			// Remove any old username mappings for this key
-			for u, h := range s.usernames {
+			for u, h := range s.users {
 				if h == pubKeyHash {
-					delete(s.usernames, u)
+					delete(s.users, u)
 				}
 			}
-			s.usernames[p.Username] = pubKeyHash
+			s.users[p.Username] = pubKeyHash
 
 			s.saveIdentities()
-			s.saveUsernames()
+			s.saveUsers()
 			s.mu.Unlock()
 
 			// Update current session permissions
@@ -873,8 +874,24 @@ func (s *Server) loadIdentities() {
 	}
 }
 
-func (s *Server) loadUsernames() {
-	path := filepath.Join(s.usersDir, "usernames")
+func (s *Server) saveIdentities() error {
+	if err := os.MkdirAll(s.usersDir, 0700); err != nil {
+		log.Printf("Error creating users directory: %v", err)
+		return err
+	}
+	var buf bytes.Buffer
+	for hash, id := range s.identities {
+		buf.WriteString(fmt.Sprintf("%s %s\n", hash, id))
+	}
+	err := os.WriteFile(filepath.Join(s.usersDir, "identities"), buf.Bytes(), 0600)
+	if err != nil {
+		log.Printf("Error saving identities: %v", err)
+	}
+	return err
+}
+
+func (s *Server) loadUsers() {
+	path := filepath.Join(s.usersDir, "users")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -887,25 +904,25 @@ func (s *Server) loadUsernames() {
 		}
 		parts := strings.SplitN(line, " ", 2)
 		if len(parts) == 2 {
-			s.usernames[parts[0]] = parts[1]
+			s.users[parts[0]] = parts[1]
 		}
 	}
 }
 
-func (s *Server) saveIdentities() error {
-	var buf bytes.Buffer
-	for hash, id := range s.identities {
-		buf.WriteString(fmt.Sprintf("%s %s\n", hash, id))
+func (s *Server) saveUsers() error {
+	if err := os.MkdirAll(s.usersDir, 0700); err != nil {
+		log.Printf("Error creating users directory: %v", err)
+		return err
 	}
-	return os.WriteFile(filepath.Join(s.usersDir, "identities"), buf.Bytes(), 0600)
-}
-
-func (s *Server) saveUsernames() error {
 	var buf bytes.Buffer
-	for user, hash := range s.usernames {
+	for user, hash := range s.users {
 		buf.WriteString(fmt.Sprintf("%s %s\n", user, hash))
 	}
-	return os.WriteFile(filepath.Join(s.usersDir, "usernames"), buf.Bytes(), 0600)
+	err := os.WriteFile(filepath.Join(s.usersDir, "users"), buf.Bytes(), 0600)
+	if err != nil {
+		log.Printf("Error saving users file: %v", err)
+	}
+	return err
 }
 
 func (s *Server) showTeleportInfo(p *Person) {

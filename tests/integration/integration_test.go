@@ -43,8 +43,8 @@ func TestIntegration_BasicRegistration(t *testing.T) {
 	roomHash := sha256.Sum256(roomPubKeyRaw.Marshal())
 	userHash := sha256.Sum256(userPubKeyRaw.Marshal())
 
-	os.WriteFile(filepath.Join(usersDir, fmt.Sprintf("%x.identity", roomHash)), []byte("github:testroom1"), 0600)
-	os.WriteFile(filepath.Join(usersDir, fmt.Sprintf("%x.identity", userHash)), []byte("github:maurits"), 0600)
+	os.WriteFile(filepath.Join(usersDir, "identities"), []byte(fmt.Sprintf("%x testroom1@github\n%x maurits@github\n", roomHash, userHash)), 0600)
+	os.WriteFile(filepath.Join(usersDir, "users"), []byte(fmt.Sprintf("testroom1 %x\nmaurits %x\n", roomHash, userHash)), 0600)
 
 	epPort := 44323
 	epHostKey := filepath.Join(tempDir, "ep_host_key")
@@ -131,8 +131,8 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	roomHash := sha256.Sum256(roomPubKeyRaw.Marshal())
 	userHash := sha256.Sum256(userPubKeyRaw.Marshal())
 
-	os.WriteFile(filepath.Join(usersDir, fmt.Sprintf("%x.identity", roomHash)), []byte("github:downloadroom"), 0600)
-	os.WriteFile(filepath.Join(usersDir, fmt.Sprintf("%x.identity", userHash)), []byte("github:maurits"), 0600)
+	os.WriteFile(filepath.Join(usersDir, "identities"), []byte(fmt.Sprintf("%x downloadroom@github\n%x maurits@github\n", roomHash, userHash)), 0600)
+	os.WriteFile(filepath.Join(usersDir, "users"), []byte(fmt.Sprintf("downloadroom %x\nmaurits %x\n", roomHash, userHash)), 0600)
 
 	epPort := 44324
 	epHostKey := filepath.Join(tempDir, "ep_host_key")
