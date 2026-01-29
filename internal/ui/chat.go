@@ -28,27 +28,29 @@ type Message struct {
 }
 
 type ChatUI struct {
-	screen     tcell.Screen
-	messages   []Message
-	people     []string
-	doors      []string
-	input      string
-	history    []string
-	hIndex     int
-	mu         sync.Mutex
-	username   string
-	title      string
-	onSend     func(string)
-	onExit     func()
-	onClose    func()
-	onCmd      func(string) bool
-	drawChan   chan struct{}
-	closeChan  chan struct{}
-	pendingCmd string
-	success    bool
-	firstDraw  bool
-	Headless   bool
-	Input      io.ReadWriter
+	screen       tcell.Screen
+	messages     []Message
+	people       []string
+	doors        []string
+	input        string
+	history      []string
+	hIndex       int
+	mu           sync.Mutex
+	username     string
+	title        string
+	onSend       func(string)
+	onExit       func()
+	onClose      func()
+	onCmd        func(string) bool
+	drawChan     chan struct{}
+	closeChan    chan struct{}
+	scrollOffset int
+	cursorIdx    int
+	pendingCmd   string
+	success      bool
+	firstDraw    bool
+	Headless     bool
+	Input        io.ReadWriter
 }
 
 func NewChatUI(screen tcell.Screen) *ChatUI {
@@ -190,6 +192,8 @@ func (ui *ChatUI) Reset() {
 	ui.closeChan = make(chan struct{}, 1)
 	ui.pendingCmd = ""
 	ui.firstDraw = true
+	ui.cursorIdx = 0
+	ui.scrollOffset = 0
 }
 
 func (ui *ChatUI) Run() string {
@@ -289,9 +293,24 @@ func (ui *ChatUI) Run() string {
 					go ui.Close(false) // Trigger clean exit via signal
 					return
 				}
-				if ev.Key() == tcell.KeyEnter && len(ui.input) > 0 {
+				if ev.Key() == tcell.KeyEnter {
+					ui.mu.Lock()
 					msg := ui.input
 					ui.input = ""
+					ui.cursorIdx = 0
+					ui.scrollOffset = 0
+
+					// Save to history if not empty and different from last
+					if msg != "" && (len(ui.history) == 0 || ui.history[len(ui.history)-1] != msg) {
+						ui.history = append(ui.history, msg)
+					}
+					ui.hIndex = len(ui.history)
+					ui.mu.Unlock()
+
+					if msg == "" {
+						continue
+					}
+
 					if strings.HasPrefix(msg, "/") {
 						handled := false
 						ui.mu.Lock()
@@ -356,6 +375,7 @@ outer:
 func (ui *ChatUI) AddMessage(msg string, msgType MessageType) {
 	ui.mu.Lock()
 	ui.messages = append(ui.messages, Message{Text: msg, Type: msgType})
+	ui.scrollOffset = 0 // Auto-scroll to bottom
 	screen := ui.screen
 	ui.mu.Unlock()
 
@@ -431,14 +451,16 @@ func (ui *ChatUI) Draw() {
 		mainH = 0
 	}
 	// Draw messages (Main Pane)
-	start := 0
-	if len(ui.messages) > mainH {
-		start = len(ui.messages) - mainH
+	viewEnd := len(ui.messages) - ui.scrollOffset
+	if viewEnd < 0 {
+		viewEnd = 0
 	}
-	if start < 0 {
-		start = 0
+	viewStart := viewEnd - mainH
+	if viewStart < 0 {
+		viewStart = 0
 	}
-	for i, msg := range ui.messages[start:] {
+
+	for i, msg := range ui.messages[viewStart:viewEnd] {
 		if i >= mainH {
 			break
 		}
@@ -518,7 +540,7 @@ func (ui *ChatUI) Draw() {
 	prompt := "> "
 	fullInput := prompt + ui.input
 	ui.drawText(1, h-1, fullInput, w-2, promptStyle)
-	s.ShowCursor(len([]rune(prompt))+len([]rune(ui.input))+1, h-1)
+	s.ShowCursor(1+len([]rune(prompt))+ui.cursorIdx, h-1)
 
 	s.Show()
 }
@@ -527,29 +549,66 @@ func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 
+	runes := []rune(ui.input)
+
 	switch ev.Key() {
 	case tcell.KeyEnter:
 		// Handled in Run
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		runes := []rune(ui.input)
-		if len(runes) > 0 {
-			ui.input = string(runes[:len(runes)-1])
+		if ui.cursorIdx > 0 {
+			runes = append(runes[:ui.cursorIdx-1], runes[ui.cursorIdx:]...)
+			ui.input = string(runes)
+			ui.cursorIdx--
+		}
+	case tcell.KeyDelete:
+		if ui.cursorIdx < len(runes) {
+			runes = append(runes[:ui.cursorIdx], runes[ui.cursorIdx+1:]...)
+			ui.input = string(runes)
+		}
+	case tcell.KeyLeft:
+		if ui.cursorIdx > 0 {
+			ui.cursorIdx--
+		}
+	case tcell.KeyRight:
+		if ui.cursorIdx < len(runes) {
+			ui.cursorIdx++
+		}
+	case tcell.KeyHome:
+		ui.cursorIdx = 0
+	case tcell.KeyEnd:
+		ui.cursorIdx = len(runes)
+	case tcell.KeyPgUp:
+		_, h := ui.screen.Size()
+		ui.scrollOffset += (h - 4)
+		if ui.scrollOffset > len(ui.messages) {
+			ui.scrollOffset = len(ui.messages)
+		}
+	case tcell.KeyPgDn:
+		_, h := ui.screen.Size()
+		ui.scrollOffset -= (h - 4)
+		if ui.scrollOffset < 0 {
+			ui.scrollOffset = 0
 		}
 	case tcell.KeyUp:
 		if ui.hIndex > 0 {
 			ui.hIndex--
 			ui.input = ui.history[ui.hIndex]
+			ui.cursorIdx = len([]rune(ui.input))
 		}
 	case tcell.KeyDown:
 		if ui.hIndex < len(ui.history)-1 {
 			ui.hIndex++
 			ui.input = ui.history[ui.hIndex]
+			ui.cursorIdx = len([]rune(ui.input))
 		} else {
 			ui.hIndex = len(ui.history)
 			ui.input = ""
+			ui.cursorIdx = 0
 		}
 	case tcell.KeyRune:
-		ui.input += string(ev.Rune())
+		runes = append(runes[:ui.cursorIdx], append([]rune{ev.Rune()}, runes[ui.cursorIdx:]...)...)
+		ui.input = string(runes)
+		ui.cursorIdx++
 	}
 	return false
 }
