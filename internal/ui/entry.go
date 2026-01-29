@@ -17,20 +17,24 @@ type RoomInfo struct {
 }
 
 type EntryUI struct {
-	screen    tcell.Screen
-	rooms     []RoomInfo
-	logs      []Message
-	input     string
-	username  string
-	addr      string
-	mu        sync.Mutex
-	onCmd     func(string)
-	onExit    func()
-	onClose   func()
-	closeChan chan struct{}
-	success   bool
-	Headless  bool
-	Input     io.ReadWriter
+	screen       tcell.Screen
+	rooms        []RoomInfo
+	logs         []Message
+	input        string
+	username     string
+	addr         string
+	history      []string
+	hIndex       int
+	cursorIdx    int
+	scrollOffset int
+	mu           sync.Mutex
+	onCmd        func(string)
+	onExit       func()
+	onClose      func()
+	closeChan    chan struct{}
+	success      bool
+	Headless     bool
+	Input        io.ReadWriter
 }
 
 func NewEntryUI(screen tcell.Screen, username, addr string) *EntryUI {
@@ -110,6 +114,7 @@ func (ui *EntryUI) ShowMessage(msg string, msgType MessageType) {
 	if len(ui.logs) > 100 {
 		ui.logs = ui.logs[1:]
 	}
+	ui.scrollOffset = 0 // Reset scroll on new message
 	ui.mu.Unlock()
 	if ui.Headless && ui.Input != nil {
 		fmt.Fprintf(ui.Input, "%s\r\n", msg)
@@ -319,11 +324,15 @@ func (ui *EntryUI) Draw() {
 	// Draw Main Pane (Left) - Messages (including Banner)
 	logH := h - 2 - contentStartY
 	if logH > 0 {
-		logStart := 0
-		if len(ui.logs) > logH {
-			logStart = len(ui.logs) - logH
+		logEnd := len(ui.logs) - ui.scrollOffset
+		if logEnd < 0 {
+			logEnd = 0
 		}
-		for i, logMsg := range ui.logs[logStart:] {
+		logStart := logEnd - logH
+		if logStart < 0 {
+			logStart = 0
+		}
+		for i, logMsg := range ui.logs[logStart:logEnd] {
 			if contentStartY+i >= h-2 {
 				break
 			}
@@ -363,7 +372,7 @@ func (ui *EntryUI) Draw() {
 	// Draw input
 	prompt := "> "
 	ui.drawText(1, h-1, prompt+ui.input, w-2, promptStyle)
-	s.ShowCursor(len([]rune(prompt))+len([]rune(ui.input))+1, h-1)
+	s.ShowCursor(len([]rune(prompt))+ui.cursorIdx+1, h-1)
 
 	s.Show()
 }
@@ -371,6 +380,8 @@ func (ui *EntryUI) Draw() {
 func (ui *EntryUI) handleKeyResult(ev *tcell.EventKey) (done bool, success bool) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
+
+	runes := []rune(ui.input)
 
 	switch ev.Key() {
 	case tcell.KeyCtrlC, tcell.KeyEscape:
@@ -380,17 +391,74 @@ func (ui *EntryUI) handleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 		if len(ui.input) > 0 {
 			cmd := ui.input
 			ui.input = ""
+			ui.cursorIdx = 0
+			ui.scrollOffset = 0
+
+			// Save to history if not duplicate of last
+			if len(ui.history) == 0 || ui.history[len(ui.history)-1] != cmd {
+				ui.history = append(ui.history, cmd)
+			}
+			ui.hIndex = len(ui.history)
+
 			if ui.onCmd != nil {
 				go ui.onCmd(cmd)
 			}
 		}
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		runes := []rune(ui.input)
-		if len(runes) > 0 {
-			ui.input = string(runes[:len(runes)-1])
+		if ui.cursorIdx > 0 {
+			runes = append(runes[:ui.cursorIdx-1], runes[ui.cursorIdx:]...)
+			ui.input = string(runes)
+			ui.cursorIdx--
+		}
+	case tcell.KeyDelete:
+		if ui.cursorIdx < len(runes) {
+			runes = append(runes[:ui.cursorIdx], runes[ui.cursorIdx+1:]...)
+			ui.input = string(runes)
+		}
+	case tcell.KeyLeft:
+		if ui.cursorIdx > 0 {
+			ui.cursorIdx--
+		}
+	case tcell.KeyRight:
+		if ui.cursorIdx < len(runes) {
+			ui.cursorIdx++
+		}
+	case tcell.KeyHome:
+		ui.cursorIdx = 0
+	case tcell.KeyEnd:
+		ui.cursorIdx = len(runes)
+	case tcell.KeyPgUp:
+		_, h := ui.screen.Size()
+		ui.scrollOffset += (h - 4)
+		if ui.scrollOffset > len(ui.logs) {
+			ui.scrollOffset = len(ui.logs)
+		}
+	case tcell.KeyPgDn:
+		_, h := ui.screen.Size()
+		ui.scrollOffset -= (h - 4)
+		if ui.scrollOffset < 0 {
+			ui.scrollOffset = 0
+		}
+	case tcell.KeyUp:
+		if ui.hIndex > 0 {
+			ui.hIndex--
+			ui.input = ui.history[ui.hIndex]
+			ui.cursorIdx = len([]rune(ui.input))
+		}
+	case tcell.KeyDown:
+		if ui.hIndex < len(ui.history)-1 {
+			ui.hIndex++
+			ui.input = ui.history[ui.hIndex]
+			ui.cursorIdx = len([]rune(ui.input))
+		} else {
+			ui.hIndex = len(ui.history)
+			ui.input = ""
+			ui.cursorIdx = 0
 		}
 	case tcell.KeyRune:
-		ui.input += string(ev.Rune())
+		runes = append(runes[:ui.cursorIdx], append([]rune{ev.Rune()}, runes[ui.cursorIdx:]...)...)
+		ui.input = string(runes)
+		ui.cursorIdx++
 	}
 	return false, false
 }
