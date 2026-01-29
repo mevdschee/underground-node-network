@@ -18,8 +18,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/mevdschee/underground-node-network/internal/doors"
 	"github.com/mevdschee/underground-node-network/internal/fileserver"
+	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/ui"
 	"golang.org/x/crypto/ssh"
+	"gopkg.in/yaml.v3"
 )
 
 // Person represents a connected person
@@ -659,7 +661,7 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 	}
 	command := parts[0]
 
-	if command == "get" {
+	if command == "get" || command == "download" {
 		if len(parts) < 2 {
 			fmt.Fprint(channel, "\rUsage: /get <filename>\r\n")
 			return nil
@@ -1010,7 +1012,7 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			}
 			s.mu.Unlock()
 			return true
-		case "get":
+		case "get", "download":
 			addMessage(cmd, ui.MsgCommand)
 			if len(parts) < 2 {
 				addMessage("Usage: /get <filename>", ui.MsgServer)
@@ -1199,8 +1201,20 @@ func (s *Server) showDownloadInfo(p *Person, filename string) {
 	// Calculate file signature early to include it in the wrapper's download block
 	sig := s.calculateFileSHA256(absPath)
 
+	data := protocol.DownloadPayload{
+		Filename:   filename,
+		Port:       filePort,
+		TransferID: transferID,
+		Signature:  sig,
+	}
+
+	yamlData, _ := yaml.Marshal(data)
+	yamlStr := strings.ReplaceAll(string(yamlData), "\n", "\r\n")
+
 	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
-	fmt.Fprintf(p.Bus, "[DOWNLOAD FILE]\r\n%s\r\n%d\r\n%s\r\n%s\r\n[/DOWNLOAD FILE]\r\n", filename, filePort, transferID, sig)
+	fmt.Fprintf(p.Bus, "[DOWNLOAD FILE]\r\n")
+	fmt.Fprintf(p.Bus, "%s", yamlStr)
+	fmt.Fprintf(p.Bus, "[/DOWNLOAD FILE]\r\n")
 	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
 
 	fmt.Fprintf(p.Bus, "\033[1;32mUNN DOWNLOAD READY\033[0m\r\n\r\n")

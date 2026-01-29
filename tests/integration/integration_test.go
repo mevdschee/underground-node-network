@@ -154,8 +154,8 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	defer sshClientRoom.Close()
 	defer sessionRoom.Close()
 
-	fmt.Printf("Sending /download %s to room server...\n", fileName)
-	outputDownload := runSSHCommand(t, sessionRoom, "/download "+fileName)
+	fmt.Printf("Sending /get %s to room server...\n", fileName)
+	outputDownload := runSSHCommand(t, sessionRoom, "/get "+fileName)
 
 	// Verify [DOWNLOAD FILE] block contains correct SHA256
 	if !strings.Contains(outputDownload, "[DOWNLOAD FILE]") {

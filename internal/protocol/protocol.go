@@ -83,6 +83,14 @@ type PunchStartPayload struct {
 	StartTime  int64    `json:"start_time"`  // Unix timestamp to sync start
 }
 
+// DownloadPayload is sent by the server to trigger a file download in the wrapper
+type DownloadPayload struct {
+	Filename   string `json:"filename" yaml:"filename"`
+	Port       int    `json:"port" yaml:"port"`
+	TransferID string `json:"transfer_id" yaml:"transfer_id"`
+	Signature  string `json:"signature" yaml:"signature"`
+}
+
 // NewMessage creates a new message with the given type and payload
 func NewMessage(msgType string, payload interface{}) (*Message, error) {
 	payloadBytes, err := json.Marshal(payload)

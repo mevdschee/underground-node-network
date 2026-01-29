@@ -540,16 +540,16 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 
 		// Track download state in the session
 		var (
-			downloading  bool
-			downloadData string
-			stdoutDone   = make(chan struct{})
-			triggerDl    = make(chan downloadInfo, 1)
+			downloading bool
+			stdoutDone  = make(chan struct{})
+			triggerDl   = make(chan downloadInfo, 1)
 		)
 
 		go func() {
 			defer close(stdoutDone)
 			buf := make([]byte, 1024)
 			var currentLine strings.Builder
+			var downloadBuffer bytes.Buffer
 			var lastByte byte
 
 			for {
@@ -577,7 +577,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 
 						if strings.Contains(line, "[DOWNLOAD FILE]") {
 							downloading = true
-							downloadData = ""
+							downloadBuffer.Reset()
 							continue
 						}
 
@@ -585,7 +585,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 							if strings.Contains(line, "[/DOWNLOAD FILE]") {
 								downloading = false
 								// Parse captured data
-								p, tid, sig, fname, err := parseDownloadBlock(downloadData)
+								p, tid, sig, fname, err := parseDownloadBlock(downloadBuffer.String())
 								if err == nil {
 									triggerDl <- downloadInfo{p, tid, sig, fname}
 									session.Close()
@@ -593,7 +593,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 								}
 								continue
 							}
-							downloadData += line + "\n"
+							downloadBuffer.WriteString(strings.TrimRight(cleanLine, "\r") + "\n")
 						}
 					} else {
 						currentLine.WriteByte(b)
@@ -735,23 +735,16 @@ func downloadFile(client *ssh.Client, remotePort int, transferID string, config 
 }
 
 func parseDownloadBlock(data string) (int, string, string, string, error) {
-	rawLines := strings.Split(data, "\n")
-	var lines []string
-	for _, l := range rawLines {
-		trimmed := strings.TrimSpace(l)
-		if trimmed != "" {
-			lines = append(lines, trimmed)
-		}
+	var payload protocol.DownloadPayload
+	if err := yaml.Unmarshal([]byte(data), &payload); err != nil {
+		return 0, "", "", "", fmt.Errorf("YAML unmarshal failed: %v", err)
 	}
 
-	if len(lines) < 4 {
-		return 0, "", "", "", fmt.Errorf("too few lines in download block (%d)", len(lines))
+	if payload.Filename == "" || payload.Port == 0 || payload.TransferID == "" {
+		return 0, "", "", "", fmt.Errorf("missing fields in download payload")
 	}
-	fname := lines[0]
-	port, _ := strconv.Atoi(lines[1])
-	tid := lines[2]
-	sig := lines[3]
-	return port, tid, sig, fname, nil
+
+	return payload.Port, payload.TransferID, payload.Signature, payload.Filename, nil
 }
 
 func getUniquePath(path string) string {
