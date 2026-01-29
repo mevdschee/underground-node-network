@@ -54,9 +54,12 @@ func wrapText(s string, width int) []string {
 	for len(runes) > 0 {
 		effWidth := width
 		indent := ""
-		if !first {
+		if !first && width > 2 {
 			effWidth = width - 2
 			indent = "  "
+		}
+		if effWidth < 1 {
+			effWidth = 1
 		}
 
 		if len(runes) <= effWidth {
