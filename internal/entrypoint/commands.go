@@ -63,9 +63,9 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 		case "rooms":
 			s.mu.RLock()
 			if len(s.rooms) == 0 {
-				p.UI.ShowMessage("No active rooms.", ui.MsgServer)
+				p.UI.ShowMessage("No rooms found.", ui.MsgServer)
 			} else {
-				p.UI.ShowMessage("Active Rooms:", ui.MsgServer)
+				p.UI.ShowMessage("Rooms:", ui.MsgServer)
 				for _, room := range s.rooms {
 					hash := "anonymous"
 					if len(room.Info.PublicKeys) > 0 {
@@ -74,7 +74,7 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 							hash = hash[:8]
 						}
 					}
-					p.UI.ShowMessage(fmt.Sprintf(" - %s (%s) @%s", room.Info.Name, hash, room.Info.Owner), ui.MsgServer)
+					p.UI.ShowMessage(fmt.Sprintf("• %s (%s) @%s", room.Info.Name, hash, room.Info.Owner), ui.MsgServer)
 				}
 			}
 			s.mu.RUnlock()

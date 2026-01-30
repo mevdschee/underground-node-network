@@ -137,7 +137,6 @@ func (s *Server) showFiles(chatUI *ui.ChatUI) {
 		}
 	}
 
-	addMessage("--- Available Files ---", ui.MsgServer)
 	found := false
 
 	err := filepath.WalkDir(s.filesDir, func(path string, d os.DirEntry, err error) error {
@@ -174,7 +173,6 @@ func (s *Server) showFiles(chatUI *ui.ChatUI) {
 	if !found {
 		addMessage("No files available.", ui.MsgServer)
 	}
-	addMessage("-----------------------", ui.MsgServer)
 }
 
 func (s *Server) showDownloadInfo(p *Person, filename string) {

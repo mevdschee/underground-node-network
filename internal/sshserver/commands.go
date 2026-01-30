@@ -152,7 +152,7 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 				people = append(people, fmt.Sprintf("%s%s (%s)", prefix, person.Username, hash))
 			}
 			s.mu.RUnlock()
-			addMessage("--- People in room ---", ui.MsgServer)
+			addMessage("People:", ui.MsgServer)
 			for _, personStr := range people {
 				addMessage("• "+personStr, ui.MsgServer)
 			}
