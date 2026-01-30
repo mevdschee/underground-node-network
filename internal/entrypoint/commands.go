@@ -27,9 +27,10 @@ func (s *Server) updatePersonRooms(p *Person) {
 	uiRooms := make([]ui.RoomInfo, 0, len(rooms))
 	for _, r := range rooms {
 		uiRooms = append(uiRooms, ui.RoomInfo{
-			Name:  r.Name,
-			Owner: r.Owner,
-			Doors: r.Doors,
+			Name:        r.Name,
+			Owner:       r.Owner,
+			Doors:       r.Doors,
+			PeopleCount: r.PeopleCount,
 		})
 	}
 	p.UI.SetRooms(uiRooms)
@@ -67,14 +68,7 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 			} else {
 				p.UI.ShowMessage("Rooms:", ui.MsgServer)
 				for _, room := range s.rooms {
-					hash := "anonymous"
-					if len(room.Info.PublicKeys) > 0 {
-						hash = s.getPubKeyHash(room.Info.PublicKeys[0])
-						if len(hash) > 8 {
-							hash = hash[:8]
-						}
-					}
-					p.UI.ShowMessage(fmt.Sprintf("• %s (%s) @%s", room.Info.Name, hash, room.Info.Owner), ui.MsgServer)
+					p.UI.ShowMessage(fmt.Sprintf("• %s (%d) @%s", room.Info.Name, room.Info.PeopleCount, room.Info.Owner), ui.MsgServer)
 				}
 			}
 			s.mu.RUnlock()
