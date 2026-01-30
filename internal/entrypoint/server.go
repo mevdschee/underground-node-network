@@ -876,10 +876,6 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 			fields[i].Error = ""
 		}
 
-		if platform == "" || platformUser == "" || unnUsername == "" {
-			continue
-		}
-
 		platforms := []string{"github", "gitlab", "sourcehut", "codeberg"}
 		validPlatform := false
 		for _, v := range platforms {
