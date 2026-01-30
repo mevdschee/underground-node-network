@@ -26,21 +26,23 @@ type Message struct {
 
 // RegisterPayload is sent when a node registers with the entry point
 type RegisterPayload struct {
-	RoomName   string   `json:"room_name"`
-	Doors      []string `json:"doors"`
-	Candidates []string `json:"candidates"`  // NAT traversal candidates (IP only)
-	SSHPort    int      `json:"ssh_port"`    // Local SSH server port
-	PublicKeys []string `json:"public_keys"` // SSH public keys (authorized_keys format)
+	RoomName    string   `json:"room_name"`
+	Doors       []string `json:"doors"`
+	Candidates  []string `json:"candidates"`  // NAT traversal candidates (IP only)
+	SSHPort     int      `json:"ssh_port"`    // Local SSH server port
+	PublicKeys  []string `json:"public_keys"` // SSH public keys (authorized_keys format)
+	PeopleCount int      `json:"people_count"`
 }
 
 // RoomInfo represents an active room in the network
 type RoomInfo struct {
-	Name       string   `json:"name"`
-	Owner      string   `json:"owner"`
-	Doors      []string `json:"doors"`
-	Candidates []string `json:"candidates"`
-	SSHPort    int      `json:"ssh_port"`
-	PublicKeys []string `json:"public_keys"`
+	Name        string   `json:"name"`
+	Owner       string   `json:"owner"`
+	Doors       []string `json:"doors"`
+	Candidates  []string `json:"candidates"`
+	SSHPort     int      `json:"ssh_port"`
+	PublicKeys  []string `json:"public_keys"`
+	PeopleCount int      `json:"people_count"`
 }
 
 // RoomListPayload contains the list of active rooms

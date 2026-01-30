@@ -132,7 +132,7 @@ func (ui *EntryUI) SetRooms(rooms []RoomInfo) {
 
 	var items []string
 	for _, r := range rooms {
-		items = append(items, fmt.Sprintf("%-12s @%s", r.Name, r.Owner))
+		items = append(items, fmt.Sprintf("%-12s (%d)", r.Name, r.PeopleCount))
 	}
 	ui.roomsDataSpec = sidebar.NewSidebar("Rooms:", 25)
 	ui.roomsDataSpec.SetItems(items)

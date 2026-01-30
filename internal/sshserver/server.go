@@ -54,6 +54,7 @@ type Server struct {
 	bannedHashes    map[string]string       // hash -> reason
 	roomLockKey     string
 	operatorPubKey  ssh.PublicKey
+	OnPeopleChange  func(int)
 }
 
 func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doors.Manager) (*Server, error) {
@@ -173,9 +174,15 @@ func (s *Server) GetPeople() []string {
 
 func (s *Server) updateAllPeople() {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	count := len(s.people)
 	for _, p := range s.people {
 		s.updatePeopleList(p)
+	}
+	cb := s.OnPeopleChange
+	s.mu.RUnlock()
+
+	if cb != nil {
+		cb(count)
 	}
 }
 

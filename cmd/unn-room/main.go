@@ -174,7 +174,7 @@ func main() {
 				}
 
 				// Register with entry point
-				if err := epClient.Register(*roomName, doorList, actualPort, publicKeys); err != nil {
+				if err := epClient.Register(*roomName, doorList, actualPort, publicKeys, 0); err != nil {
 					log.Printf("Failed to register with entry point: %v. Reconnecting...", err)
 					epClient.Close()
 					time.Sleep(1 * time.Second)
@@ -182,6 +182,16 @@ func main() {
 				}
 
 				log.Printf("Registered with entry point as '%s'", *roomName)
+
+				// Report people count updates
+				server.OnPeopleChange = func(count int) {
+					if epClient != nil {
+						epClient.Register(*roomName, doorList, actualPort, publicKeys, count)
+					}
+				}
+
+				// Initial update
+				server.OnPeopleChange(len(server.GetPeople()))
 
 				// Listen for messages (this blocks until the connection is lost)
 				err = epClient.ListenForMessages(nil, func(offer protocol.PunchOfferPayload) {

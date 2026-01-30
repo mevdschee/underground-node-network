@@ -96,18 +96,19 @@ func (c *Client) Close() error {
 }
 
 // Register registers this node with the entry point
-func (c *Client) Register(roomName string, doors []string, sshPort int, publicKeys []string) error {
+func (c *Client) Register(roomName string, doors []string, sshPort int, publicKeys []string, peopleCount int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	candidates := discoverCandidates()
 
 	payload := protocol.RegisterPayload{
-		RoomName:   roomName,
-		Doors:      doors,
-		Candidates: candidates,
-		SSHPort:    sshPort,
-		PublicKeys: publicKeys,
+		RoomName:    roomName,
+		Doors:       doors,
+		Candidates:  candidates,
+		SSHPort:     sshPort,
+		PublicKeys:  publicKeys,
+		PeopleCount: peopleCount,
 	}
 
 	msg, err := protocol.NewMessage(protocol.MsgTypeRegister, payload)

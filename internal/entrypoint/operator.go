@@ -41,12 +41,13 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 			*roomName = payload.RoomName
 			s.rooms[payload.RoomName] = &Room{
 				Info: protocol.RoomInfo{
-					Name:       payload.RoomName,
-					Owner:      username,
-					Doors:      payload.Doors,
-					Candidates: payload.Candidates,
-					SSHPort:    payload.SSHPort,
-					PublicKeys: payload.PublicKeys,
+					Name:        payload.RoomName,
+					Owner:       username,
+					Doors:       payload.Doors,
+					Candidates:  payload.Candidates,
+					SSHPort:     payload.SSHPort,
+					PublicKeys:  payload.PublicKeys,
+					PeopleCount: payload.PeopleCount,
 				},
 				Connection: conn,
 				Channel:    channel,

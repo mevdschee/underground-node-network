@@ -19,7 +19,8 @@ const (
 type Message = log.Message
 
 type RoomInfo struct {
-	Name  string
-	Owner string
-	Doors []string
+	Name        string
+	Owner       string
+	Doors       []string
+	PeopleCount int
 }
