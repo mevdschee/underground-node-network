@@ -308,6 +308,9 @@ func (ui *ChatUI) AddMessage(msg string, msgType MessageType) {
 	}
 
 	ui.logs.AddMessage(msg, lt)
+	if ui.Headless && ui.Input != nil {
+		fmt.Fprintf(ui.Input, "%s\n", msg)
+	}
 	if ui.screen != nil {
 		ui.screen.PostEvent(&tcell.EventInterrupt{})
 	}

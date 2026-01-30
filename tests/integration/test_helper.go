@@ -150,8 +150,11 @@ func runSSHCommand(t *testing.T, session *ssh.Session, command string) string {
 	session.Stderr = &stderr
 
 	in, _ := session.StdinPipe()
+	if err := session.RequestPty("xterm", 80, 40, ssh.TerminalModes{}); err != nil {
+		t.Fatalf("failed to request pty: %v", err)
+	}
 	if err := session.Shell(); err != nil {
-		t.Fatalf("failed to start shell: %v", err)
+		t.Fatalf("failed to start session: %v", err)
 	}
 
 	fmt.Fprintln(in, command)

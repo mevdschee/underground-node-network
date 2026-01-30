@@ -37,17 +37,18 @@ type PunchSession struct {
 }
 
 type Person struct {
-	SessionID    string
-	Username     string
-	TeleportData *protocol.PunchStartPayload
-	UI           *ui.EntryUI
-	DisplayName  string
-	Bus          *bridge.SSHBus
-	Bridge       *bridge.InputBridge
-	UNNAware     bool
-	PubKey       ssh.PublicKey
-	PubKeyHash   string
-	Conn         *ssh.ServerConn
+	SessionID      string
+	Username       string
+	TeleportData   *protocol.PunchStartPayload
+	UI             *ui.EntryUI
+	DisplayName    string
+	Bus            *bridge.SSHBus
+	Bridge         *bridge.InputBridge
+	UNNAware       bool
+	PubKey         ssh.PublicKey
+	PubKeyHash     string
+	Conn           *ssh.ServerConn
+	InitialCommand string
 }
 
 // Server is the entry point SSH server
@@ -148,6 +149,16 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		}
 	}
 
+	if len(s.banner) == 0 {
+		s.banner = []string{
+			"Welcome to the UndergrouNd Network Entry Point!",
+			"",
+			"Chat is disabled here. Please join a room to interact with others.",
+			"Use /rooms to see available rooms.",
+			"Use /join <room_name> to enter a room.",
+		}
+	}
+
 	return s, nil
 }
 
@@ -243,7 +254,6 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 		log.Printf("Could not accept session: %v", err)
 		return
 	}
-	defer channel.Close()
 
 	var roomName string
 	var isOperator bool
@@ -289,7 +299,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 			} else {
 				req.Reply(false, nil)
 			}
-		case "shell", "pty-req":
+		case "pty-req":
 			// Captured initial size if any
 			var initialW, initialH uint32 = 80, 24
 			if req.Type == "pty-req" {
@@ -321,9 +331,6 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 				p.UI = ui.NewEntryUI(nil, p.Username, s.address)
 				p.UI.Headless = s.headless
 				p.UI.Input = p.Bus
-				p.Bridge.SetOSCHandler(func(action string, params map[string]interface{}) {
-					s.HandleOSC(p, action, params)
-				})
 
 				s.mu.Lock()
 				// Disconnect old person with same key
@@ -347,16 +354,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 				s.people[sessionID] = p
 				s.mu.Unlock()
 
-				defer func() {
-					s.mu.Lock()
-					// Only delete if it's still our session
-					if current, ok := s.people[sessionID]; ok && current == p {
-						delete(s.people, sessionID)
-					}
-					s.mu.Unlock()
-				}()
-
-				// Handle remaining requests in background to capture resize
+				// Handle remaining requests in background to capture resize and ack shell
 				go func() {
 					for r := range requests {
 						switch r.Type {
@@ -371,14 +369,26 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 							}
 							r.Reply(true, nil)
 						case "shell":
+							// Ack traditional interactive request for client compatibility
 							r.Reply(true, nil)
 						default:
 							r.Reply(false, nil)
 						}
 					}
 				}()
-				s.handlePerson(p, conn)
-				p.Bus.ForceClose() // Ensure channel close after person done
+
+				// Main interaction session
+				go func() {
+					defer func() {
+						s.mu.Lock()
+						if current, ok := s.people[sessionID]; ok && current == p {
+							delete(s.people, sessionID)
+						}
+						s.mu.Unlock()
+						p.Bus.ForceClose()
+					}()
+					s.handlePerson(p, conn)
+				}()
 				return
 			}
 		default:
@@ -408,12 +418,12 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 
 		if !verified {
 			if !s.handleOnboardingForm(p, conn) {
-				s.mu.RLock()
-				if !s.headless && entryUI.GetScreen() != nil {
-					entryUI.GetScreen().Fini()
-				}
-				s.mu.RUnlock()
 				entryUI.Close(false)
+				// Give the UI a moment to show "exiting" or similar, then force close connection
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					p.Conn.Close()
+				}()
 				return
 			}
 			verified = true
@@ -432,6 +442,11 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 
 		// Initial room list
 		s.updatePersonRooms(p)
+
+		// Process initial command after onboarding is done
+		if p.InitialCommand != "" {
+			s.handlePersonCommand(p, conn, p.InitialCommand)
+		}
 	}()
 
 	// Add OnClose callback to break terminal deadlock

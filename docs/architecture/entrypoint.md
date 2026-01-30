@@ -43,7 +43,7 @@ graph TD
 
 ### Data Flow: Role-based Handling
 1. **Operators**: Connect via a specialized `unn-control` subsystem. They send periodic heartbeat-like registrations with their P2P candidates and active doors.
-2. **Persons**: Enter the standard SSH shell. They interact with the TUI to browse rooms and initiate P2P "teleports."
+2. **Persons**: Enter the interactive TUI. They interact with the interface to browse rooms and initiate P2P "teleports."
 
 ---
 See also: [Entrypoint Role](../apps/entrypoint.md) | [Signaling Pattern](../concepts/signaling.md)

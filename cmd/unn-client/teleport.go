@@ -190,11 +190,11 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 			}
 		}()
 
-		// Start shell
+		// Start interactive session
 		if err := session.Shell(); err != nil {
 			session.Close()
 			client.Close()
-			return fmt.Errorf("failed to start shell: %w", err)
+			return fmt.Errorf("failed to start interactive session: %w", err)
 		}
 
 		// Variables for connection info
@@ -296,12 +296,10 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 			if verbose {
 				log.Printf("Automatically selecting room: %s", currentRoom)
 			}
-			time.Sleep(500 * time.Millisecond) // Small delay to allow server to be ready
-			fmt.Fprintf(stdinPipe, "%s\r\n", currentRoom)
+			//time.Sleep(500 * time.Millisecond) // Small delay to allow server to be ready
+			fmt.Fprintf(stdinPipe, "/join %s\r\n", currentRoom)
 			currentRoom = "" // Only do it once per URL invocation
 		}
-
-		// Wait for connection info or manual exit
 		var (
 			shouldConnect bool
 			timeout       = 300 * time.Second
@@ -464,9 +462,8 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		}
 
 		if err := session.Shell(); err != nil {
-			return false, nil, fmt.Errorf("failed to start shell: %w", err)
+			return false, nil, fmt.Errorf("failed to start session: %w", err)
 		}
-
 		// Handle window changes
 		winch := make(chan os.Signal, 1)
 		signal.Notify(winch, syscall.SIGWINCH)

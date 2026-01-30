@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mevdschee/underground-node-network/internal/ui"
 	"github.com/mevdschee/underground-node-network/internal/ui/common"
@@ -123,6 +124,10 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 		{Label: "Platform Username", Value: ""},
 		{Label: "UNN Username", Value: sshUser, MaxLength: 20, Alphanumeric: true},
 	}
+
+	// Give a moment for any initial automated input to arrive, then flush it.
+	time.Sleep(100 * time.Millisecond)
+	p.Bridge.Flush()
 
 	for {
 		results := eui.PromptForm(fields)
@@ -242,7 +247,11 @@ func (s *Server) SendOSC(p *Person, action string, params map[string]interface{}
 
 func (s *Server) HandleOSC(p *Person, action string, params map[string]interface{}) {
 	log.Printf("Received OSC from %s: %s %v", p.Username, action, params)
-	// Handle OSC messages from client if needed
+	if action == "join" {
+		if room, ok := params["room"].(string); ok {
+			p.InitialCommand = room
+		}
+	}
 }
 
 func (s *Server) showTeleportInfo(p *Person) {

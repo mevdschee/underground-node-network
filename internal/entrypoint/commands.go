@@ -52,8 +52,14 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 		case "help":
 			p.UI.ShowMessage("/help               - Show this help message", ui.MsgServer)
 			p.UI.ShowMessage("/rooms              - List all active rooms", ui.MsgServer)
-			p.UI.ShowMessage("<room_name>         - Join a room by name", ui.MsgServer)
+			p.UI.ShowMessage("/join <room_name>   - Join a room by name", ui.MsgServer)
 			p.UI.ShowMessage("Ctrl+C              - Exit", ui.MsgServer)
+		case "join":
+			if len(parts) < 2 {
+				p.UI.ShowMessage("Usage: /join <room_name>", ui.MsgServer)
+				return
+			}
+			s.handleRoomJoin(p, conn, parts[1])
 		case "rooms":
 			s.mu.RLock()
 			if len(s.rooms) == 0 {
@@ -78,13 +84,19 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 		return
 	}
 
+	// Not a command - this is a chat message attempt
+	p.UI.ShowMessage("Chat is disabled in the entry point.", ui.MsgServer)
+	p.UI.ShowMessage("Use /rooms to list rooms and /join <room> to join.", ui.MsgServer)
+}
+
+func (s *Server) handleRoomJoin(p *Person, conn *ssh.ServerConn, roomName string) {
 	// Try to connect to room via hole-punching
 	s.mu.RLock()
-	room, ok := s.rooms[input]
+	room, ok := s.rooms[roomName]
 	s.mu.RUnlock()
 
 	if !ok {
-		p.UI.ShowMessage(fmt.Sprintf("Room not found: %s", input), ui.MsgServer)
+		p.UI.ShowMessage(fmt.Sprintf("Room not found: %s", roomName), ui.MsgServer)
 		return
 	}
 
@@ -96,7 +108,7 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 	s.mu.Lock()
 	s.punchSessions[personID] = &PunchSession{
 		PersonID:   personID,
-		RoomName:   input,
+		RoomName:   roomName,
 		PersonChan: personChan,
 	}
 	s.mu.Unlock()

@@ -12,13 +12,10 @@ import (
 // InputBridge manages a single background pump from an ssh.Channel
 // and provides bytes to multiple consecutive consumers.
 type InputBridge struct {
-	channel    ssh.Channel
-	dataChan   chan byte
-	err        error
-	mu         sync.Mutex
-	oscHandler func(action string, params map[string]interface{})
-	oscBuf     strings.Builder
-	inOSC      bool
+	channel  ssh.Channel
+	dataChan chan byte
+	err      error
+	mu       sync.Mutex
 }
 
 func NewInputBridge(channel ssh.Channel) *InputBridge {
@@ -35,49 +32,8 @@ func (b *InputBridge) pump() {
 	for {
 		n, err := b.channel.Read(buf)
 		if n > 0 {
-			b.mu.Lock()
-			handler := b.oscHandler
-			b.mu.Unlock()
-
 			for i := 0; i < n; i++ {
-				charByte := buf[i]
-				if !b.inOSC {
-					if charByte == 0x1b {
-						b.inOSC = true
-						b.oscBuf.Reset()
-						b.oscBuf.WriteByte(charByte)
-						continue
-					}
-					b.dataChan <- charByte
-				} else {
-					b.oscBuf.WriteByte(charByte)
-					if b.oscBuf.Len() == 2 && b.oscBuf.String() != "\x1b]" {
-						b.inOSC = false
-						for _, char := range b.oscBuf.String() {
-							b.dataChan <- byte(char)
-						}
-						continue
-					}
-					if charByte == 0x07 { // BEL - terminator
-						b.inOSC = false
-						oscStr := b.oscBuf.String()
-						if strings.HasPrefix(oscStr, "\x1b]9;") && handler != nil {
-							jsonStr := strings.TrimPrefix(oscStr, "\x1b]9;")
-							jsonStr = strings.TrimSuffix(jsonStr, "\x07")
-							var payload map[string]interface{}
-							if err := json.Unmarshal([]byte(jsonStr), &payload); err == nil {
-								if action, ok := payload["action"].(string); ok {
-									delete(payload, "action")
-									handler(action, payload)
-								}
-							}
-						} else {
-							for _, char := range oscStr {
-								b.dataChan <- byte(char)
-							}
-						}
-					}
-				}
+				b.dataChan <- buf[i]
 			}
 		}
 		if err != nil {
@@ -88,12 +44,6 @@ func (b *InputBridge) pump() {
 			return
 		}
 	}
-}
-
-func (b *InputBridge) SetOSCHandler(handler func(action string, params map[string]interface{})) {
-	b.mu.Lock()
-	b.oscHandler = handler
-	b.mu.Unlock()
 }
 
 func (b *InputBridge) Flush() {

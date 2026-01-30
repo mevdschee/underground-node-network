@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	stdlog "log"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
@@ -178,6 +179,9 @@ func (ui *EntryUI) ShowMessage(msg string, msgType MessageType) {
 	}
 
 	ui.logs.AddMessage(msg, lt)
+	if ui.Headless && ui.Input != nil {
+		fmt.Fprintf(ui.Input, "%s\n", msg)
+	}
 	if ui.screen != nil {
 		ui.screen.PostEvent(&tcell.EventInterrupt{})
 	}
@@ -322,6 +326,10 @@ func (ui *EntryUI) Run() bool {
 	for {
 		ui.Draw()
 		ev := ui.screen.PollEvent()
+		if ev == nil {
+			stdlog.Printf("EntryUI: PollEvent returned nil, exiting loop")
+			return ui.success
+		}
 		switch ev := ev.(type) {
 		case *tcell.EventResize:
 			ui.screen.Sync()
@@ -330,12 +338,14 @@ func (ui *EntryUI) Run() bool {
 		case *tcell.EventKey:
 			done, success := ui.HandleKeyResult(ev)
 			if done {
+				stdlog.Printf("EntryUI: HandleKeyResult requested exit (success=%v)", success)
 				return success
 			}
 		}
 
 		select {
 		case <-ui.closeChan:
+			stdlog.Printf("EntryUI: closeChan triggered exit (success=%v)", ui.success)
 			return ui.success
 		default:
 		}
@@ -458,11 +468,15 @@ func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 	}
 
 	if ui.InFormMode && ui.passwordInput != nil {
-		submitted, val := ui.passwordInput.HandleKey(ev)
-		if submitted {
+		done, val, canceled := ui.passwordInput.HandleKey(ev)
+		if done {
 			ch := ui.FormResult
 			ui.mu.Unlock()
-			ch <- []string{val}
+			if canceled {
+				ch <- nil
+			} else {
+				ch <- []string{val}
+			}
 			return false, false
 		}
 		ui.mu.Unlock()

@@ -91,8 +91,9 @@ func (f *Form) Draw(s tcell.Screen, w, h int, style tcell.Style) {
 		}
 	}
 
-	hint := "TAB to move • ENTER to submit"
-	common.DrawText(s, startX+(boxW-len(hint))/2, startY+boxH-1, fmt.Sprintf(" %s ", hint), len(hint)+2, borderStyle)
+	hint := "TAB to move • ENTER to submit • ESC to cancel"
+	hintText := fmt.Sprintf(" %s ", hint)
+	common.DrawText(s, startX+(boxW-len(hintText))/2, startY+boxH-1, hintText, len(hintText), borderStyle)
 }
 
 func (f *Form) HandleKey(ev *tcell.EventKey) (bool, []string) {
@@ -103,6 +104,8 @@ func (f *Form) HandleKey(ev *tcell.EventKey) (bool, []string) {
 	case tcell.KeyUp:
 		f.ActiveIdx = (f.ActiveIdx - 1 + len(f.Fields)) % len(f.Fields)
 		f.CursorIdx = len([]rune(f.Fields[f.ActiveIdx].Value))
+	case tcell.KeyEscape, tcell.KeyCtrlC:
+		return true, nil
 	case tcell.KeyEnter:
 		vals := make([]string, len(f.Fields))
 		for i, fld := range f.Fields {
@@ -113,9 +116,29 @@ func (f *Form) HandleKey(ev *tcell.EventKey) (bool, []string) {
 		fld := &f.Fields[f.ActiveIdx]
 		if f.CursorIdx > 0 {
 			runes := []rune(fld.Value)
-			fld.Value = string(runes[:f.CursorIdx-1]) + string(runes[f.CursorIdx:])
+			fld.Value = string(append(runes[:f.CursorIdx-1], runes[f.CursorIdx:]...))
 			f.CursorIdx--
 		}
+	case tcell.KeyDelete:
+		fld := &f.Fields[f.ActiveIdx]
+		runes := []rune(fld.Value)
+		if f.CursorIdx < len(runes) {
+			fld.Value = string(append(runes[:f.CursorIdx], runes[f.CursorIdx+1:]...))
+		}
+	case tcell.KeyLeft:
+		if f.CursorIdx > 0 {
+			f.CursorIdx--
+		}
+	case tcell.KeyRight:
+		fld := &f.Fields[f.ActiveIdx]
+		if f.CursorIdx < len([]rune(fld.Value)) {
+			f.CursorIdx++
+		}
+	case tcell.KeyHome:
+		f.CursorIdx = 0
+	case tcell.KeyEnd:
+		fld := &f.Fields[f.ActiveIdx]
+		f.CursorIdx = len([]rune(fld.Value))
 	case tcell.KeyRune:
 		fld := &f.Fields[f.ActiveIdx]
 		if fld.Alphanumeric && !common.IsAlphanumeric(string(ev.Rune())) {

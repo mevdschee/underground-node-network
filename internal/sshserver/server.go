@@ -387,7 +387,6 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, sessionID string) {
 		log.Printf("Could not accept session: %v", err)
 		return
 	}
-	defer rawChannel.Close()
 
 	var p *Person
 	s.mu.RLock()
@@ -400,7 +399,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, sessionID string) {
 
 	var initialW, initialH uint32 = 80, 24
 
-	// Process requests to determine session type (shell vs exec scp)
+	// Process requests to determine session type (pty-req vs exec)
 	for req := range requests {
 		switch req.Type {
 		case "exec":
@@ -411,14 +410,9 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, sessionID string) {
 				initialW, initialH = w, h
 			}
 			req.Reply(true, nil)
-		case "shell":
-			req.Reply(true, nil)
 
-			// Shell session - init TUI and start interaction
+			// Interactive session - init TUI and start interaction
 			p.Bridge = bridge.NewInputBridge(rawChannel)
-			p.Bridge.SetOSCHandler(func(action string, params map[string]interface{}) {
-				s.HandleOSC(p, action, params)
-			})
 			p.Bus = bridge.NewSSHBus(p.Bridge, int(initialW), int(initialH))
 
 			// Handle remaining requests in background (e.g., resize)
@@ -431,10 +425,12 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, sessionID string) {
 						}
 						r.Reply(true, nil)
 					case "window-change":
-						if w, h, ok := common.ParseWindowChange(
-							r.Payload); ok {
+						if w, h, ok := common.ParseWindowChange(r.Payload); ok {
 							p.Bus.Resize(int(w), int(h))
 						}
+						r.Reply(true, nil)
+					case "shell":
+						// Ack traditional interactive request for client compatibility
 						r.Reply(true, nil)
 					default:
 						r.Reply(false, nil)
@@ -443,10 +439,10 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, sessionID string) {
 			}()
 
 			// Main interaction loop
-			s.handleInteraction(rawChannel, sessionID)
-
-			// Ensure channel close after person done
-			p.Bus.ForceClose()
+			go func() {
+				defer p.Bus.ForceClose()
+				s.handleInteraction(rawChannel, sessionID)
+			}()
 			return
 		case "subsystem":
 			subsystem := string(req.Payload[4:])

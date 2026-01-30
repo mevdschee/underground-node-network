@@ -1,6 +1,7 @@
 package password
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 
@@ -56,14 +57,20 @@ func (p *PasswordEntry) Draw(s tcell.Screen, w, h int, style tcell.Style) {
 
 	// Cursor
 	prefix := masked[:p.Cursor]
-	cursorX := startX + 2 + uniseg.StringWidth(prefix)
-	s.ShowCursor(cursorX, startY+2)
+	visualPos := uniseg.StringWidth(prefix)
+	s.ShowCursor(startX+2+visualPos, startY+2)
+
+	// Hints
+	hint := "ENTER to submit • ESC to cancel"
+	common.DrawText(s, startX+(boxW-len(hint))/2, startY+boxH-1, fmt.Sprintf(" %s ", hint), len(hint)+2, borderStyle)
 }
 
-func (p *PasswordEntry) HandleKey(ev *tcell.EventKey) (bool, string) {
+func (p *PasswordEntry) HandleKey(ev *tcell.EventKey) (bool, string, bool) {
 	switch ev.Key() {
+	case tcell.KeyEscape, tcell.KeyCtrlC:
+		return true, "", true
 	case tcell.KeyEnter:
-		return true, p.Value
+		return true, p.Value, false
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if p.Cursor > 0 {
 			runes := []rune(p.Value)
@@ -83,18 +90,23 @@ func (p *PasswordEntry) HandleKey(ev *tcell.EventKey) (bool, string) {
 		if p.Cursor < len([]rune(p.Value)) {
 			p.Cursor++
 		}
+	case tcell.KeyHome:
+		p.Cursor = 0
+	case tcell.KeyEnd:
+		p.Cursor = len([]rune(p.Value))
 	case tcell.KeyRune:
 		runes := []rune(p.Value)
 		p.Value = string(append(runes[:p.Cursor], append([]rune{ev.Rune()}, runes[p.Cursor:]...)...))
 		p.Cursor++
 	}
-	return false, ""
+	return false, "", false
 }
 
 // PasswordUI is a full-screen prompt for sensitive input (legacy/standalone wrapper)
 type PasswordUI struct {
 	screen    tcell.Screen
 	input     string
+	Cursor    int
 	mu        sync.Mutex
 	done      chan string
 	closeChan chan struct{}
@@ -134,20 +146,47 @@ func (ui *PasswordUI) Run() string {
 					ui.done <- ""
 					return
 				}
-				if ev.Key() == tcell.KeyEnter {
-					ui.done <- ui.input
-					return
-				}
-				if ev.Key() == tcell.KeyBackspace || ev.Key() == tcell.KeyBackspace2 {
+				switch ev.Key() {
+				case tcell.KeyBackspace, tcell.KeyBackspace2:
 					ui.mu.Lock()
 					runes := []rune(ui.input)
-					if len(runes) > 0 {
-						ui.input = string(runes[:len(runes)-1])
+					if ui.Cursor > 0 {
+						ui.input = string(append(runes[:ui.Cursor-1], runes[ui.Cursor:]...))
+						ui.Cursor--
 					}
 					ui.mu.Unlock()
-				} else if ev.Key() == tcell.KeyRune {
+				case tcell.KeyDelete:
 					ui.mu.Lock()
-					ui.input += string(ev.Rune())
+					runes := []rune(ui.input)
+					if ui.Cursor < len(runes) {
+						ui.input = string(append(runes[:ui.Cursor], runes[ui.Cursor+1:]...))
+					}
+					ui.mu.Unlock()
+				case tcell.KeyLeft:
+					ui.mu.Lock()
+					if ui.Cursor > 0 {
+						ui.Cursor--
+					}
+					ui.mu.Unlock()
+				case tcell.KeyRight:
+					ui.mu.Lock()
+					if ui.Cursor < len([]rune(ui.input)) {
+						ui.Cursor++
+					}
+					ui.mu.Unlock()
+				case tcell.KeyHome:
+					ui.mu.Lock()
+					ui.Cursor = 0
+					ui.mu.Unlock()
+				case tcell.KeyEnd:
+					ui.mu.Lock()
+					ui.Cursor = len([]rune(ui.input))
+					ui.mu.Unlock()
+				case tcell.KeyRune:
+					ui.mu.Lock()
+					runes := []rune(ui.input)
+					ui.input = string(append(runes[:ui.Cursor], append([]rune{ev.Rune()}, runes[ui.Cursor:]...)...))
+					ui.Cursor++
 					ui.mu.Unlock()
 				}
 				ui.DrawStandalone()
@@ -181,6 +220,15 @@ func (ui *PasswordUI) DrawStandalone() {
 
 	common.DrawText(ui.screen, tx, ty, title, len(title), style.Bold(true))
 	common.DrawText(ui.screen, px, ty+2, prompt+stars, 30, style)
+
+	// Cursor
+	prefix := stars[:ui.Cursor]
+	visualPos := uniseg.StringWidth(prefix)
+	ui.screen.ShowCursor(px+len(prompt)+visualPos, ty+2)
+
+	hint := "ENTER to submit • ESC to cancel"
+	hx := (w - len(hint)) / 2
+	common.DrawText(ui.screen, hx, ty+4, hint, len(hint), style.Foreground(tcell.ColorLightCyan))
 
 	ui.screen.Show()
 }

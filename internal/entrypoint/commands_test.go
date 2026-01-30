@@ -82,7 +82,7 @@ func TestEntrypointCommands(t *testing.T) {
 	})
 
 	t.Run("join non-existent", func(t *testing.T) {
-		s.handlePersonCommand(p, nil, "nonexistent")
+		s.handlePersonCommand(p, nil, "/join nonexistent")
 		logs := p.UI.GetLogs()
 		found := false
 		for _, l := range logs {
@@ -92,7 +92,22 @@ func TestEntrypointCommands(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("Joining non-existent room didn't show error")
+			t.Errorf("Joining non-existent room via /join didn't show error")
+		}
+	})
+
+	t.Run("chat blocked", func(t *testing.T) {
+		s.handlePersonCommand(p, nil, "hello everyone")
+		logs := p.UI.GetLogs()
+		found := false
+		for _, l := range logs {
+			if strings.Contains(l.Text, "Chat is disabled") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Typing message didn't show chat disabled notification")
 		}
 	})
 }

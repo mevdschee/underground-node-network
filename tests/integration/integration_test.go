@@ -71,7 +71,7 @@ func TestIntegration_BasicRegistration(t *testing.T) {
 	sshClientJoin, sessionJoin := getSSHClient(t, "localhost:44323", "maurits", "../../tests/integration/test_user_key")
 	defer sshClientJoin.Close()
 	defer sessionJoin.Close()
-	runSSHCommand(t, sessionJoin, roomName)
+	runSSHCommand(t, sessionJoin, "/join "+roomName)
 
 	time.Sleep(2 * time.Second)
 
@@ -142,7 +142,7 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	defer session.Close()
 
 	// Join room
-	runSSHCommand(t, session, roomName)
+	runSSHCommand(t, session, "/join "+roomName)
 	time.Sleep(1 * time.Second)
 
 	// Connect to the room node directly and trigger download
