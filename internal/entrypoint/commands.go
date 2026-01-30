@@ -74,7 +74,7 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 							hash = hash[:8]
 						}
 					}
-					p.UI.ShowMessage(fmt.Sprintf(" - %s (%s) [owned by %s]", room.Info.Name, hash, room.Info.Owner), ui.MsgServer)
+					p.UI.ShowMessage(fmt.Sprintf(" - %s (%s) @%s", room.Info.Name, hash, room.Info.Owner), ui.MsgServer)
 				}
 			}
 			s.mu.RUnlock()
