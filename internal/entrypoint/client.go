@@ -35,6 +35,7 @@ func NewClient(address, username string, signer ssh.Signer) *Client {
 			User:            username,
 			Auth:            authMethods,
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			ClientVersion:   "SSH-2.0-UNN-CLIENT",
 		},
 		rooms: make([]protocol.RoomInfo, 0),
 	}

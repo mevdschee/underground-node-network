@@ -45,6 +45,7 @@ type Person struct {
 	UI           *ui.EntryUI
 	Bus          *ui.SSHBus
 	Bridge       *ui.InputBridge
+	UNNAware     bool
 }
 
 // Server is the entry point SSH server
@@ -289,10 +290,14 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 					Username:  username,
 					Bridge:    bridge,
 					Bus:       ui.NewSSHBus(bridge, int(initialW), int(initialH)),
+					UNNAware:  strings.Contains(string(conn.ClientVersion()), "UNN"),
 				}
 				p.UI = ui.NewEntryUI(nil, p.Username, s.address)
 				p.UI.Headless = s.headless
 				p.UI.Input = p.Bus
+				p.Bridge.SetOSCHandler(func(action string, params map[string]interface{}) {
+					s.HandleOSC(p, action, params)
+				})
 				s.mu.Lock()
 				s.people[sessionID] = p
 				s.mu.Unlock()
@@ -717,6 +722,18 @@ func (s *Server) sendRoomList(encoder *json.Encoder) {
 	encoder.Encode(msg)
 }
 
+func (s *Server) SendOSC(p *Person, action string, params map[string]interface{}) {
+	if !p.UNNAware {
+		return
+	}
+	ui.SendOSC(p.Bus, action, params)
+}
+
+func (s *Server) HandleOSC(p *Person, action string, params map[string]interface{}) {
+	log.Printf("Received OSC from %s: %s %v", p.Username, action, params)
+	// Handle OSC messages from client if needed
+}
+
 func (s *Server) sendError(encoder *json.Encoder, message string) {
 	payload := protocol.ErrorPayload{Message: message}
 	msg, _ := protocol.NewMessage(protocol.MsgTypeError, payload)
@@ -803,8 +820,12 @@ func (s *Server) showTeleportInfo(p *Person) {
 
 	// Emit invisible ANSI OSC 9 sequence with teleport data
 	data.Action = "reconnect"
-	jsonData, _ := json.Marshal(data)
-	fmt.Fprintf(p.Bus, "\033]9;%s\007", string(jsonData))
+	s.SendOSC(p, "reconnect", map[string]interface{}{
+		"room_name":   data.RoomName,
+		"candidates":  data.Candidates,
+		"ssh_port":    data.SSHPort,
+		"public_keys": data.PublicKeys,
+	})
 
 	fmt.Fprintf(p.Bus, "\033[1;32mUNN TELEPORTATION READY\033[0m\r\n\r\n")
 	fmt.Fprintf(p.Bus, "The wrapper is automatically reconnecting you to the room.\r\n")

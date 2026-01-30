@@ -33,6 +33,7 @@ type Person struct {
 	Bridge          *ui.InputBridge
 	PendingDownload string
 	PubKey          ssh.PublicKey // The specific key used for auth
+	UNNAware        bool
 }
 
 type Server struct {
@@ -336,6 +337,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		Username: username,
 		Conn:     sshConn,
 		PubKey:   pubKey,
+		UNNAware: strings.Contains(string(sshConn.ClientVersion()), "UNN"),
 	}
 	s.people[username] = p
 	s.mu.Unlock()
@@ -453,6 +455,9 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 
 			// Shell session - init TUI and start interaction
 			p.Bridge = ui.NewInputBridge(rawChannel)
+			p.Bridge.SetOSCHandler(func(action string, params map[string]interface{}) {
+				s.HandleOSC(p, action, params)
+			})
 			p.Bus = ui.NewSSHBus(p.Bridge, int(initialW), int(initialH))
 
 			// Handle remaining requests in background (e.g., resize)
@@ -698,11 +703,15 @@ func (s *Server) handleCommand(channel ssh.Channel, username string, input strin
 				s.mu.RUnlock()
 
 				var input io.Reader = channel
-				if p != nil && p.Bus != nil {
+				if p != nil && p.Bridge != nil {
 					input = p.Bus
 				}
 
-				if err := s.doorManager.Execute(doorName, input, channel, channel); err != nil {
+				output := ui.NewOSCDetector(channel, func(action string, params map[string]interface{}) {
+					s.HandleOSC(p, action, params)
+				})
+
+				if err := s.doorManager.Execute(doorName, input, output, output); err != nil {
 					fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)
 				}
 				fmt.Fprintf(channel, "\r[Closed door: %s]\r\n", doorName)
@@ -1063,6 +1072,18 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 		}
 	}
 	return false // Not handled internally, exit Run() to check if it's a door
+}
+
+func (s *Server) SendOSC(p *Person, action string, params map[string]interface{}) {
+	if !p.UNNAware {
+		return
+	}
+	ui.SendOSC(p.Bus, action, params)
+}
+
+func (s *Server) HandleOSC(p *Person, action string, params map[string]interface{}) {
+	log.Printf("Received OSC from %s: %s %v", p.Username, action, params)
+	// Handle OSC messages from client or doors if needed
 }
 
 func loadOrGenerateHostKey(path string) (ssh.Signer, error) {
