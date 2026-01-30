@@ -30,10 +30,6 @@ func TestIntegration_BasicRegistration(t *testing.T) {
 	os.MkdirAll(filesDir, 0700)
 	os.WriteFile(filepath.Join(filesDir, "testfile.txt"), []byte("hello world"), 0644)
 
-	// Pre-register room name (as user) and test user
-	usersDir := filepath.Join(tempDir, "users") // This matches how cmd/unn-entrypoint calculates usersDir
-	os.MkdirAll(usersDir, 0700)
-
 	roomKey, _ := os.ReadFile("../../tests/integration/test_room_key.pub")
 	userKey, _ := os.ReadFile("../../tests/integration/test_user_key.pub")
 
@@ -43,12 +39,12 @@ func TestIntegration_BasicRegistration(t *testing.T) {
 	roomHash := sha256.Sum256(roomPubKeyRaw.Marshal())
 	userHash := sha256.Sum256(userPubKeyRaw.Marshal())
 
-	os.WriteFile(filepath.Join(usersDir, "identities"), []byte(fmt.Sprintf("%x testroom1@github\n%x maurits@github\n", roomHash, userHash)), 0600)
-	os.WriteFile(filepath.Join(usersDir, "users"), []byte(fmt.Sprintf("testroom1 %x\nmaurits %x\n", roomHash, userHash)), 0600)
+	// User storage format: hash unn_username platform_username@platform
+	os.WriteFile(filepath.Join(tempDir, "users"), []byte(fmt.Sprintf("%x testroom1 testroom1@github\n%x maurits maurits@github\n", roomHash, userHash)), 0600)
 
 	epPort := 44323
 	epHostKey := filepath.Join(tempDir, "ep_host_key")
-	epProcess := startEntryPoint(t, epBin, epPort, epHostKey, usersDir)
+	epProcess := startEntryPoint(t, epBin, epPort, epHostKey, tempDir)
 	defer epProcess.Stop()
 
 	clientProcess := startClient(t, clientBin, clientName, clientPort, "localhost:44323", clientHostKey, clientIdentity, filesDir)
@@ -118,10 +114,6 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	h.Write([]byte(testContent))
 	expectedSig := hex.EncodeToString(h.Sum(nil))
 
-	// Pre-register room name (as user) and test user
-	usersDir := filepath.Join(tempDir, "users")
-	os.MkdirAll(usersDir, 0700)
-
 	roomKey, _ := os.ReadFile("../../tests/integration/test_room_key.pub")
 	userKey, _ := os.ReadFile("../../tests/integration/test_user_key.pub")
 
@@ -131,12 +123,12 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	roomHash := sha256.Sum256(roomPubKeyRaw.Marshal())
 	userHash := sha256.Sum256(userPubKeyRaw.Marshal())
 
-	os.WriteFile(filepath.Join(usersDir, "identities"), []byte(fmt.Sprintf("%x downloadroom@github\n%x maurits@github\n", roomHash, userHash)), 0600)
-	os.WriteFile(filepath.Join(usersDir, "users"), []byte(fmt.Sprintf("downloadroom %x\nmaurits %x\n", roomHash, userHash)), 0600)
+	// User storage format: hash unn_username platform_username@platform
+	os.WriteFile(filepath.Join(tempDir, "users"), []byte(fmt.Sprintf("%x downloadroom downloadroom@github\n%x maurits maurits@github\n", roomHash, userHash)), 0600)
 
 	epPort := 44324
 	epHostKey := filepath.Join(tempDir, "ep_host_key")
-	epProcess := startEntryPoint(t, epBin, epPort, epHostKey, usersDir)
+	epProcess := startEntryPoint(t, epBin, epPort, epHostKey, tempDir)
 	defer epProcess.Stop()
 
 	clientProcess := startClient(t, clientBin, clientName, clientPort, "localhost:44324", clientHostKey, clientIdentity, filesDir)
@@ -161,14 +153,14 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	fmt.Printf("Sending /get %s to room server...\n", fileName)
 	outputDownload := runSSHCommand(t, sessionRoom, "/get "+fileName)
 
-	// Verify [DOWNLOAD FILE] block contains correct SHA256
-	if !strings.Contains(outputDownload, "[DOWNLOAD FILE]") {
-		t.Errorf("Expected [DOWNLOAD FILE] block in output, but got:\n%s", outputDownload)
+	// Verify OSC 9 sequence contains correct SHA256
+	if !strings.Contains(outputDownload, "\x1b]9;") {
+		t.Errorf("Expected OSC 9 sequence in output, but got:\n%s", outputDownload)
 	}
 
 	if !strings.Contains(outputDownload, expectedSig) {
-		t.Errorf("Expected SHA256 %s to be in download block, but it was missing.\nOutput:\n%s", expectedSig, outputDownload)
+		t.Errorf("Expected SHA256 %s to be in download signaling, but it was missing.\nOutput:\n%s", expectedSig, outputDownload)
 	}
 
-	fmt.Printf("Verified: SHA256 %s found in download block.\n", expectedSig)
+	fmt.Printf("Verified: SHA256 %s found in download signaling.\n", expectedSig)
 }

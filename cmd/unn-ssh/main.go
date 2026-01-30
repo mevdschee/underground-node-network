@@ -321,9 +321,6 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 				for i := 0; i < n; i++ {
 					b := buf[i]
 
-					// RELAY: Always relay every byte to human RAW to avoid corrupting TUI data.
-					os.Stdout.Write([]byte{b})
-
 					// OSC 9 Detection: \x1b]9; ... \x07
 					if b == 0x1b && !inOSC {
 						// Peek for ]9;
@@ -359,6 +356,8 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 						}
 						continue
 					}
+
+					os.Stdout.Write([]byte{b})
 				}
 			}
 		}()
@@ -548,7 +547,6 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 
 				for i := 0; i < n; i++ {
 					b := buf[i]
-					os.Stdout.Write([]byte{b})
 
 					// OSC 9 Detection: \x1b]9; ... \x07
 					if b == 0x1b && !inOSC {
@@ -589,6 +587,8 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 						}
 						continue
 					}
+
+					os.Stdout.Write([]byte{b})
 				}
 			}
 		}()

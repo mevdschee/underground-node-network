@@ -5,7 +5,7 @@ The UNN is built on standard SSH primitives, using custom subsystems and signali
 ## Security Model: Handover Trust
 
 Authentication in the UNN is hierarchical:
-1. **Entry Point Auth**: Standard SSH public key authentication. Users must manually register via `/register`.
+1. **Entry Point Auth**: Standard SSH public key authentication. Users must manually register via `/register`. UNN usernames are **alphanumeric** (a-z, A-Z, 0-9) and must be between 4 and 20 characters long.
 2. **Room Handover**: When a person connects to a room, the entry point includes the person's authenticated public key in the `punch_offer` signaling payload.
 3. **Room Auth**: The room's ephemeral SSH server enforces strict public key authentication, only accepting keys that were pre-authorized by the entry point.
 

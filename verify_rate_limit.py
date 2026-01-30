@@ -66,20 +66,23 @@ def run_test(file_size_kb, limit_str, expected_duration):
         return False
 
     start_transfer = None
+    print("DEBUG: Waiting for 'UNN DOWNLOAD READY'...")
     # Wait for completion
     while True:
         line = wrapper.stdout.readline()
         if not line:
             if wrapper.poll() is not None:
+                print("DEBUG: Wrapper process terminated.")
                 break
             continue
         
+        # Print raw data for debugging
+        print(f"DEBUG: RECEIVED: {repr(line)}")
         sys.stdout.write(line)
         sys.stdout.flush()
         
-        # OSC 9 signaling detection
-        if "\x1b]9;" in line and '"download"' in line:
-            print("Transfer started (OSC 9 detected)...")
+        if "UNN DOWNLOAD READY" in line:
+            print("DEBUG: FOUND TRIGGER! Transfer started (Instruction block detected)...")
             start_transfer = time.time()
         
     wrapper.wait()
