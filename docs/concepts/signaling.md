@@ -8,7 +8,7 @@ The `unn-control` SSH subsystem is used for high-level coordination between the 
 - **Usage**: Room registration, P2P candidate exchange, and identity handover.
 
 ### 2. OSC 9 Sequences (In-Band)
-To provide a seamless experience for visitors, we use invisible **ANSI OSC 9** sequences. These sequences are embedded in the normal terminal output stream and captured by the `unn-ssh` wrapper.
+To provide a seamless experience for visitors, we use invisible **ANSI OSC 9** sequences. These sequences are embedded in the normal terminal output stream and captured by the `unn-client` tool.
 
 - **Format**: `\x1b]9;{"action":"...","...":"..."}\x07`
 - **Actions**:
@@ -17,7 +17,7 @@ To provide a seamless experience for visitors, we use invisible **ANSI OSC 9** s
     - `popup`: Shows a stylized terminal-resident notification box.
 
 ### Why OSC?
-Using OSC allows the servers to control the wrapper without needing a separate network port or a custom protocol. It works over any standard SSH terminal, though only the `unn-ssh` wrapper is "aware" enough to act on the signals.
+Using OSC allows the servers to control the client tool without needing a separate network port or a custom protocol. It works over any standard SSH terminal, though only the `unn-client` is "aware" enough to act on the signals.
 
 ---
-See the full [OSC Action List](../../docs/OSC_PROTOCOL.md) for details.
+See the [OSC Protocol Details](../apps/client.md) for details.
