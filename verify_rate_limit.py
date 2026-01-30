@@ -44,23 +44,23 @@ def run_test(file_size_kb, limit_str, expected_duration):
 
     # 4. Use unn-client to trigger a download
     ssh_cmd = ["./unn-client-bin", "-batch", "-identity", "tests/integration/test_user_key", f"ssh://maurits@localhost:{ep_port}/myroom"]
-    wrapper = subprocess.Popen(ssh_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    unn_client = subprocess.Popen(ssh_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     
     time.sleep(3)
-    if wrapper.poll() is not None:
-        print(f"Wrapper exited early with code {wrapper.returncode}")
-        print(wrapper.stdout.read())
+    if unn_client.poll() is not None:
+        print(f"Client exited early with code {unn_client.returncode}")
+        print(unn_client.stdout.read())
         ep.kill()
         client.kill()
         return False
 
     print("Requesting file...")
     try:
-        wrapper.stdin.write(f"/get test_{file_size_kb}.bin\n")
-        wrapper.stdin.flush()
+        unn_client.stdin.write(f"/get test_{file_size_kb}.bin\n")
+        unn_client.stdin.flush()
     except BrokenPipeError:
-        print("Broken pipe when sending command. Wrapper output:")
-        print(wrapper.stdout.read())
+        print("Broken pipe when sending command. Client output:")
+        print(unn_client.stdout.read())
         ep.kill()
         client.kill()
         return False
@@ -69,10 +69,10 @@ def run_test(file_size_kb, limit_str, expected_duration):
     print("DEBUG: Waiting for 'UNN DOWNLOAD READY'...")
     # Wait for completion
     while True:
-        line = wrapper.stdout.readline()
+        line = unn_client.stdout.readline()
         if not line:
-            if wrapper.poll() is not None:
-                print("DEBUG: Wrapper process terminated.")
+            if unn_client.poll() is not None:
+                print("DEBUG: Client process terminated.")
                 break
             continue
         
@@ -85,7 +85,7 @@ def run_test(file_size_kb, limit_str, expected_duration):
             print("DEBUG: FOUND TRIGGER! Transfer started (Instruction block detected)...")
             start_transfer = time.time()
         
-    wrapper.wait()
+    unn_client.wait()
     end_transfer = time.time()
     
     if start_transfer is None:

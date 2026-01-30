@@ -86,7 +86,7 @@ type PunchStartPayload struct {
 	StartTime  int64    `json:"start_time"`  // Unix timestamp to sync start
 }
 
-// DownloadPayload is sent by the server to trigger a file download in the wrapper
+// DownloadPayload is sent by the server to trigger a file download in the client
 type DownloadPayload struct {
 	Action     string `json:"action,omitempty"`
 	Filename   string `json:"filename" yaml:"filename"`
@@ -95,7 +95,7 @@ type DownloadPayload struct {
 	Signature  string `json:"signature" yaml:"signature"`
 }
 
-// PopupPayload is sent to show a formatted popup message in the wrapper
+// PopupPayload is sent to show a formatted popup message in the client
 type PopupPayload struct {
 	Action  string `json:"action,omitempty"`
 	Title   string `json:"title"`

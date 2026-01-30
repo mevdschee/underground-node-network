@@ -1,5 +1,5 @@
 #!/bin/bash
-# UNN SSH Wrapper - Teleport to rooms using ssh:// URLs
+# UNN Client - Teleport to rooms using ssh:// URLs
 
 cd "$(dirname "$0")"
 

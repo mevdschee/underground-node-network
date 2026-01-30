@@ -22,4 +22,4 @@ To prevent input loss and correctly handle terminal interrupts (like `Ctrl+C`), 
 - It handles terminal resizing (`SIGWINCH`) transparently for the visitor.
 
 ---
-See also: [Chat Aesthetics](../../docs/CHAT.md)
+See also: [UI Component Architecture](../architecture/ui-components.md)

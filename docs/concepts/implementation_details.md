@@ -17,8 +17,8 @@ To ensure a smooth transition between the Chat UI and external "Doors," we imple
 The file transfer system is designed to be invisible to protocol sniffers:
 1. **Request**: User triggers `/get filename`.
 2. **Ephemeral Server**: Room server spawns a temporary SSH listener on a random port.
-3. **Signaling**: Wrapper receives an OSC 9 message with a random **UUIDv4** and the ephemeral port.
-4. **Transfer**: Wrapper connects to the ephemeral port and requests the UUID (not the original filename).
+3. **Signaling**: Client receives an OSC 9 message with a random **UUIDv4** and the ephemeral port.
+4. **Transfer**: Client connects to the ephemeral port and requests the UUID (not the original filename).
 5. **Mapping**: The server maps the UUID back to the real file on disk.
 
 ---

@@ -1270,7 +1270,7 @@ func (s *Server) showDownloadInfo(p *Person, filename string) {
 	// First reset colors to avoid the black background from sticking around
 	fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 
-	// Calculate file signature early to include it in the wrapper's download block
+	// Calculate file signature early to include it in the client's download block
 	sig := s.calculateFileSHA256(absPath)
 
 	data := protocol.DownloadPayload{
@@ -1286,11 +1286,11 @@ func (s *Server) showDownloadInfo(p *Person, filename string) {
 	fmt.Fprintf(p.Bus, "\033]9;%s\007", string(jsonData))
 
 	fmt.Fprintf(p.Bus, "\033[1;32mUNN DOWNLOAD READY\033[0m\r\n\r\n")
-	fmt.Fprintf(p.Bus, "The wrapper is automatically downloading the file to your Downloads folder.\r\n")
-
+	fmt.Fprintf(p.Bus, "The client is automatically downloading the file to your Downloads folder.\r\n")
+	fmt.Fprintf(p.Bus, " \r\n")
 	fmt.Fprintf(p.Bus, "\033[1;33mNote: The transfer must start within %d seconds.\033[0m\r\n", int(dt.Seconds()))
 
-	fmt.Fprintf(p.Bus, "If the wrapper fails, you can download manually using:\r\n\r\n")
+	fmt.Fprintf(p.Bus, "If the client fails, you can download manually using:\r\n\r\n")
 
 	// Get actual address for manual instruction
 	host, _, _ := net.SplitHostPort(s.address)
@@ -1314,7 +1314,7 @@ func (s *Server) showDownloadInfo(p *Person, filename string) {
 	// Consume the data
 	p.PendingDownload = ""
 
-	// Give the wrapper documentation and time to start the download.
+	// Give the client documentation and time to start the download.
 	// The connection will stay open until the person disconnects.
 }
 

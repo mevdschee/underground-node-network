@@ -872,8 +872,8 @@ func (s *Server) showTeleportInfo(p *Person) {
 	})
 
 	fmt.Fprintf(p.Bus, "\033[1;32mUNN TELEPORTATION READY\033[0m\r\n\r\n")
-	fmt.Fprintf(p.Bus, "The wrapper is automatically teleporting you to the room.\r\n")
-	fmt.Fprintf(p.Bus, "If the wrapper fails, you can connect manually using:\r\n\r\n")
+	fmt.Fprintf(p.Bus, "The client is automatically teleporting you to the room.\r\n")
+	fmt.Fprintf(p.Bus, "If the client fails, you can connect manually using:\r\n\r\n")
 
 	for _, candidate := range data.Candidates {
 		fmt.Fprintf(p.Bus, "\033[1;36mssh -p %d %s\033[0m\r\n", data.SSHPort, candidate)
