@@ -78,6 +78,7 @@ type PunchAnswerPayload struct {
 
 // PunchStartPayload tells both sides to start hole-punching
 type PunchStartPayload struct {
+	Action     string   `json:"action,omitempty"`
 	RoomName   string   `json:"room_name"`
 	Candidates []string `json:"candidates"`  // Remote peer's candidates
 	SSHPort    int      `json:"ssh_port"`    // Remote SSH port (for room)
@@ -87,6 +88,7 @@ type PunchStartPayload struct {
 
 // DownloadPayload is sent by the server to trigger a file download in the wrapper
 type DownloadPayload struct {
+	Action     string `json:"action,omitempty"`
 	Filename   string `json:"filename" yaml:"filename"`
 	Port       int    `json:"port" yaml:"port"`
 	TransferID string `json:"transfer_id" yaml:"transfer_id"`

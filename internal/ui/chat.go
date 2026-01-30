@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/uniseg"
 )
 
 type MessageType int
@@ -440,16 +441,15 @@ func (ui *ChatUI) Draw() {
 		mainW = w
 	}
 
-	// Draw Header (Single Line)
 	title := ui.title
 	if title == "" {
 		title = "Underground Node Network - Room"
 	}
-	ui.drawText(2, 0, title, mainW-4, blackStyle.Foreground(tcell.ColorLightCyan).Bold(true))
+	DrawText(ui.screen, 2, 0, title, mainW-4, blackStyle.Foreground(tcell.ColorLightCyan).Bold(true))
 
 	userStr := fmt.Sprintf("Logged in as: %s", ui.username)
-	userLen := len([]rune(userStr))
-	ui.drawText(w-userLen-2, 0, userStr, userLen, blackStyle)
+	userLen := uniseg.StringWidth(userStr)
+	DrawText(ui.screen, w-userLen-2, 0, userStr, userLen, blackStyle)
 
 	// Header separator
 	for x := 0; x < w; x++ {
@@ -502,7 +502,7 @@ func (ui *ChatUI) Draw() {
 			style = blackStyle.Foreground(tcell.ColorLightPink)
 		}
 
-		ui.drawText(1, contentY+i, displayMsg, mainW-1, style)
+		DrawText(ui.screen, 1, contentY+i, displayMsg, mainW-1, style)
 	}
 
 	// Draw Sidebar (Connect People)
@@ -522,7 +522,7 @@ func (ui *ChatUI) Draw() {
 				break
 			}
 			displayName := truncateString(door, sidebarW-2)
-			ui.drawText(mainW+2, sidebarStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
+			DrawText(ui.screen, mainW+2, sidebarStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
 			doorCount++
 		}
 
@@ -534,7 +534,7 @@ func (ui *ChatUI) Draw() {
 					break
 				}
 				displayName := truncateString(person, sidebarW-2)
-				ui.drawText(mainW+2, peopleStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
+				DrawText(ui.screen, mainW+2, peopleStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
 			}
 		}
 		// Clear rest of sidebar
@@ -570,8 +570,10 @@ func (ui *ChatUI) Draw() {
 		visibleInput = string(runes[ui.inputOffset:endIdx])
 	}
 
-	ui.drawText(1, h-1, prompt+visibleInput, w-2, promptStyle)
-	s.ShowCursor(1+len([]rune(prompt))+ui.cursorIdx-ui.inputOffset, h-1)
+	DrawText(ui.screen, 1, h-1, prompt+visibleInput, w-2, promptStyle)
+	prefix := string(runes[:ui.cursorIdx])
+	visualPos := uniseg.StringWidth(prefix)
+	s.ShowCursor(1+uniseg.StringWidth(prompt)+visualPos, h-1)
 
 	s.Show()
 }
@@ -688,21 +690,7 @@ func (ui *ChatUI) updatePhysicalLines(width int) {
 }
 
 func (ui *ChatUI) drawText(x, y int, text string, width int, style tcell.Style) {
-	ui.mu.Lock()
-	s := ui.screen
-	ui.mu.Unlock()
-	if s == nil {
-		return
-	}
-
-	runes := []rune(text)
-	for i := 0; i < width; i++ {
-		r := ' '
-		if i < len(runes) {
-			r = runes[i]
-		}
-		s.SetContent(x+i, y, r, nil, style)
-	}
+	DrawText(ui.screen, x, y, text, width, style)
 }
 
 // FillRegion clears a rectangular area with a specific character and style

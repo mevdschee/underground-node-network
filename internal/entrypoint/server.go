@@ -21,7 +21,6 @@ import (
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/ui"
 	"golang.org/x/crypto/ssh"
-	"gopkg.in/yaml.v3"
 )
 
 // Room represents a registered room
@@ -800,16 +799,10 @@ func (s *Server) showTeleportInfo(p *Person) {
 	// First reset colors to avoid the black background from sticking around
 	fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 
-	// Use yaml library for robust formatting
-	yamlData, _ := yaml.Marshal(data)
-	yamlStr := strings.ReplaceAll(string(yamlData), "\n", "\r\n")
-
-	// The wrapper looks for these markers to capture connection info
-	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
-	fmt.Fprintf(p.Bus, "[CONNECTION DATA]\r\n")
-	fmt.Fprintf(p.Bus, "%s", yamlStr)
-	fmt.Fprintf(p.Bus, "[/CONNECTION DATA]\r\n")
-	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
+	// Emit invisible ANSI OSC 9 sequence with teleport data
+	data.Action = "reconnect"
+	jsonData, _ := json.Marshal(data)
+	fmt.Fprintf(p.Bus, "\033]9;%s\007", string(jsonData))
 
 	fmt.Fprintf(p.Bus, "\033[1;32mUNN TELEPORTATION READY\033[0m\r\n\r\n")
 	fmt.Fprintf(p.Bus, "The wrapper is automatically reconnecting you to the room.\r\n")
@@ -853,9 +846,9 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 	sshUser := conn.User()
 
 	fields := []ui.FormField{
-		{Label: "Platform (github 🇺🇸, gitlab 🇺🇸, sourcehut 🇪🇺, codeberg 🇪🇺)", Value: "github"},
+		{Label: "Platform (github, gitlab, sourcehut, codeberg)", Value: "github"},
 		{Label: "Platform Username", Value: ""},
-		{Label: "UNN Username", Value: sshUser, MaxLength: 20},
+		{Label: "UNN Username", Value: sshUser, MaxLength: 20, Alphanumeric: true},
 	}
 
 	for {
@@ -897,6 +890,11 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 		// Length check
 		if len(unnUsername) < 4 {
 			fields[2].Error = "too short"
+			continue
+		}
+
+		if !ui.IsAlphanumeric(unnUsername) {
+			fields[2].Error = "must be alphanumeric"
 			continue
 		}
 

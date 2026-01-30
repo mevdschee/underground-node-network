@@ -8,13 +8,15 @@ import (
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/uniseg"
 )
 
 type FormField struct {
-	Label     string
-	Value     string
-	Error     string
-	MaxLength int
+	Label        string
+	Value        string
+	Error        string
+	MaxLength    int
+	Alphanumeric bool
 }
 
 type RoomInfo struct {
@@ -425,12 +427,15 @@ func (ui *EntryUI) Draw() {
 			}
 
 			if i == ui.FormActiveIdx {
+				prefix := ""
 				runes := []rune(field.Value)
-				cursorPos := ui.cursorIdx
-				if cursorPos > len(runes) {
-					cursorPos = len(runes)
+				cursorIdx := ui.cursorIdx
+				if cursorIdx > len(runes) {
+					cursorIdx = len(runes)
 				}
-				s.ShowCursor(startX+4+cursorPos, fieldY+1)
+				prefix = string(runes[:cursorIdx])
+				visualPos := uniseg.StringWidth(prefix)
+				s.ShowCursor(startX+4+visualPos, fieldY+1)
 			}
 		}
 
@@ -463,7 +468,9 @@ func (ui *EntryUI) Draw() {
 		if ui.prompt != "" {
 			promptStr := fmt.Sprintf("%s %s", ui.prompt, ui.input)
 			ui.drawText(1, h-1, promptStr, w-2, promptStyle)
-			s.ShowCursor(1+len([]rune(ui.prompt))+1+ui.cursorIdx-ui.inputOffset, h-1)
+			prefix := string([]rune(ui.input)[:ui.cursorIdx])
+			visualPos := uniseg.StringWidth(prefix)
+			s.ShowCursor(1+uniseg.StringWidth(ui.prompt)+1+visualPos, h-1)
 		}
 
 		s.Show()
@@ -580,8 +587,10 @@ func (ui *EntryUI) Draw() {
 		visibleInput = string(runes[ui.inputOffset:endIdx])
 	}
 
-	ui.drawText(1, h-1, prompt+visibleInput, w-2, promptStyle)
-	s.ShowCursor(1+len([]rune(prompt))+ui.cursorIdx-ui.inputOffset, h-1)
+	DrawText(ui.screen, 1, h-1, prompt+visibleInput, w-2, promptStyle)
+	prefix := string(runes[:ui.cursorIdx])
+	visualPos := uniseg.StringWidth(prefix)
+	s.ShowCursor(1+uniseg.StringWidth(prompt)+visualPos, h-1)
 
 	s.Show()
 }
@@ -712,6 +721,9 @@ func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 			if field.MaxLength > 0 && len(runes) >= field.MaxLength {
 				return false, false
 			}
+			if field.Alphanumeric && !IsAlphanumeric(string(ev.Rune())) {
+				return false, false
+			}
 		}
 		runes = append(runes[:ui.cursorIdx], append([]rune{ev.Rune()}, runes[ui.cursorIdx:]...)...)
 		if ui.InFormMode {
@@ -746,14 +758,7 @@ func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 }
 
 func (ui *EntryUI) drawText(x, y int, text string, width int, style tcell.Style) {
-	runes := []rune(text)
-	for i := 0; i < width; i++ {
-		r := ' '
-		if i < len(runes) {
-			r = runes[i]
-		}
-		ui.screen.SetContent(x+i, y, r, nil, style)
-	}
+	DrawText(ui.screen, x, y, text, width, style)
 }
 
 func (ui *EntryUI) fillRegion(x, y, w, h int, r rune, style tcell.Style) {

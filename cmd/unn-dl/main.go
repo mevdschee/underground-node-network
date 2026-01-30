@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mevdschee/underground-node-network/internal/ui"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -362,12 +363,12 @@ func drawUI(s tcell.Screen, state *DownloadState) {
 	}
 
 	// Draw Box Border (optional but looks nice)
-	drawText(s, boxX, boxY, "┌"+strings.Repeat("─", boxW-2)+"┐", labelStyle)
+	ui.DrawText(s, boxX, boxY, "┌"+strings.Repeat("─", boxW-2)+"┐", boxW, labelStyle)
 	for ry := 1; ry < boxH-1; ry++ {
 		s.SetContent(boxX, boxY+ry, '│', nil, labelStyle)
 		s.SetContent(boxX+boxW-1, boxY+ry, '│', nil, labelStyle)
 	}
-	drawText(s, boxX, boxY+boxH-1, "└"+strings.Repeat("─", boxW-2)+"┘", labelStyle)
+	ui.DrawText(s, boxX, boxY+boxH-1, "└"+strings.Repeat("─", boxW-2)+"┘", boxW, labelStyle)
 
 	// Content
 	y := boxY + 2
@@ -401,7 +402,7 @@ func drawUI(s tcell.Screen, state *DownloadState) {
 			csStyle = boxStyle.Foreground(tcell.ColorRed)
 		}
 	}
-	drawText(s, boxX+14, y, csMsg, csStyle)
+	ui.DrawText(s, boxX+14, y, csMsg, boxW-18, csStyle)
 
 	// Progress Bar
 	y = boxY + 8
@@ -425,8 +426,8 @@ func drawUI(s tcell.Screen, state *DownloadState) {
 
 	// Destination Input
 	y = boxY + 11
-	drawText(s, boxX+4, y, "SAVE TO:", labelStyle)
-	drawText(s, boxX+4, y+1, state.destPath, inputStyle)
+	ui.DrawText(s, boxX+4, y, "SAVE TO:", boxW-8, labelStyle)
+	ui.DrawText(s, boxX+4, y+1, state.destPath, boxW-8, inputStyle)
 	s.ShowCursor(boxX+4+len(state.destPath), y+1)
 
 	// Footer (centered at bottom of box)
@@ -498,11 +499,7 @@ func handleInput(s tcell.Screen, state *DownloadState, done chan struct{}) {
 }
 
 func drawText(s tcell.Screen, x, y int, str string, style tcell.Style) {
-	col := x
-	for _, r := range str {
-		s.SetContent(col, y, r, nil, style)
-		col++
-	}
+	ui.DrawText(s, x, y, str, len(str)*2, style) // Use large width as default
 }
 
 func formatSize(b int64) string {

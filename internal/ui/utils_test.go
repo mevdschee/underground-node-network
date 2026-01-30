@@ -66,6 +66,18 @@ func TestWrapText(t *testing.T) {
 			width:    8,
 			expected: []string{"hello", "  world"},
 		},
+		{
+			name:     "emoji wrap",
+			input:    "hello 🇺🇸 world",
+			width:    8,
+			expected: []string{"hello", "  🇺🇸", "  world"},
+		},
+		{
+			name:     "long emoji sequence",
+			input:    "🇺🇸🇪🇺🇯🇵",
+			width:    4,
+			expected: []string{"🇺🇸🇪🇺", "  🇯🇵"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -89,12 +101,38 @@ func TestTruncateString(t *testing.T) {
 		{"abc", 2, "a…"},
 		{"abc", 1, "…"},
 		{"", 5, ""},
+		{"🇺🇸🇪🇺🇯🇵", 4, "🇺🇸…"},
+		{"🇺🇸", 1, "…"},
+		{"🇺🇸", 2, "🇺🇸"},
 	}
 
 	for _, tt := range tests {
 		got := truncateString(tt.input, tt.limit)
 		if got != tt.expected {
 			t.Errorf("truncateString(%q, %d) = %q, want %q", tt.input, tt.limit, got, tt.expected)
+		}
+	}
+}
+
+func TestIsAlphanumeric(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"abcABC123", true},
+		{"abc-123", false},
+		{"abc 123", false},
+		{"", true},
+		{"_", false},
+		{"!@#", false},
+		{"1234567890", true},
+		{"UserName", true},
+	}
+
+	for _, tt := range tests {
+		got := IsAlphanumeric(tt.input)
+		if got != tt.expected {
+			t.Errorf("IsAlphanumeric(%q) = %v, want %v", tt.input, got, tt.expected)
 		}
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mevdschee/underground-node-network/internal/ui"
+	"github.com/rivo/uniseg"
 )
 
 // Default constants for 115200 baud
@@ -73,21 +75,14 @@ func (p *Panel) Draw(s tcell.Screen) {
 
 	// Draw title
 	titleStr := fmt.Sprintf(" [ %s ] ", p.title)
-	for i, r := range titleStr {
-		s.SetContent(p.x+2+i, p.y, r, nil, p.style.Bold(true))
-	}
+	ui.DrawText(s, p.x+2, p.y, titleStr, p.w-4, p.style.Bold(true))
 
 	// Draw lines
 	for i, line := range p.lines {
 		if i >= p.h-2 {
 			break
 		}
-		for j, r := range line {
-			if j >= p.w-4 {
-				break
-			}
-			s.SetContent(p.x+2+j, p.y+1+i, r, nil, p.style)
-		}
+		ui.DrawText(s, p.x+2, p.y+1+i, line, p.w-4, p.style)
 	}
 }
 
@@ -163,15 +158,16 @@ type Drop struct {
 // --- Main Helper Functions ---
 
 func drawText(s tcell.Screen, x, y int, text string, style tcell.Style) {
-	for i, r := range text {
-		s.SetContent(x+i, y, r, nil, style)
-	}
+	ui.DrawText(s, x, y, text, 1000, style)
 }
 
 func typeLine(p *Panel, text string, charMin, charMax time.Duration) {
 	fullText := text
-	for i := 0; i <= len(fullText); i++ {
-		p.SetLine(len(p.lines)-1, fullText[:i]+"_")
+	gr := uniseg.NewGraphemes(fullText)
+	typed := ""
+	for gr.Next() {
+		typed += gr.Str()
+		p.SetLine(len(p.lines)-1, typed+"_")
 		time.Sleep(charMin + time.Duration(rand.Intn(int(charMax-charMin+1))))
 	}
 	p.SetLine(len(p.lines)-1, fullText)
