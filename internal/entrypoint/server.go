@@ -20,6 +20,9 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/ui"
+	"github.com/mevdschee/underground-node-network/internal/ui/bridge"
+	"github.com/mevdschee/underground-node-network/internal/ui/common"
+	"github.com/mevdschee/underground-node-network/internal/ui/form"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -44,8 +47,8 @@ type Person struct {
 	TeleportData *protocol.PunchStartPayload
 	UI           *ui.EntryUI
 	DisplayName  string
-	Bus          *ui.SSHBus
-	Bridge       *ui.InputBridge
+	Bus          *bridge.SSHBus
+	Bridge       *bridge.InputBridge
 	UNNAware     bool
 	PubKey       ssh.PublicKey
 	PubKeyHash   string
@@ -295,7 +298,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 			// Captured initial size if any
 			var initialW, initialH uint32 = 80, 24
 			if req.Type == "pty-req" {
-				if w, h, ok := ui.ParsePtyRequest(req.Payload); ok {
+				if w, h, ok := common.ParsePtyRequest(req.Payload); ok {
 					initialW, initialH = w, h
 				}
 			}
@@ -306,12 +309,15 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 				log.Printf("Person connected: %s", username)
 
 				sessionID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
-				bridge := ui.NewInputBridge(channel)
+				inputBridge := bridge.NewInputBridge(channel)
 				p := &Person{
-					SessionID:  sessionID,
-					Username:   username,
-					Bridge:     bridge,
-					Bus:        ui.NewSSHBus(bridge, int(initialW), int(initialH)),
+					SessionID: sessionID,
+					Username:  username,
+					TeleportData: &protocol.PunchStartPayload{
+						RoomName: "lobby", // Default
+					},
+					Bridge:     inputBridge,
+					Bus:        bridge.NewSSHBus(inputBridge, int(initialW), int(initialH)),
 					UNNAware:   strings.Contains(string(conn.ClientVersion()), "UNN"),
 					PubKey:     parsedPubKey,
 					PubKeyHash: pubKeyHash,
@@ -360,12 +366,12 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 					for r := range requests {
 						switch r.Type {
 						case "pty-req":
-							if w, h, ok := ui.ParsePtyRequest(r.Payload); ok {
+							if w, h, ok := common.ParsePtyRequest(r.Payload); ok {
 								p.Bus.Resize(int(w), int(h))
 							}
 							r.Reply(true, nil)
 						case "window-change":
-							if w, h, ok := ui.ParseWindowChange(r.Payload); ok {
+							if w, h, ok := common.ParseWindowChange(r.Payload); ok {
 								p.Bus.Resize(int(w), int(h))
 							}
 							r.Reply(true, nil)
@@ -770,7 +776,7 @@ func (s *Server) SendOSC(p *Person, action string, params map[string]interface{}
 	if !p.UNNAware {
 		return
 	}
-	ui.SendOSC(p.Bus, action, params)
+	common.SendOSC(p.Bus, action, params)
 }
 
 func (s *Server) HandleOSC(p *Person, action string, params map[string]interface{}) {
@@ -912,7 +918,7 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 	eui := p.UI
 	sshUser := conn.User()
 
-	fields := []ui.FormField{
+	fields := []form.FormField{
 		{Label: "Platform (github, gitlab, sourcehut, codeberg)", Value: "github"},
 		{Label: "Platform Username", Value: ""},
 		{Label: "UNN Username", Value: sshUser, MaxLength: 20, Alphanumeric: true},
@@ -960,7 +966,7 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 			continue
 		}
 
-		if !ui.IsAlphanumeric(unnUsername) {
+		if !common.IsAlphanumeric(unnUsername) {
 			fields[2].Error = "must be alphanumeric"
 			continue
 		}

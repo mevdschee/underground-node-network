@@ -1,4 +1,4 @@
-package ui
+package common
 
 import (
 	"encoding/binary"
@@ -21,7 +21,6 @@ func DrawText(s tcell.Screen, x, y int, text string, width int, style tcell.Styl
 		if posX+w > width {
 			break
 		}
-		// SetContent handles multi-rune clusters if the first rune and subsequent ones are provided.
 		runes := []rune(str)
 		s.SetContent(x+posX, y, runes[0], runes[1:], style)
 		posX += w
@@ -32,7 +31,7 @@ func DrawText(s tcell.Screen, x, y int, text string, width int, style tcell.Styl
 	}
 }
 
-func truncateString(s string, limit int) string {
+func TruncateString(s string, limit int) string {
 	if uniseg.StringWidth(s) <= limit {
 		return s
 	}
@@ -82,7 +81,7 @@ func ParseWindowChange(payload []byte) (uint32, uint32, bool) {
 	return w, h, true
 }
 
-func wrapText(s string, width int) []string {
+func WrapText(s string, width int) []string {
 	if s == "" {
 		return []string{""}
 	}
@@ -107,7 +106,6 @@ func wrapText(s string, width int) []string {
 			break
 		}
 
-		// Look for last space within effWidth
 		breakIdx := -1
 		widthSoFar := 0
 		lastSpaceIdx := -1
@@ -130,12 +128,10 @@ func wrapText(s string, width int) []string {
 		if lastSpaceIdx != -1 {
 			breakIdx = lastSpaceIdx
 		} else {
-			// No space found, hard break
 			breakIdx = byteIdx
 		}
 
 		if breakIdx == 0 && len(remaining) > 0 {
-			// Force at least one grapheme to avoid infinite loop
 			gr := uniseg.NewGraphemes(remaining)
 			if gr.Next() {
 				breakIdx = len(gr.Str())
@@ -144,17 +140,15 @@ func wrapText(s string, width int) []string {
 
 		line := remaining[:breakIdx]
 		trimmed := strings.TrimSpace(line)
-		if trimmed != "" || !first { // Don't add empty lines from leading spaces
+		if trimmed != "" || !first {
 			lines = append(lines, indent+trimmed)
 		}
 
 		remaining = remaining[breakIdx:]
-		// Skip leading spaces on next line
 		remaining = strings.TrimLeft(remaining, " ")
 		first = false
 	}
 
-	// Filter out empty lines at the end if the original wasn't empty
 	if len(lines) > 1 {
 		last := len(lines) - 1
 		for last >= 0 && lines[last] == "  " {
@@ -169,6 +163,7 @@ func wrapText(s string, width int) []string {
 
 	return lines
 }
+
 func IsAlphanumeric(s string) bool {
 	for _, r := range s {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
@@ -176,4 +171,30 @@ func IsAlphanumeric(s string) bool {
 		}
 	}
 	return true
+}
+
+func FillRegion(s tcell.Screen, x, y, w, h int, r rune, style tcell.Style) {
+	if s == nil {
+		return
+	}
+	for ly := 0; ly < h; ly++ {
+		for lx := 0; lx < w; lx++ {
+			s.SetContent(x+lx, y+ly, r, nil, style)
+		}
+	}
+}
+
+func DrawBorder(s tcell.Screen, x, y, w, h int, style tcell.Style) {
+	s.SetContent(x, y, '┏', nil, style)
+	s.SetContent(x+w-1, y, '┓', nil, style)
+	s.SetContent(x, y+h-1, '┗', nil, style)
+	s.SetContent(x+w-1, y+h-1, '┛', nil, style)
+	for lx := x + 1; lx < x+w-1; lx++ {
+		s.SetContent(lx, y, '━', nil, style)
+		s.SetContent(lx, y+h-1, '━', nil, style)
+	}
+	for ly := y + 1; ly < y+h-1; ly++ {
+		s.SetContent(x, ly, '┃', nil, style)
+		s.SetContent(x+w-1, ly, '┃', nil, style)
+	}
 }

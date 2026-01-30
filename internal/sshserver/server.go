@@ -22,6 +22,9 @@ import (
 	"github.com/mevdschee/underground-node-network/internal/fileserver"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/ui"
+	"github.com/mevdschee/underground-node-network/internal/ui/bridge"
+	"github.com/mevdschee/underground-node-network/internal/ui/common"
+	"github.com/mevdschee/underground-node-network/internal/ui/password"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -31,8 +34,8 @@ type Person struct {
 	Username        string
 	Conn            ssh.Conn
 	ChatUI          *ui.ChatUI
-	Bus             *ui.SSHBus
-	Bridge          *ui.InputBridge
+	Bus             *bridge.SSHBus
+	Bridge          *bridge.InputBridge
 	PendingDownload string
 	PubKey          ssh.PublicKey // The specific key used for auth
 	UNNAware        bool
@@ -474,7 +477,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, sessionID string) {
 			req.Reply(false, nil)
 			return
 		case "pty-req":
-			if w, h, ok := ui.ParsePtyRequest(req.Payload); ok {
+			if w, h, ok := common.ParsePtyRequest(req.Payload); ok {
 				initialW, initialH = w, h
 			}
 			req.Reply(true, nil)
@@ -482,23 +485,24 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, sessionID string) {
 			req.Reply(true, nil)
 
 			// Shell session - init TUI and start interaction
-			p.Bridge = ui.NewInputBridge(rawChannel)
+			p.Bridge = bridge.NewInputBridge(rawChannel)
 			p.Bridge.SetOSCHandler(func(action string, params map[string]interface{}) {
 				s.HandleOSC(p, action, params)
 			})
-			p.Bus = ui.NewSSHBus(p.Bridge, int(initialW), int(initialH))
+			p.Bus = bridge.NewSSHBus(p.Bridge, int(initialW), int(initialH))
 
 			// Handle remaining requests in background (e.g., resize)
 			go func() {
 				for r := range requests {
 					switch r.Type {
 					case "pty-req":
-						if w, h, ok := ui.ParsePtyRequest(r.Payload); ok {
+						if w, h, ok := common.ParsePtyRequest(r.Payload); ok {
 							p.Bus.Resize(int(w), int(h))
 						}
 						r.Reply(true, nil)
 					case "window-change":
-						if w, h, ok := ui.ParseWindowChange(r.Payload); ok {
+						if w, h, ok := common.ParseWindowChange(
+							r.Payload); ok {
 							p.Bus.Resize(int(w), int(h))
 						}
 						r.Reply(true, nil)
@@ -560,7 +564,8 @@ func (s *Server) handleInteraction(channel ssh.Channel, sessionID string) {
 		scr, err := tcell.NewTerminfoScreenFromTty(p.Bus)
 		if err == nil {
 			if err := scr.Init(); err == nil {
-				pwdUI := ui.NewPasswordUI(scr)
+				pwdUI := password.NewPasswordUI(
+					scr)
 				entered := pwdUI.Run()
 				scr.Fini()
 				if entered != lockKey {
@@ -741,9 +746,10 @@ func (s *Server) handleCommand(channel ssh.Channel, sessionID string, input stri
 					input = p.Bus
 				}
 
-				output := ui.NewOSCDetector(channel, func(action string, params map[string]interface{}) {
-					s.HandleOSC(p, action, params)
-				})
+				output := bridge.NewOSCDetector(
+					channel, func(action string, params map[string]interface{}) {
+						s.HandleOSC(p, action, params)
+					})
 
 				if err := s.doorManager.Execute(doorName, input, output, output); err != nil {
 					fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)
@@ -1124,7 +1130,7 @@ func (s *Server) SendOSC(p *Person, action string, params map[string]interface{}
 	if !p.UNNAware {
 		return
 	}
-	ui.SendOSC(p.Bus, action, params)
+	common.SendOSC(p.Bus, action, params)
 }
 
 func (s *Server) HandleOSC(p *Person, action string, params map[string]interface{}) {

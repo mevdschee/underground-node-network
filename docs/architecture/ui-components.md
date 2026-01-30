@@ -1,43 +1,52 @@
 # UNN UI Component Architecture
 
-The UNN uses a custom-built Terminal User Interface (TUI) layer on top of `tcell`. The interface is split into several reusable components that provide the "BBS" feel while maintaining high performance over SSH.
+The UNN uses a modular Terminal User Interface (TUI) layer built on top of `tcell`. The interface is split into specialized sub-packages to ensure reusability, testability, and a consistent "BBS" aesthetic across all applications.
 
-### 1. Banner (ANSI Header)
-- **Controlled by**: `internal/ui.EntryUI`
-- **Behavior**: Displays multi-line ANSI art at the top of the screen. It is drawn once but can be updated via `SetBanner`.
-- **Usage**: Used in the Entrypoint to greet visitors and set the mood for each room.
+## Package Structure (`internal/ui/`)
 
-### 2. Sidebars (Information Panels)
-- **Controlled by**: `internal/ui.EntryUI` and `internal/ui.ChatUI`
-- **Behavior**: Fixed-width vertical panels on the right side of the screen. They automatically truncate content to fit the remaining horizontal space.
-- **Components**:
-    - **Room List**: Shows active rooms, their owners, and short hashes of their public keys. (Entrypoint)
-    - **People List**: Shows travelers currently jacked into the room. (Room Node)
-    - **Doors List**: Displays interactive programs available for execution. (Room Node)
+### 1. Banner (`banner/`)
+- **Behavior**: Renders multi-line ANSI art and system headers.
+- **Responsibility**: Provides the "first impression" of a room or entrypoint. Supports dynamic updates to the room name and operator info.
 
-### 3. Message Log (Scrollable Feed)
-- **Controlled by**: `internal/ui.EntryUI` and `internal/ui.ChatUI`
-- **Behavior**: A line-wrapped, scrollable list of messages. It supports multiple message types (Server, System, Chat, Self) with distinct color coding.
-- **History**: Implements in-memory persistence. In the Room Node, history is key-isolated (only showing messages from your current session duration).
+### 2. Sidebars (`sidebar/`)
+- **Behavior**: Fixed-width vertical panels (usually 20-30 characters) on the right side of the screen.
+- **Auto-layout**: Sidebars automatically calculate their own heights and handle content truncation.
+- **Variants**:
+    - **PeopleSidebar**: Integrated with the room's occupant list.
+    - **RoomSidebar**: Displays active rooms in the global entrypoint.
+    - **DoorSidebar**: Lists interactive programs available to the user.
 
-### 4. Command Input (Prompt Bar)
-- **Controlled by**: `internal/ui.EntryUI` and `internal/ui.ChatUI`
-- **Behavior**: A single-line input field at the bottom of the screen. It supports standard editing keys (Backspace, Arrows) and command history (Up/Down).
-- **Execution**: Intercepts `/` commands for local processing (e.g., `/help`, `/clear`) and treats other input as broadcast messages.
+### 3. Message Log (`log/`)
+- **Behavior**: A thread-safe, scrollable feed of timestamped entries.
+- **Features**:
+    - **Automated Wrapping**: Uses `uniseg` for correct grapheme-aware text wrapping.
+    - **Message Types**: Defined in `internal/ui/types.go` (System, Server, Chat, Self), each with curated color schemes.
+    - **Efficiency**: Only re-wraps lines when the parent container's width changes.
 
-### 5. Form Layer (Modals)
-- **Controlled by**: `internal/ui.EntryUI` (`PromptForm`)
-- **Behavior**: Provides a structured, field-based input overlay. It supports tab-navigation between fields, real-time validation (e.g., alphanumeric only), and error message display.
-- **Usage**: Primary tool for the Entrypoint registration process.
+### 4. Command Input (`input/`)
+- **Behavior**: A single-line interactive prompt with a cursor.
+- **Features**:
+    - **History**: Local command history navigable with Up/Down arrows.
+    - **Focus**: Manages its own internal state for the insertion point.
 
-### 6. OSC Popups (Out-of-Band Overlay)
-- **Controlled by**: Client-side logic in `unn-client`, triggered by server signals.
-- **Behavior**: A centered, high-contrast box that clears the entire screen. It features 256-color borders and drop shadows.
-- **Usage**: Used for critical notifications that require user attention (e.g., "Kicked from Room", "Duplicate Session").
+### 5. Form & Password (`form/`, `password/`)
+- **Form Overlay**: Provides a structured, tab-navigable interface for multi-field input (e.g., registration). Now supports custom titles and consistent border styling.
+- **Password Prompt**: A specialized centered modal that masks input with asterisks. Used for room locking and sensitive credential entry.
 
-### 7. Input Bridge (The Invisible UI)
-- **Controlled by**: `internal/ui.InputBridge`
-- **Behavior**: Not a visual component, but manages the handoff of input between the TUI and external sub-processes (Doors). It ensures that `Ctrl+C` behavior is consistent and that terminal resizes are propagated correctly to both the TUI and any active sub-program.
+### 6. Bridge & SSHBus (`bridge/`)
+- **InputBridge**: Manages the high-concurrency pipe between the SSH channel and the UI. It intercepts **OSC (Operating System Command)** sequences for out-of-band signals like file downloads or popups.
+- **SSHBus**: A dedicated implementation of `tcell.Tty`. It allows the TUI components to interact with an SSH stream as if it were a local Tty, handling window resizing and EOF gracefully.
+
+### 7. Popups (`popup/`)
+- **Behavior**: Stylized overlays triggered by OSC signals (`\x1b]9;...`).
+- **Styling**: Distinctive shadows and high-contrast colors (e.g., Dark Red for warnings).
+
+### 8. Common Utilities (`common/`)
+- **Standardized Drawing**: Unified functions like `DrawBorder`, `FillRegion`, and `DrawText` ensuring pixel-perfect alignment across all components.
+- **Terminal Parsing**: Helpers for decoding SSH pty-req and window-change payloads.
+
+## Shared Data Types (`types.go`)
+To prevent circular dependencies between components (e.g., a Sidebar needing to know about Message types), core structures like `Message`, `MessageType`, and `RoomInfo` are centralized in `internal/ui/types.go`.
 
 ---
-See also: [Entrypoint Internals](entrypoint.md) | [Room Node Internals](room.md) | [Client Internals](client.md)
+See also: [File Structure](file-structure.md) | [Entrypoint Internals](entrypoint.md) | [Room Node Internals](room.md)

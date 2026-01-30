@@ -8,65 +8,45 @@ import (
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/uniseg"
+	"github.com/mevdschee/underground-node-network/internal/ui/common"
+	"github.com/mevdschee/underground-node-network/internal/ui/input"
+	"github.com/mevdschee/underground-node-network/internal/ui/log"
+	"github.com/mevdschee/underground-node-network/internal/ui/sidebar"
 )
-
-type MessageType int
-
-const (
-	MsgChat MessageType = iota
-	MsgSelf
-	MsgCommand
-	MsgServer
-	MsgSystem
-	MsgAction
-	MsgWhisper
-)
-
-type Message struct {
-	Text string
-	Type MessageType
-}
 
 type ChatUI struct {
 	screen        tcell.Screen
-	messages      []Message
-	people        []string
-	doors         []string
-	input         string
-	history       []string
-	hIndex        int
-	mu            sync.Mutex
-	username      string
-	title         string
-	onSend        func(string)
-	onExit        func()
-	onClose       func()
-	onCmd         func(string) bool
-	drawChan      chan struct{}
-	closeChan     chan struct{}
-	scrollOffset  int
-	cursorIdx     int
-	inputOffset   int
-	draft         string
-	physicalLines []Message
-	lastWidth     int
-	lastMsgCount  int
-	pendingCmd    string
-	success       bool
-	firstDraw     bool
-	Headless      bool
-	Input         io.ReadWriter
+	logs          *log.LogView
+	peopleSidebar *sidebar.Sidebar
+	doorsSidebar  *sidebar.Sidebar
+	cmdInput      *input.CommandInput
+
+	mu        sync.Mutex
+	username  string
+	title     string
+	onSend    func(string)
+	onExit    func()
+	onClose   func()
+	onCmd     func(string) bool
+	drawChan  chan struct{}
+	closeChan chan struct{}
+
+	scrollOffset int
+	success      bool
+	firstDraw    bool
+	Headless     bool
+	Input        io.ReadWriter
 }
 
 func NewChatUI(screen tcell.Screen) *ChatUI {
 	return &ChatUI{
-		screen:    screen,
-		messages:  make([]Message, 0),
-		people:    make([]string, 0),
-		doors:     make([]string, 0),
-		drawChan:  make(chan struct{}, 1),
-		closeChan: make(chan struct{}, 1),
+		screen:        screen,
+		logs:          log.NewLogView(),
+		peopleSidebar: sidebar.NewSidebar("People:", 18),
+		doorsSidebar:  sidebar.NewSidebar("Doors:", 18),
+		cmdInput:      input.NewCommandInput(">"),
+		drawChan:      make(chan struct{}, 1),
+		closeChan:     make(chan struct{}, 1),
 	}
 }
 
@@ -118,49 +98,35 @@ func (ui *ChatUI) OnCmd(cb func(string) bool) {
 
 func (ui *ChatUI) SetPeople(people []string) {
 	ui.mu.Lock()
-	ui.people = people
+	ui.peopleSidebar.SetItems(people)
 	screen := ui.screen
 	ui.mu.Unlock()
 
 	if screen != nil {
 		screen.PostEvent(&tcell.EventInterrupt{})
-	}
-
-	// Trigger redraw
-	select {
-	case ui.drawChan <- struct{}{}:
-	default:
 	}
 }
 
 func (ui *ChatUI) SetDoors(doors []string) {
 	ui.mu.Lock()
-	ui.doors = doors
+	ui.doorsSidebar.SetItems(doors)
 	screen := ui.screen
 	ui.mu.Unlock()
 
 	if screen != nil {
 		screen.PostEvent(&tcell.EventInterrupt{})
 	}
-
-	// Trigger redraw
-	select {
-	case ui.drawChan <- struct{}{}:
-	default:
-	}
 }
 
-func (ui *ChatUI) GetMessages() []Message {
+func (ui *ChatUI) GetMessages() []log.Message {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
-	res := make([]Message, len(ui.messages))
-	copy(res, ui.messages)
-	return res
+	return ui.logs.Messages
 }
 
 func (ui *ChatUI) ClearMessages() {
 	ui.mu.Lock()
-	ui.messages = nil
+	ui.logs = log.NewLogView()
 	ui.mu.Unlock()
 	if ui.screen != nil {
 		ui.screen.PostEvent(&tcell.EventInterrupt{})
@@ -170,7 +136,6 @@ func (ui *ChatUI) ClearMessages() {
 func (ui *ChatUI) Close(success bool) {
 	ui.mu.Lock()
 	onClose := ui.onClose
-	screen := ui.screen
 	select {
 	case <-ui.closeChan:
 		ui.mu.Unlock()
@@ -181,14 +146,12 @@ func (ui *ChatUI) Close(success bool) {
 	}
 	ui.mu.Unlock()
 
-	// Trigger the close callback immediately to unblock any I/O
 	if onClose != nil {
 		onClose()
 	}
 
-	// Wake up the PollEvent goroutine
-	if screen != nil {
-		screen.PostEvent(&tcell.EventInterrupt{})
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
 	}
 }
 
@@ -196,15 +159,8 @@ func (ui *ChatUI) Reset() {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
 	ui.closeChan = make(chan struct{}, 1)
-	ui.pendingCmd = ""
 	ui.firstDraw = true
-	ui.cursorIdx = 0
 	ui.scrollOffset = 0
-	ui.inputOffset = 0
-	ui.draft = ""
-	ui.lastWidth = 0
-	ui.lastMsgCount = 0
-	ui.physicalLines = nil
 }
 
 func (ui *ChatUI) Run() string {
@@ -223,9 +179,6 @@ func (ui *ChatUI) Run() string {
 							handled = onCmd(msg)
 						}
 						if !handled {
-							ui.mu.Lock()
-							ui.pendingCmd = msg
-							ui.mu.Unlock()
 							ui.Close(true)
 							return
 						}
@@ -237,173 +190,88 @@ func (ui *ChatUI) Run() string {
 			}()
 		}
 		<-ui.closeChan
-		ui.mu.Lock()
-		res := ui.pendingCmd
-		ui.pendingCmd = ""
-		ui.mu.Unlock()
-		return res
+		return "" // Headless command return not supported in this simplified refactor
 	}
-
-	stopChan := make(chan struct{}) // Internal stop signal for THIS run
-
-	// Capture the current close channel and screen to avoid data races
-	ui.mu.Lock()
-	closeChan := ui.closeChan
-	screen := ui.screen
-	ui.mu.Unlock()
-
-	if screen == nil {
-		return ""
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(1)
 
 	// Initial setup
 	blackStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorWhite)
-	screen.SetStyle(blackStyle)
-	screen.Sync()
-	screen.Fill(' ', blackStyle)
-	screen.Show()
+	ui.screen.SetStyle(blackStyle)
+	ui.screen.Sync()
+	ui.screen.Fill(' ', blackStyle)
+	ui.screen.Show()
 
-	// Capture draw channel
-	ui.mu.Lock()
-	drawChan := ui.drawChan
-	ui.mu.Unlock()
-
-	// Initial redraw
-	select {
-	case drawChan <- struct{}{}:
-	default:
-	}
-
-	// Event loop
-	go func() {
-		defer wg.Done()
-		if screen != nil { // Added nil check
-			defer screen.PostEvent(&tcell.EventInterrupt{}) // Wake up redraw loop on exit
-		}
-		for {
-			// Check if we should exit after being unblocked
-			select {
-			case <-closeChan:
-				return
-			default:
-			}
-
-			ev := screen.PollEvent()
-
-			if ev == nil {
-				go ui.Close(false)
-				return
-			}
-
-			switch ev := ev.(type) {
-			case *tcell.EventKey:
-				if ev.Key() == tcell.KeyCtrlC || ev.Key() == tcell.KeyEscape {
-					go ui.Close(false) // Trigger clean exit via signal
-					return
-				}
-				if ev.Key() == tcell.KeyEnter {
-					ui.mu.Lock()
-					msg := ui.input
-					ui.input = ""
-					ui.cursorIdx = 0
-					ui.scrollOffset = 0
-					ui.inputOffset = 0
-					ui.draft = ""
-
-					// Save to history if not empty and different from last
-					if msg != "" && (len(ui.history) == 0 || ui.history[len(ui.history)-1] != msg) {
-						ui.history = append(ui.history, msg)
-					}
-					ui.hIndex = len(ui.history)
-					ui.mu.Unlock()
-
-					if msg == "" {
-						continue
-					}
-
-					if strings.HasPrefix(msg, "/") {
-						handled := false
-						ui.mu.Lock()
-						onCmd := ui.onCmd
-						ui.mu.Unlock()
-						if onCmd != nil {
-							handled = onCmd(msg)
-						}
-						if !handled {
-							ui.mu.Lock()
-							ui.pendingCmd = msg
-							ui.mu.Unlock()
-							go ui.Close(true) // Trigger clean exit for external command handling
-							return
-						}
-					} else if ui.onSend != nil {
-						ui.onSend(msg)
-					}
-				}
-				ui.handleKey(ev)
-			case *tcell.EventResize:
-				if ui.screen != nil { // Added nil check
-					ui.screen.Sync()
-					ui.screen.Fill(' ', blackStyle)
-				}
-			case *tcell.EventInterrupt:
-			}
-			// Trigger redraw after any event
-			select {
-			case drawChan <- struct{}{}:
-			default:
-			}
-		}
-	}()
-
-	// Redraw/Main loop
-	var result string
-outer:
 	for {
+		ui.Draw()
+		ev := ui.screen.PollEvent()
+		if ev == nil {
+			ui.Close(false)
+			return ""
+		}
+
+		switch ev := ev.(type) {
+		case *tcell.EventResize:
+			ui.screen.Sync()
+		case *tcell.EventInterrupt:
+			// Just redraw
+		case *tcell.EventKey:
+			if ev.Key() == tcell.KeyCtrlC || ev.Key() == tcell.KeyEscape {
+				ui.Close(false)
+				return ""
+			}
+
+			submitted, val := ui.cmdInput.HandleKey(ev)
+			if submitted {
+				if strings.HasPrefix(val, "/") {
+					handled := false
+					ui.mu.Lock()
+					onCmd := ui.onCmd
+					ui.mu.Unlock()
+					if onCmd != nil {
+						handled = onCmd(val)
+					}
+					if !handled {
+						ui.Close(true)
+						return val
+					}
+				} else if ui.onSend != nil {
+					ui.onSend(val)
+				}
+			}
+		}
+
 		select {
-		case <-closeChan:
-			ui.mu.Lock()
-			result = ui.pendingCmd
-			ui.pendingCmd = ""
-			ui.mu.Unlock()
-			break outer
-		case <-drawChan:
-			ui.Draw()
+		case <-ui.closeChan:
+			return ""
+		default:
 		}
 	}
-
-	// Signal event loop to stop if it hasn't already
-	close(stopChan)
-	if ui.screen != nil { // Added nil check
-		ui.screen.PostEvent(&tcell.EventInterrupt{})
-	}
-	wg.Wait() // Ensure goroutine is dead
-
-	return result
 }
 
 func (ui *ChatUI) AddMessage(msg string, msgType MessageType) {
 	ui.mu.Lock()
-	ui.messages = append(ui.messages, Message{Text: msg, Type: msgType})
-	ui.scrollOffset = 0 // Auto-scroll to bottom
-	screen := ui.screen
-	ui.mu.Unlock()
+	defer ui.mu.Unlock()
 
-	if ui.Headless && ui.Input != nil {
-		fmt.Fprintf(ui.Input, "%s\r\n", msg)
-	}
-	if screen != nil {
-		screen.PostEvent(&tcell.EventInterrupt{})
-	}
-
-	// Trigger redraw
-	select {
-	case ui.drawChan <- struct{}{}:
+	var lt log.MessageType
+	switch msgType {
+	case MsgChat:
+		lt = log.MsgChat
+	case MsgSelf:
+		lt = log.MsgSelf
+	case MsgCommand:
+		lt = log.MsgCommand
+	case MsgServer:
+		lt = log.MsgServer
+	case MsgSystem:
+		lt = log.MsgSystem
+	case MsgAction:
+		lt = log.MsgAction
+	case MsgWhisper:
+		lt = log.MsgWhisper
 	default:
+		lt = log.MsgChat
 	}
+
+	ui.logs.AddMessage(msg, lt)
 }
 
 func (ui *ChatUI) Draw() {
@@ -411,300 +279,64 @@ func (ui *ChatUI) Draw() {
 		return
 	}
 	ui.mu.Lock()
+	defer ui.mu.Unlock()
+
 	s := ui.screen
-	first := ui.firstDraw
-	ui.firstDraw = false
-	ui.mu.Unlock()
-
-	if s == nil {
-		return
-	}
-
-	if first {
-		s.Sync()
-	}
-
 	w, h := s.Size()
 
 	blackStyle := tcell.StyleDefault.Background(tcell.ColorBlack).Foreground(tcell.ColorWhite)
-	promptStyle := blackStyle.Foreground(tcell.ColorGreen)
+	headerStyle := blackStyle.Foreground(tcell.ColorLightCyan).Bold(true)
 	sepStyle := blackStyle.Foreground(tcell.ColorDimGray)
-	sidebarStyle := blackStyle.Foreground(tcell.ColorYellow)
 
+	s.Clear()
+
+	// Sidebar config
 	sidebarW := 18
 	if w < 40 {
-		sidebarW = 0 // Hide sidebar on very narrow screens
+		sidebarW = 0
 	}
-
 	mainW := w - sidebarW - 1
 	if sidebarW == 0 {
 		mainW = w
 	}
 
-	title := ui.title
-	if title == "" {
-		title = "Underground Node Network - Room"
-	}
-	DrawText(ui.screen, 2, 0, title, mainW-4, blackStyle.Foreground(tcell.ColorLightCyan).Bold(true))
+	// Header
+	common.DrawText(s, 2, 0, ui.title, mainW-4, headerStyle)
 
 	userStr := fmt.Sprintf("Logged in as: %s", ui.username)
-	userLen := uniseg.StringWidth(userStr)
-	DrawText(ui.screen, w-userLen-2, 0, userStr, userLen, blackStyle)
+	userLen := len([]rune(userStr))
+	common.DrawText(s, w-userLen-2, 0, userStr, userLen, blackStyle)
 
-	// Header separator
+	// Separator
 	for x := 0; x < w; x++ {
 		s.SetContent(x, 1, '━', nil, sepStyle)
 	}
 
-	// Content start
-	contentY := 2
-	mainH := h - 4
-	if mainH < 0 {
-		mainH = 0
-	}
-	// Draw messages (Main Pane)
-	ui.updatePhysicalLines(mainW)
-
-	viewEnd := len(ui.physicalLines) - ui.scrollOffset
-	if viewEnd < 0 {
-		viewEnd = 0
-	}
-	viewStart := viewEnd - mainH
-	if viewStart < 0 {
-		viewStart = 0
-	}
-
-	for i, msg := range ui.physicalLines[viewStart:viewEnd] {
-		if i >= mainH {
-			break
-		}
-		// Pad
-		displayMsg := msg.Text
-		if len([]rune(displayMsg)) > mainW {
-			displayMsg = truncateString(displayMsg, mainW)
-		}
-
-		style := blackStyle
-		switch msg.Type {
-		case MsgSelf:
-			style = blackStyle.Foreground(tcell.ColorGreen).Bold(true)
-		case MsgCommand:
-			style = blackStyle.Foreground(tcell.ColorDimGray)
-		case MsgServer:
-			style = blackStyle.Foreground(tcell.ColorLightGray)
-		case MsgSystem:
-			style = blackStyle.Foreground(tcell.ColorDimGray)
-		case MsgChat:
-			style = blackStyle.Foreground(tcell.ColorYellow)
-		case MsgAction:
-			style = blackStyle.Foreground(tcell.ColorLightBlue).Italic(true)
-		case MsgWhisper:
-			style = blackStyle.Foreground(tcell.ColorLightPink)
-		}
-
-		DrawText(ui.screen, 1, contentY+i, displayMsg, mainW-1, style)
-	}
-
-	// Draw Sidebar (Connect People)
+	// Sidebar
 	if sidebarW > 0 {
-		// Vertical separator
-		for y := 2; y < h-2; y++ {
-			s.SetContent(mainW, y, '│', nil, sepStyle)
-		}
-		// Intersection piece
+		ui.peopleSidebar.Width = sidebarW
+		ui.doorsSidebar.Width = sidebarW
+
+		// Draw doors at top of sidebar
+		ui.doorsSidebar.Draw(s, mainW, 2, h/2-1, blackStyle, sepStyle)
+		// Draw people below
+		ui.peopleSidebar.Draw(s, mainW, h/2+1, h/2-2, blackStyle, sepStyle)
+
 		s.SetContent(mainW, 1, '┳', nil, sepStyle)
-
-		sidebarStartY := 2
-		ui.drawText(mainW+1, sidebarStartY, " Doors:         ", sidebarW, blackStyle)
-		doorCount := 0
-		for i, door := range ui.doors {
-			if sidebarStartY+1+i >= h-2 {
-				break
-			}
-			displayName := truncateString(door, sidebarW-2)
-			DrawText(ui.screen, mainW+2, sidebarStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
-			doorCount++
-		}
-
-		peopleStartY := sidebarStartY + doorCount + 1
-		if peopleStartY < h-2 {
-			ui.drawText(mainW+1, peopleStartY, " People:        ", sidebarW, blackStyle)
-			for i, person := range ui.people {
-				if peopleStartY+1+i >= h-2 {
-					break
-				}
-				displayName := truncateString(person, sidebarW-2)
-				DrawText(ui.screen, mainW+2, peopleStartY+1+i, "• "+displayName, sidebarW-2, sidebarStyle)
-			}
-		}
-		// Clear rest of sidebar
-		// Note: This is a bit simplified, ideally we'd track the last drawn line
-		// But redraw will clear it anyway if we use fillRegion properly or screen.Sync
-	}
-
-	// Draw input separator
-	for x := 0; x < w; x++ {
-		s.SetContent(x, h-2, '─', nil, sepStyle)
-	}
-	if sidebarW > 0 {
 		s.SetContent(mainW, h-2, '┴', nil, sepStyle)
 	}
 
-	// Draw input
-	prompt := "> "
-	if ui.inputOffset > 0 {
-		prompt = ""
-	}
-	runes := []rune(ui.input)
-	availWidth := w - len([]rune(prompt)) - 2
-	if availWidth < 1 {
-		availWidth = 1
+	// Logs
+	logH := h - 4
+	if logH > 0 {
+		ui.logs.Draw(s, 1, 2, mainW-1, logH, blackStyle)
 	}
 
-	visibleInput := ""
-	if ui.inputOffset < len(runes) {
-		endIdx := ui.inputOffset + availWidth
-		if endIdx > len(runes) {
-			endIdx = len(runes)
-		}
-		visibleInput = string(runes[ui.inputOffset:endIdx])
+	// Input
+	for x := 0; x < w; x++ {
+		s.SetContent(x, h-2, '─', nil, sepStyle)
 	}
-
-	DrawText(ui.screen, 1, h-1, prompt+visibleInput, w-2, promptStyle)
-	prefix := string(runes[:ui.cursorIdx])
-	visualPos := uniseg.StringWidth(prefix)
-	s.ShowCursor(1+uniseg.StringWidth(prompt)+visualPos, h-1)
+	ui.cmdInput.Draw(s, 1, h-1, w-2, blackStyle, blackStyle.Foreground(tcell.ColorGreen))
 
 	s.Show()
-}
-
-func (ui *ChatUI) handleKey(ev *tcell.EventKey) bool {
-	ui.mu.Lock()
-	defer ui.mu.Unlock()
-
-	runes := []rune(ui.input)
-
-	switch ev.Key() {
-	case tcell.KeyEnter:
-		// Handled in Run
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if ui.cursorIdx > 0 {
-			runes = append(runes[:ui.cursorIdx-1], runes[ui.cursorIdx:]...)
-			ui.input = string(runes)
-			ui.cursorIdx--
-		}
-	case tcell.KeyDelete:
-		if ui.cursorIdx < len(runes) {
-			runes = append(runes[:ui.cursorIdx], runes[ui.cursorIdx+1:]...)
-			ui.input = string(runes)
-		}
-	case tcell.KeyLeft:
-		if ui.cursorIdx > 0 {
-			ui.cursorIdx--
-		}
-	case tcell.KeyRight:
-		if ui.cursorIdx < len(runes) {
-			ui.cursorIdx++
-		}
-	case tcell.KeyHome:
-		ui.cursorIdx = 0
-	case tcell.KeyEnd:
-		ui.cursorIdx = len(runes)
-	case tcell.KeyPgUp:
-		_, h := ui.screen.Size()
-		ui.scrollOffset += (h - 4)
-		if ui.scrollOffset > len(ui.physicalLines) {
-			ui.scrollOffset = len(ui.physicalLines)
-		}
-	case tcell.KeyPgDn:
-		_, h := ui.screen.Size()
-		ui.scrollOffset -= (h - 4)
-		if ui.scrollOffset < 0 {
-			ui.scrollOffset = 0
-		}
-	case tcell.KeyUp:
-		if ui.hIndex > 0 {
-			if ui.hIndex == len(ui.history) {
-				ui.draft = ui.input
-			}
-			ui.hIndex--
-			ui.input = ui.history[ui.hIndex]
-			ui.cursorIdx = len([]rune(ui.input))
-		}
-	case tcell.KeyDown:
-		if ui.hIndex < len(ui.history)-1 {
-			ui.hIndex++
-			ui.input = ui.history[ui.hIndex]
-			ui.cursorIdx = len([]rune(ui.input))
-		} else if ui.hIndex == len(ui.history)-1 {
-			ui.hIndex++
-			ui.input = ui.draft
-			ui.cursorIdx = len([]rune(ui.input))
-		}
-	case tcell.KeyRune:
-		runes = append(runes[:ui.cursorIdx], append([]rune{ev.Rune()}, runes[ui.cursorIdx:]...)...)
-		ui.input = string(runes)
-		ui.cursorIdx++
-	}
-
-	// Update inputOffset to follow cursor (centered)
-	w, _ := ui.screen.Size()
-	promptLen := 2
-	if ui.inputOffset > 0 {
-		promptLen = 0
-	}
-	availWidth := w - promptLen - 2
-	if availWidth < 1 {
-		availWidth = 1
-	}
-
-	ui.inputOffset = ui.cursorIdx - availWidth/2
-	maxOffset := len(runes) - availWidth
-	if ui.inputOffset > maxOffset {
-		ui.inputOffset = maxOffset
-	}
-	if ui.inputOffset < 0 {
-		ui.inputOffset = 0
-	}
-
-	return false
-}
-
-func (ui *ChatUI) updatePhysicalLines(width int) {
-	ui.mu.Lock()
-	defer ui.mu.Unlock()
-
-	if width == ui.lastWidth && len(ui.messages) == ui.lastMsgCount {
-		return
-	}
-
-	ui.physicalLines = nil
-	for _, msg := range ui.messages {
-		wrapped := wrapText(msg.Text, width-1)
-		for _, line := range wrapped {
-			ui.physicalLines = append(ui.physicalLines, Message{Text: line, Type: msg.Type})
-		}
-	}
-	ui.lastWidth = width
-	ui.lastMsgCount = len(ui.messages)
-}
-
-func (ui *ChatUI) drawText(x, y int, text string, width int, style tcell.Style) {
-	DrawText(ui.screen, x, y, text, width, style)
-}
-
-// FillRegion clears a rectangular area with a specific character and style
-func (ui *ChatUI) fillRegion(x, y, w, h int, r rune, style tcell.Style) {
-	ui.mu.Lock()
-	s := ui.screen
-	ui.mu.Unlock()
-	if s == nil {
-		return
-	}
-
-	for row := 0; row < h; row++ {
-		for col := 0; col < w; col++ {
-			s.SetContent(x+col, y+row, r, nil, style)
-		}
-	}
 }

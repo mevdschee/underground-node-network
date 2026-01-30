@@ -2,6 +2,9 @@
 
 This directory contains technical deep-dives into the internal structure and design patterns used by each UNN application.
 
+### [File Structure](file-structure.md)
+A high-level overview of the project's directory tree and component locations.
+
 ### [Entrypoint Architecture](entrypoint.md)
 The signaling and discovery hub's internal TUI and session management.
 

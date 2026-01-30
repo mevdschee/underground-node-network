@@ -1,4 +1,4 @@
-package ui
+package bridge
 
 import (
 	"encoding/json"
@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gdamore/tcell/v2"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -53,7 +52,6 @@ func (b *InputBridge) pump() {
 				} else {
 					b.oscBuf.WriteByte(charByte)
 					if b.oscBuf.Len() == 2 && b.oscBuf.String() != "\x1b]" {
-						// Not an OSC sequence after all, push what we have
 						b.inOSC = false
 						for _, char := range b.oscBuf.String() {
 							b.dataChan <- byte(char)
@@ -74,7 +72,6 @@ func (b *InputBridge) pump() {
 								}
 							}
 						} else {
-							// Not our OSC sequence, push it back
 							for _, char := range oscStr {
 								b.dataChan <- byte(char)
 							}
@@ -124,7 +121,6 @@ func (b *InputBridge) Read(p []byte) (int, error) {
 		}
 		p[0] = data
 		n := 1
-		// Try to fill the rest of the buffer without blocking
 		for n < len(p) {
 			select {
 			case data, ok := <-b.dataChan:
@@ -141,132 +137,64 @@ func (b *InputBridge) Read(p []byte) (int, error) {
 	}
 }
 
-// SSHBus implements tcell.Tty for an ssh.Channel by reading from an InputBridge
-type SSHBus struct {
-	bridge   *InputBridge
-	width    int
-	height   int
-	resize   chan struct{}
-	mu       sync.Mutex
-	cb       func()
-	doneChan chan struct{}
+// OSCDetector wraps an io.Writer to intercept OSC sequences from doors
+type OSCDetector struct {
+	w       io.Writer
+	handler func(action string, params map[string]interface{})
+	buf     strings.Builder
+	inOSC   bool
 }
 
-func NewSSHBus(bridge *InputBridge, width, height int) *SSHBus {
-	return &SSHBus{
-		bridge:   bridge,
-		width:    width,
-		height:   height,
-		resize:   make(chan struct{}, 1),
-		doneChan: make(chan struct{}),
+func NewOSCDetector(w io.Writer, handler func(action string, params map[string]interface{})) *OSCDetector {
+	return &OSCDetector{
+		w:       w,
+		handler: handler,
 	}
 }
 
-func (b *SSHBus) Read(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	select {
-	case <-b.doneChan:
-		return 0, io.EOF
-	default:
-	}
-
-	// Double select to prioritize the done signal
-	select {
-	case <-b.doneChan:
-		return 0, io.EOF
-	default:
-		// Check for data but always respect doneChan
-		select {
-		case <-b.doneChan:
-			return 0, io.EOF
-		case data, ok := <-b.bridge.dataChan:
-			if !ok {
-				b.bridge.mu.Lock()
-				err := b.bridge.err
-				b.bridge.mu.Unlock()
-				return 0, err
+func (d *OSCDetector) Write(p []byte) (n int, err error) {
+	for i := 0; i < len(p); i++ {
+		b := p[i]
+		if !d.inOSC {
+			if b == 0x1b {
+				d.inOSC = true
+				d.buf.Reset()
+				d.buf.WriteByte(b)
+				continue
 			}
-			p[0] = data
-			n := 1
-			// Fill as much as possible without blocking
-			for n < len(p) {
-				select {
-				case <-b.doneChan:
-					return n, nil
-				case data, ok := <-b.bridge.dataChan:
-					if !ok {
-						return n, nil
+			if _, err := d.w.Write([]byte{b}); err != nil {
+				return i, err
+			}
+		} else {
+			d.buf.WriteByte(b)
+			if d.buf.Len() == 2 && d.buf.String() != "\x1b]" {
+				// Not an OSC sequence after all
+				d.inOSC = false
+				if _, err := d.w.Write([]byte(d.buf.String())); err != nil {
+					return i, err
+				}
+				continue
+			}
+			if b == 0x07 { // BEL - terminator
+				d.inOSC = false
+				oscStr := d.buf.String()
+				if strings.HasPrefix(oscStr, "\x1b]9;") {
+					jsonStr := strings.TrimPrefix(oscStr, "\x1b]9;")
+					jsonStr = strings.TrimSuffix(jsonStr, "\x07")
+					var payload map[string]interface{}
+					if err := json.Unmarshal([]byte(jsonStr), &payload); err == nil {
+						if action, ok := payload["action"].(string); ok {
+							delete(payload, "action")
+							d.handler(action, payload)
+						}
 					}
-					p[n] = data
-					n++
-				default:
-					return n, nil
+				} else {
+					if _, err := d.w.Write([]byte(oscStr)); err != nil {
+						return i, err
+					}
 				}
 			}
-			return n, nil
 		}
 	}
-}
-
-func (b *SSHBus) Write(p []byte) (int, error) {
-	return b.bridge.channel.Write(p)
-}
-
-func (b *SSHBus) Close() error {
-	b.SignalExit()
-	return nil
-}
-
-func (b *SSHBus) SignalExit() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	select {
-	case <-b.doneChan:
-	default:
-		close(b.doneChan)
-	}
-}
-
-func (b *SSHBus) Reset() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	select {
-	case <-b.doneChan:
-		b.doneChan = make(chan struct{})
-	default:
-	}
-}
-
-func (b *SSHBus) ForceClose() error {
-	b.SignalExit()
-	return b.bridge.channel.Close()
-}
-
-func (b *SSHBus) Start() error { return nil }
-func (b *SSHBus) Stop() error  { return nil }
-func (b *SSHBus) Drain() error { return nil }
-
-func (b *SSHBus) WindowSize() (tcell.WindowSize, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return tcell.WindowSize{Width: b.width, Height: b.height}, nil
-}
-
-func (b *SSHBus) NotifyResize(cb func()) {
-	b.mu.Lock()
-	b.cb = cb
-	b.mu.Unlock()
-}
-
-func (b *SSHBus) Resize(w, h int) {
-	b.mu.Lock()
-	b.width = w
-	b.height = h
-	cb := b.cb
-	b.mu.Unlock()
-	if cb != nil {
-		cb()
-	}
+	return len(p), nil
 }

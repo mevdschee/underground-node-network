@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/mevdschee/underground-node-network/internal/ui"
+	"github.com/mevdschee/underground-node-network/internal/ui/common"
 	"github.com/rivo/uniseg"
 )
 
@@ -75,14 +75,14 @@ func (p *Panel) Draw(s tcell.Screen) {
 
 	// Draw title
 	titleStr := fmt.Sprintf(" [ %s ] ", p.title)
-	ui.DrawText(s, p.x+2, p.y, titleStr, p.w-4, p.style.Bold(true))
+	common.DrawText(s, p.x+2, p.y, titleStr, p.w-4, p.style.Bold(true))
 
 	// Draw lines
 	for i, line := range p.lines {
 		if i >= p.h-2 {
 			break
 		}
-		ui.DrawText(s, p.x+2, p.y+1+i, line, p.w-4, p.style)
+		common.DrawText(s, p.x+2, p.y+1+i, line, p.w-4, p.style)
 	}
 }
 
@@ -158,7 +158,7 @@ type Drop struct {
 // --- Main Helper Functions ---
 
 func drawText(s tcell.Screen, x, y int, text string, style tcell.Style) {
-	ui.DrawText(s, x, y, text, 1000, style)
+	common.DrawText(s, x, y, text, 1000, style)
 }
 
 func typeLine(p *Panel, text string, charMin, charMax time.Duration) {
