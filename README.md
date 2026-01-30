@@ -65,6 +65,7 @@ To become a part of the network and host your own "room":
 - [Entrypoint Internals](docs/architecture/entrypoint.md) - Component-level view of the hub.
 - [Room Node Internals](docs/architecture/room.md) - Building blocks of the node server.
 - [Client Internals](docs/architecture/client.md) - Under the hood of the navigation tool.
+- [UI Component Internals](docs/architecture/ui-components.md) - Behavior of sidebars, logs, and forms.
 
 ### [Network Concepts](docs/concepts/README.md)
 - [Identity & Verification](docs/concepts/identity.md) - Decentralized trust and key registration.
