@@ -40,13 +40,13 @@ From here you can:
 If you're not using the wrapper, you can connect directly using any SSH client. The entry point and room nodes provide **precalculated host fingerprints** (standard SHA256 base64 format) and **file verification signatures** (hex-encoded SHA256) for easy manual verification.
 
 ### Persistent Navigation
-The wrapper is persistent—when you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell. It also supports **window resizing**, **Ctrl+C interruption** for doors, and **automated file downloads** via a secure, one-shot SFTP server with **mutual authentication** and **filename obfuscation**.
+The wrapper is persistent—when you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell. The system uses **invisible ANSI OSC 9 signaling** to coordinate teleports and file downloads, ensuring a clean visual experience. It also supports **window resizing**, **Ctrl+C interruption** for doors, and **automated file downloads** via a secure, one-shot SFTP server with **mutual authentication** and **filename obfuscation**.
 
 ## Hosting a Node
 
 To become a part of the network and host your own "room":
 
-1. **Register**: Connect to an entry point and register your SSH public key. Registration is **strictly enforced**—it ensures your username cannot be spoofed and is required for room hosting.
+1. **Register**: Connect to an entry point and register your SSH public key. Registration is **strictly enforced**—it ensures your username cannot be spoofed and is required for room hosting. UNN usernames must be **alphanumeric** and between 4 and 20 characters.
 2. **Launch Client**: Run the UNN client. It will automatically connect and register your node:
    ```bash
    ./start-client.sh

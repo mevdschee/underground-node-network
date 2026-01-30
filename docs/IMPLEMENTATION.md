@@ -23,7 +23,15 @@ Authentication in the UNN is hierarchical:
 
 ## Network Protocols
 
-### Signaling JSON
+### In-Band Signaling (ANSI OSC 9)
+While low-level coordination happens over SSH subsystems, the UNN uses **ANSI OSC 9 sequences** for in-band signaling between the server and the wrapper. This allows the server to send structured data that is invisible to regular SSH clients but captured by the `unn-ssh` wrapper.
+
+- **Sequence Format**: `\x1b]9;{"action":"...", ...}\x07`
+- **Actions**:
+  - `reconnect`: Triggers the wrapper to teleport to a room with the provided candidates and host keys.
+  - `download`: Triggers the `unn-dl` tool to start an automated file transfer.
+
+### Signaling JSON (Subsystem)
 All coordination happens over an `unn-control` SSH subsystem using JSON messages.
 - `register`: Room metadata, candidates, and host keys.
 - `punch_offer`: Person ID, candidates, and **PersonKey** (captured by entry point).
@@ -48,7 +56,7 @@ The Chat UI implements a decoupled drawing mechanism. UI updates (messages, pers
 UNN implements a highly secure file transfer mechanism designed to be resilient against protocol analysis and unauthorized metadata collection:
 
 1. **Orchestration**: When a person types `/download <file>`, the room server generates a random **UUIDv4** and starts an internal one-shot SSH server on a random port.
-2. **Signaling**: The room server outputs a hidden `[DOWNLOAD FILE]` block containing the original filename, the one-shot port, and the transfer UUID.
+2. **Signaling**: The room server emits an invisible OSC 9 sequence (action: `download`) containing the original filename, the one-shot port, the transfer UUID, and the file signature.
 3. **Mutual Auth**: The one-shot server is configured to *only* accept the authenticated public key of that specific person. Both sides verify host keys to ensure a trusted channel.
 4. **Obfuscation**: During the SFTP session, the client *only* requests the UUID. The server's SFTP handler (from `internal/fileserver`) maps this UUID back to the real file on disk. Any protocol sniffer will only see a request for a random UUID string, never the actual filename or path.
 6. **Graceful Teardown**: The one-shot server signals success with an `exit-status` of 0. It then waits a brief period (100ms) to ensure the client receives all termination packets before closing the local listener.
