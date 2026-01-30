@@ -411,14 +411,8 @@ func (ui *EntryUI) Draw() {
 
 			// Value field
 			valueStyle := boxStyle.Background(tcell.ColorBlack).Foreground(tcell.ColorWhite)
-			if field.Error == "not available" {
-				valueStyle = valueStyle.Foreground(tcell.ColorRed)
-			}
 			if i == ui.FormActiveIdx {
-				valueStyle = valueStyle.Underline(true)
-				if field.Error != "not available" {
-					valueStyle = valueStyle.Foreground(tcell.ColorYellow)
-				}
+				valueStyle = valueStyle.Underline(true).Foreground(tcell.ColorYellow)
 			}
 			valW := boxW - 6
 			ui.fillRegion(startX+4, fieldY+1, valW, 1, ' ', valueStyle)

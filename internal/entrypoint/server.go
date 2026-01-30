@@ -904,7 +904,11 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 
 		matched, err := s.VerifyIdentity(platform, platformUser, offeredKey)
 		if err != nil {
-			eui.ShowMessage(fmt.Sprintf("\033[1;31mError verifying identity: %v\033[0m", err), ui.MsgServer)
+			if strings.Contains(err.Error(), "status 404") {
+				fields[1].Error = "username not found"
+			} else {
+				eui.ShowMessage(fmt.Sprintf("\033[1;31mError verifying identity: %v\033[0m", err), ui.MsgServer)
+			}
 			continue
 		}
 
@@ -932,7 +936,7 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 			conn.Permissions.Extensions["username"] = unnUsername
 			return true
 		} else {
-			eui.ShowMessage("\033[1;31mError: Identity not found on platform.\033[0m", ui.MsgServer)
+			fields[1].Error = "key not found"
 		}
 	}
 }
