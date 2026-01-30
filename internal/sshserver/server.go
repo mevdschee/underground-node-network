@@ -3,6 +3,7 @@ package sshserver
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -21,7 +22,6 @@ import (
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/ui"
 	"golang.org/x/crypto/ssh"
-	"gopkg.in/yaml.v3"
 )
 
 // Person represents a connected person
@@ -1213,14 +1213,10 @@ func (s *Server) showDownloadInfo(p *Person, filename string) {
 		Signature:  sig,
 	}
 
-	yamlData, _ := yaml.Marshal(data)
-	yamlStr := strings.ReplaceAll(string(yamlData), "\n", "\r\n")
-
-	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
-	fmt.Fprintf(p.Bus, "[DOWNLOAD FILE]\r\n")
-	fmt.Fprintf(p.Bus, "%s", yamlStr)
-	fmt.Fprintf(p.Bus, "[/DOWNLOAD FILE]\r\n")
-	fmt.Fprintf(p.Bus, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n")
+	// Emit invisible ANSI OSC 9 sequence with download data
+	data.Action = "download"
+	jsonData, _ := json.Marshal(data)
+	fmt.Fprintf(p.Bus, "\033]9;%s\007", string(jsonData))
 
 	fmt.Fprintf(p.Bus, "\033[1;32mUNN DOWNLOAD READY\033[0m\r\n\r\n")
 	fmt.Fprintf(p.Bus, "The wrapper is automatically downloading the file to your Downloads folder.\r\n")

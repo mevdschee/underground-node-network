@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -22,7 +23,6 @@ import (
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
-	"gopkg.in/yaml.v3"
 )
 
 type StdinManager struct {
@@ -308,11 +308,9 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 
 		// Monitor output for connection data and echo to user
 		go func() {
-			var currentLine strings.Builder
-			var inData bool
-			var lastByte byte
 			buf := make([]byte, 1024)
-			var yamlBuffer strings.Builder
+			var oscBuffer strings.Builder
+			var inOSC bool
 			for {
 				n, err := stdoutPipe.Read(buf)
 				if err != nil {
@@ -324,50 +322,42 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 					b := buf[i]
 
 					// RELAY: Always relay every byte to human RAW to avoid corrupting TUI data.
-					// The server is responsible for sending \r\n for regular text.
 					os.Stdout.Write([]byte{b})
 
-					// ACCUMULATE: Build line buffer for line-based data capture
-					if b == '\n' || b == '\r' {
-						rawLine := currentLine.String()
-						currentLine.Reset()
-
-						// Skip the \n if we just processed \r from a \r\n pair (already handled the line)
-						if b == '\n' && lastByte == '\r' {
-							lastByte = b
+					// OSC 9 Detection: \x1b]9; ... \x07
+					if b == 0x1b && !inOSC {
+						// Peek for ]9;
+						if i+3 < n && string(buf[i+1:i+4]) == "]9;" {
+							inOSC = true
+							oscBuffer.Reset()
+							i += 3
 							continue
 						}
-						lastByte = b
+					}
 
-						cleanLine := stripANSI(rawLine)
-						line := strings.TrimSpace(cleanLine)
+					if inOSC {
+						if b == 0x07 {
+							inOSC = false
+							jsonData := oscBuffer.String()
+							if verbose {
+								log.Printf("Captured OSC 9 data (%d bytes)", len(jsonData))
+							}
 
-						if line == "[CONNECTION DATA]" {
-							inData = true
-							yamlBuffer.Reset()
-						} else if inData {
-							if line == "[/CONNECTION DATA]" {
-								yamlStr := yamlBuffer.String()
-								if verbose {
-									log.Printf("Captured connection data (%d bytes)", len(yamlStr))
-								}
-								var startPayload protocol.PunchStartPayload
-								if err := yaml.Unmarshal([]byte(yamlStr), &startPayload); err == nil {
+							var startPayload protocol.PunchStartPayload
+							if err := json.Unmarshal([]byte(jsonData), &startPayload); err == nil {
+								if startPayload.Action == "reconnect" {
 									candidates = startPayload.Candidates
 									sshPort = startPayload.SSHPort
 									hostKeys = startPayload.PublicKeys
-								} else if verbose {
-									log.Printf("YAML unmarshal failed: %v", err)
+									close(done)
 								}
-								inData = false
-								close(done)
-							} else {
-								yamlBuffer.WriteString(strings.TrimRight(cleanLine, "\r") + "\n")
+							} else if verbose {
+								log.Printf("JSON unmarshal failed: %v", err)
 							}
+						} else {
+							oscBuffer.WriteByte(b)
 						}
-					} else {
-						// Non-newline byte: add to line buffer
-						currentLine.WriteByte(b)
+						continue
 					}
 				}
 			}
@@ -540,17 +530,15 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 
 		// Track download state in the session
 		var (
-			downloading bool
-			stdoutDone  = make(chan struct{})
-			triggerDl   = make(chan downloadInfo, 1)
+			stdoutDone = make(chan struct{})
+			triggerDl  = make(chan downloadInfo, 1)
 		)
 
 		go func() {
 			defer close(stdoutDone)
 			buf := make([]byte, 1024)
-			var currentLine strings.Builder
-			var downloadBuffer bytes.Buffer
-			var lastByte byte
+			var oscBuffer strings.Builder
+			var inOSC bool
 
 			for {
 				n, err := stdout.Read(buf)
@@ -562,41 +550,44 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 					b := buf[i]
 					os.Stdout.Write([]byte{b})
 
-					if b == '\n' || b == '\r' {
-						rawLine := currentLine.String()
-						currentLine.Reset()
-
-						if b == '\n' && lastByte == '\r' {
-							lastByte = b
+					// OSC 9 Detection: \x1b]9; ... \x07
+					if b == 0x1b && !inOSC {
+						// Peek for ]9;
+						if i+3 < n && string(buf[i+1:i+4]) == "]9;" {
+							inOSC = true
+							oscBuffer.Reset()
+							i += 3
 							continue
 						}
-						lastByte = b
+					}
 
-						cleanLine := stripANSI(rawLine)
-						line := strings.TrimSpace(cleanLine)
+					if inOSC {
+						if b == 0x07 {
+							inOSC = false
+							jsonData := oscBuffer.String()
+							if verbose {
+								log.Printf("Captured OSC 9 data (%d bytes)", len(jsonData))
+							}
 
-						if strings.Contains(line, "[DOWNLOAD FILE]") {
-							downloading = true
-							downloadBuffer.Reset()
-							continue
-						}
-
-						if downloading {
-							if strings.Contains(line, "[/DOWNLOAD FILE]") {
-								downloading = false
-								// Parse captured data
-								p, tid, sig, fname, err := parseDownloadBlock(downloadBuffer.String())
-								if err == nil {
-									triggerDl <- downloadInfo{p, tid, sig, fname}
+							var downloadPayload protocol.DownloadPayload
+							if err := json.Unmarshal([]byte(jsonData), &downloadPayload); err == nil {
+								if downloadPayload.Action == "download" {
+									triggerDl <- downloadInfo{
+										port:  downloadPayload.Port,
+										tid:   downloadPayload.TransferID,
+										sig:   downloadPayload.Signature,
+										fname: downloadPayload.Filename,
+									}
 									session.Close()
 									return
 								}
-								continue
+							} else if verbose {
+								log.Printf("JSON unmarshal failed: %v", err)
 							}
-							downloadBuffer.WriteString(strings.TrimRight(cleanLine, "\r") + "\n")
+						} else {
+							oscBuffer.WriteByte(b)
 						}
-					} else {
-						currentLine.WriteByte(b)
+						continue
 					}
 				}
 			}
@@ -732,19 +723,6 @@ func downloadFile(client *ssh.Client, remotePort int, transferID string, config 
 	}
 
 	return downloadErr
-}
-
-func parseDownloadBlock(data string) (int, string, string, string, error) {
-	var payload protocol.DownloadPayload
-	if err := yaml.Unmarshal([]byte(data), &payload); err != nil {
-		return 0, "", "", "", fmt.Errorf("YAML unmarshal failed: %v", err)
-	}
-
-	if payload.Filename == "" || payload.Port == 0 || payload.TransferID == "" {
-		return 0, "", "", "", fmt.Errorf("missing fields in download payload")
-	}
-
-	return payload.Port, payload.TransferID, payload.Signature, payload.Filename, nil
 }
 
 func getUniquePath(path string) string {
