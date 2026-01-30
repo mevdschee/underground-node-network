@@ -893,6 +893,11 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 			continue
 		}
 
+		if platformUser == "" {
+			fields[1].Error = "cannot be empty"
+			continue
+		}
+
 		// Length check
 		if len(unnUsername) < 4 {
 			fields[2].Error = "too short"
