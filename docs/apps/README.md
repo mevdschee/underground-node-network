@@ -12,7 +12,7 @@ The user-hosting environment.
 - **Role**: Hosts personal rooms, chat, and "Doors" (interactive programs).
 - **Vibe**: The personal home/node in the underground.
 
-### [SSH Wrapper](ssh-wrapper.md) (`unn-ssh`)
+### [UNN Client](client.md) (`unn-client`)
 The automated navigation tool.
 - **Role**: High-speed teleportation and download management.
 - **Vibe**: The professional's tool for traversing the mesh.

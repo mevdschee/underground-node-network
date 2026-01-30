@@ -4,9 +4,9 @@
 cd "$(dirname "$0")"
 
 # Build if needed
-if [ ! -f unn-ssh-bin ] || [ cmd/unn-ssh/main.go -nt unn-ssh-bin ]; then
-    echo "Building unn-ssh..."
-    go build -o unn-ssh-bin ./cmd/unn-ssh
+if [ ! -f unn-client-bin ] || [ cmd/unn-client/main.go -nt unn-client-bin ]; then
+    echo "Building unn-client..."
+    go build -o unn-client-bin ./cmd/unn-client
 fi
 
 if [ ! -f unn-dl-bin ] || [ cmd/unn-dl/main.go -nt unn-dl-bin ]; then
@@ -14,5 +14,5 @@ if [ ! -f unn-dl-bin ] || [ cmd/unn-dl/main.go -nt unn-dl-bin ]; then
     go build -o unn-dl-bin ./cmd/unn-dl
 fi
 
-# Run the wrapper
-./unn-ssh-bin "$@"
+# Run the client
+./unn-client-bin "$@"

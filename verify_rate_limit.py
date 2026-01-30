@@ -42,8 +42,8 @@ def run_test(file_size_kb, limit_str, expected_duration):
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     time.sleep(3)
 
-    # 4. Use unn-ssh to trigger a download
-    ssh_cmd = ["./unn-ssh-bin", "-batch", "-identity", "tests/integration/test_user_key", f"ssh://maurits@localhost:{ep_port}/myroom"]
+    # 4. Use unn-client to trigger a download
+    ssh_cmd = ["./unn-client-bin", "-batch", "-identity", "tests/integration/test_user_key", f"ssh://maurits@localhost:{ep_port}/myroom"]
     wrapper = subprocess.Popen(ssh_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     
     time.sleep(3)

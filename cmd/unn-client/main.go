@@ -207,7 +207,7 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         10 * time.Second,
-		ClientVersion:   "SSH-2.0-UNN-SSH",
+		ClientVersion:   "SSH-2.0-UNN-CLIENT",
 	}
 
 	// Set terminal to raw mode for the entire duration - only if NOT in batch mode

@@ -21,17 +21,17 @@ a shifting constellation of personal machines, each offering unique capabilities
 
 ## Connecting
 
-The easiest way to explore the network is using the `unn-ssh.sh` wrapper script:
+The easiest way to explore the network is using the `unn-client.sh` tool:
 
 ### Teleport to a Room
 ```bash
-./unn-ssh.sh ssh://localhost:44322/roomname
+./unn-client.sh ssh://localhost:44322/roomname
 ```
 
 ### Interactive Exploration
 If you don't specify a room, you'll enter the entry point's interactive shell:
 ```bash
-./unn-ssh.sh ssh://localhost:44322
+./unn-client.sh ssh://localhost:44322
 ```
 From here you can:
 - List active rooms with `/rooms`
@@ -40,7 +40,7 @@ From here you can:
 If you're not using the wrapper, you can connect directly using any SSH client. The entry point and room nodes provide **precalculated host fingerprints** (standard SHA256 base64 format) and **file verification signatures** (hex-encoded SHA256) for easy manual verification.
 
 ### Persistent Navigation
-The wrapper is persistent—when you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell. The system uses **invisible ANSI OSC 9 signaling** to coordinate teleports and file downloads, ensuring a clean visual experience. It also supports **window resizing**, **Ctrl+C interruption** for doors, and **automated file downloads** via a secure, one-shot SFTP server with **mutual authentication** and **filename obfuscation**.
+The client is persistent—when you exit a room (via **Ctrl+C**), you are automatically returned to the entry point shell. The system uses **invisible ANSI OSC 9 signaling** to coordinate teleports and file downloads, ensuring a clean visual experience. It also supports **window resizing**, **Ctrl+C interruption** for doors, and **automated file downloads** via a secure, one-shot SFTP server with **mutual authentication** and **filename obfuscation**.
 
 ## Hosting a Node
 
@@ -59,7 +59,12 @@ To become a part of the network and host your own "room":
 ### [Application Architectures](docs/apps/README.md)
 - [Entrypoint](docs/apps/entrypoint.md) - Signaling hub and discovery back-bone.
 - [Room Node](docs/apps/room.md) - Ephemeral SSH server for hosting rooms and doors.
-- [SSH Wrapper](docs/apps/ssh-wrapper.md) - Automated teleportation and navigation tool.
+- [UNN Client](docs/apps/client.md) - Automated teleportation and navigation tool.
+
+### [Software Architecture](docs/architecture/README.md)
+- [Entrypoint Internals](docs/architecture/entrypoint.md) - Component-level view of the hub.
+- [Room Node Internals](docs/architecture/room.md) - Building blocks of the node server.
+- [Client Internals](docs/architecture/client.md) - Under the hood of the navigation tool.
 
 ### [Network Concepts](docs/concepts/README.md)
 - [Identity & Verification](docs/concepts/identity.md) - Decentralized trust and key registration.

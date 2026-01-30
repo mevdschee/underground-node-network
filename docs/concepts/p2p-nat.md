@@ -9,7 +9,7 @@ UNN is a living mesh of user-hosted nodes. Because most users are behind NAT (Ne
 4. **Hole-Punching**: Both peers attempt to "punch" through their firewalls simultaneously to establish a direct path.
 
 ### Probe and Select
-The **UNN SSH Wrapper** (`unn-ssh`) automates the selection process:
+The **UNN Client** (`unn-client`) automates the selection process:
 - It probes all candidates in parallel.
 - It selects the fastest reachable path (favoring direct LAN or public IP over tunnels).
 - It initiates the SSH handshake immediately upon discovery.
