@@ -853,7 +853,7 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 	sshUser := conn.User()
 
 	fields := []ui.FormField{
-		{Label: "Platform (github, gitlab, sourcehut, codeberg)", Value: "github"},
+		{Label: "Platform (github 🇺🇸, gitlab 🇺🇸, sourcehut 🇪🇺, codeberg 🇪🇺)", Value: "github"},
 		{Label: "Platform Username", Value: ""},
 		{Label: "UNN Username", Value: sshUser, MaxLength: 20},
 	}
