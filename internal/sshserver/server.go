@@ -50,6 +50,7 @@ type Server struct {
 	headless        bool
 	uploadLimit     int64                   // bytes per second
 	histories       map[string][]ui.Message // keyed by pubkey hash (hex)
+	cmdHistories    map[string][]string     // keyed by pubkey hash (hex)
 	bannedHashes    map[string]string       // hash -> reason
 	roomLockKey     string
 	operatorPubKey  ssh.PublicKey
@@ -64,6 +65,7 @@ func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doo
 		people:          make(map[string]*Person),
 		authorizedKeys:  make(map[string]string),
 		histories:       make(map[string][]ui.Message),
+		cmdHistories:    make(map[string][]string),
 		bannedHashes:    make(map[string]string),
 		downloadTimeout: 60 * time.Second,
 	}
@@ -505,7 +507,10 @@ func (s *Server) handleInteraction(channel ssh.Channel, sessionID string) {
 	chatUI.Input = p.Bus
 	p.ChatUI = chatUI
 
+	pubHash := s.getPubKeyHash(p.PubKey)
+
 	chatUI.OnSend(func(msg string) {
+		s.addCommandToHistory(pubHash, msg)
 		s.Broadcast(username, msg)
 	})
 
@@ -514,14 +519,19 @@ func (s *Server) handleInteraction(channel ssh.Channel, sessionID string) {
 	})
 
 	chatUI.OnCmd(func(cmd string) bool {
+		s.addCommandToHistory(pubHash, cmd)
 		return s.handleInternalCommand(p, cmd)
 	})
 
 	// REPLAY HISTORY
 	s.mu.Lock()
-	pubHash := s.getPubKeyHash(p.PubKey)
 	history := s.histories[pubHash]
+	cmdHistory := s.cmdHistories[pubHash]
 	s.mu.Unlock()
+
+	if len(cmdHistory) > 0 {
+		chatUI.SetCommandHistory(cmdHistory)
+	}
 
 	if len(history) > 0 {
 		for _, m := range history {
@@ -529,12 +539,16 @@ func (s *Server) handleInteraction(channel ssh.Channel, sessionID string) {
 		}
 	} else {
 		// New session welcome message
-		bannerPath := s.roomName + ".asc"
+		bannerPath := "room.asc"
 		if b, err := os.ReadFile(bannerPath); err == nil {
 			lines := strings.Split(string(b), "\n")
+			s.mu.Lock()
 			for _, line := range lines {
-				chatUI.AddMessage(strings.TrimRight(line, "\r\n"), ui.MsgServer)
+				text := strings.TrimRight(line, "\r\n")
+				chatUI.AddMessage(text, ui.MsgServer)
+				s.addMessageToHistory(pubHash, ui.Message{Text: text, Type: ui.MsgServer})
 			}
+			s.mu.Unlock()
 		} else {
 			chatUI.AddMessage(fmt.Sprintf("*** You joined %s as %s ***", s.roomName, username), ui.MsgSystem)
 			chatUI.AddMessage("*** Type /help for commands ***", ui.MsgSystem)

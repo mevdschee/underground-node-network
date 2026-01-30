@@ -31,11 +31,10 @@ type ChatUI struct {
 	drawChan  chan struct{}
 	closeChan chan struct{}
 
-	scrollOffset int
-	success      bool
-	firstDraw    bool
-	Headless     bool
-	Input        io.ReadWriter
+	success   bool
+	firstDraw bool
+	Headless  bool
+	Input     io.ReadWriter
 }
 
 func NewChatUI(screen tcell.Screen) *ChatUI {
@@ -53,13 +52,21 @@ func NewChatUI(screen tcell.Screen) *ChatUI {
 func (ui *ChatUI) SetUsername(name string) {
 	ui.mu.Lock()
 	ui.username = name
+	screen := ui.screen
 	ui.mu.Unlock()
+	if screen != nil {
+		screen.PostEvent(&tcell.EventInterrupt{})
+	}
 }
 
 func (ui *ChatUI) SetTitle(title string) {
 	ui.mu.Lock()
 	ui.title = title
+	screen := ui.screen
 	ui.mu.Unlock()
+	if screen != nil {
+		screen.PostEvent(&tcell.EventInterrupt{})
+	}
 }
 
 func (ui *ChatUI) SetScreen(screen tcell.Screen) {
@@ -94,6 +101,19 @@ func (ui *ChatUI) OnCmd(cb func(string) bool) {
 	ui.mu.Lock()
 	ui.onCmd = cb
 	ui.mu.Unlock()
+}
+
+func (ui *ChatUI) SetCommandHistory(history []string) {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	ui.cmdInput.History = history
+	ui.cmdInput.HIndex = len(history)
+}
+
+func (ui *ChatUI) GetCommandHistory() []string {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	return ui.cmdInput.History
 }
 
 func (ui *ChatUI) SetPeople(people []string) {
@@ -160,7 +180,7 @@ func (ui *ChatUI) Reset() {
 	defer ui.mu.Unlock()
 	ui.closeChan = make(chan struct{}, 1)
 	ui.firstDraw = true
-	ui.scrollOffset = 0
+	ui.logs.ScrollOffset = 0
 }
 
 func (ui *ChatUI) Run() string {
@@ -219,6 +239,22 @@ func (ui *ChatUI) Run() string {
 				return ""
 			}
 
+			if ev.Key() == tcell.KeyPgUp {
+				ui.mu.Lock()
+				ui.logs.ScrollOffset += 10
+				ui.mu.Unlock()
+				continue
+			}
+			if ev.Key() == tcell.KeyPgDn {
+				ui.mu.Lock()
+				ui.logs.ScrollOffset -= 10
+				if ui.logs.ScrollOffset < 0 {
+					ui.logs.ScrollOffset = 0
+				}
+				ui.mu.Unlock()
+				continue
+			}
+
 			submitted, val := ui.cmdInput.HandleKey(ev)
 			if submitted {
 				if strings.HasPrefix(val, "/") {
@@ -272,6 +308,9 @@ func (ui *ChatUI) AddMessage(msg string, msgType MessageType) {
 	}
 
 	ui.logs.AddMessage(msg, lt)
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
 }
 
 func (ui *ChatUI) Draw() {
@@ -307,12 +346,13 @@ func (ui *ChatUI) Draw() {
 	userLen := len([]rune(userStr))
 	common.DrawText(s, w-userLen-2, 0, userStr, userLen, blackStyle)
 
-	// Separator
+	// 1. Draw horizontal separators
 	for x := 0; x < w; x++ {
-		s.SetContent(x, 1, '━', nil, sepStyle)
+		s.SetContent(x, 1, '─', nil, sepStyle)
+		s.SetContent(x, h-2, '─', nil, sepStyle)
 	}
 
-	// Sidebar
+	// 2. Draw Sidebar
 	if sidebarW > 0 {
 		ui.peopleSidebar.Width = sidebarW
 		ui.doorsSidebar.Width = sidebarW
@@ -321,21 +361,31 @@ func (ui *ChatUI) Draw() {
 		ui.doorsSidebar.Draw(s, mainW, 2, h/2-1, blackStyle, sepStyle)
 		// Draw people below
 		ui.peopleSidebar.Draw(s, mainW, h/2+1, h/2-2, blackStyle, sepStyle)
+	}
 
-		s.SetContent(mainW, 1, '┳', nil, sepStyle)
+	// 3. Draw Logs
+	logH := h - 4
+	if logH > 0 {
+		if ui.logs.ScrollOffset > len(ui.logs.PhysicalLines)-logH {
+			ui.logs.ScrollOffset = len(ui.logs.PhysicalLines) - logH
+		}
+		if ui.logs.ScrollOffset < 0 {
+			ui.logs.ScrollOffset = 0
+		}
+		logW := w - 2
+		if sidebarW > 0 {
+			logW = mainW - 1
+		}
+		ui.logs.Draw(s, 1, 2, logW, logH, blackStyle)
+	}
+
+	// 4. Draw Connectors (last to ensure they aren't overwritten)
+	if sidebarW > 0 {
+		s.SetContent(mainW, 1, '┬', nil, sepStyle)
 		s.SetContent(mainW, h-2, '┴', nil, sepStyle)
 	}
 
-	// Logs
-	logH := h - 4
-	if logH > 0 {
-		ui.logs.Draw(s, 1, 2, mainW-1, logH, blackStyle)
-	}
-
-	// Input
-	for x := 0; x < w; x++ {
-		s.SetContent(x, h-2, '─', nil, sepStyle)
-	}
+	// 5. Draw Input
 	ui.cmdInput.Draw(s, 1, h-1, w-2, blackStyle, blackStyle.Foreground(tcell.ColorGreen))
 
 	s.Show()

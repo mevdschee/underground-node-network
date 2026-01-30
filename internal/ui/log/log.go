@@ -28,6 +28,7 @@ type LogView struct {
 	PhysicalLines []Message
 	ScrollOffset  int
 	Width         int
+	lastMsgCount  int
 }
 
 func NewLogView() *LogView {
@@ -39,10 +40,11 @@ func (v *LogView) AddMessage(msg string, msgType MessageType) {
 }
 
 func (v *LogView) UpdatePhysicalLines(width int) {
-	if width == v.Width && len(v.PhysicalLines) > 0 {
+	if width == v.Width && len(v.Messages) == v.lastMsgCount && len(v.PhysicalLines) > 0 {
 		return
 	}
 	v.Width = width
+	v.lastMsgCount = len(v.Messages)
 	v.PhysicalLines = nil
 	for _, m := range v.Messages {
 		lines := common.WrapText(m.Text, width)

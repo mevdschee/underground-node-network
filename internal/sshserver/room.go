@@ -86,6 +86,19 @@ func (s *Server) addMessageToHistory(pubHash string, msg ui.Message) {
 	s.histories[pubHash] = history
 }
 
+func (s *Server) addCommandToHistory(pubHash string, cmd string) {
+	history := s.cmdHistories[pubHash]
+	// Avoid duplicate consecutive commands
+	if len(history) > 0 && history[len(history)-1] == cmd {
+		return
+	}
+	history = append(history, cmd)
+	if len(history) > 100 {
+		history = history[1:]
+	}
+	s.cmdHistories[pubHash] = history
+}
+
 func (s *Server) handleRoomSubsystem(channel ssh.Channel, sessionID string) {
 	// Not implemented, but reserved for future Room-to-Room signaling
 	defer channel.Close()

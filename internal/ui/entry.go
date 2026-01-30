@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/mevdschee/underground-node-network/internal/ui/banner"
 	"github.com/mevdschee/underground-node-network/internal/ui/common"
 	"github.com/mevdschee/underground-node-network/internal/ui/form"
 	"github.com/mevdschee/underground-node-network/internal/ui/input"
@@ -21,7 +20,6 @@ type EntryUI struct {
 	roomsDataSpec *sidebar.Sidebar
 	sidebars      map[string]*sidebar.Sidebar
 	logs          *log.LogView
-	banner        *banner.Banner
 	cmdInput      *input.CommandInput
 	registration  *form.Form
 	passwordInput *password.PasswordEntry
@@ -49,7 +47,6 @@ type EntryUI struct {
 	Input          io.ReadWriter
 
 	// SCROLLING
-	scrollOffset int
 	physicalLogs []log.Message // Wrapped lines
 
 	// FORM MODE
@@ -69,7 +66,7 @@ func NewEntryUI(screen tcell.Screen, username, addr string) *EntryUI {
 		addr:       addr,
 		promptChan: make(chan string),
 		logs:       log.NewLogView(),
-		cmdInput:   input.NewCommandInput(""),
+		cmdInput:   input.NewCommandInput(">"),
 		sidebars:   make(map[string]*sidebar.Sidebar), // To be cleaned up
 		closeChan:  make(chan struct{}, 1),
 		FormResult: make(chan []string),
@@ -80,6 +77,19 @@ func (ui *EntryUI) OnCmd(cb func(string)) {
 	ui.mu.Lock()
 	ui.onCmd = cb
 	ui.mu.Unlock()
+}
+
+func (ui *EntryUI) SetCommandHistory(history []string) {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	ui.cmdInput.History = history
+	ui.cmdInput.HIndex = len(history)
+}
+
+func (ui *EntryUI) GetCommandHistory() []string {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	return ui.cmdInput.History
 }
 
 func (ui *EntryUI) OnExit(cb func()) {
@@ -134,7 +144,9 @@ func (ui *EntryUI) SetRooms(rooms []RoomInfo) {
 func (ui *EntryUI) SetBanner(lines []string) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
-	ui.banner = banner.NewBanner(lines)
+	for _, line := range lines {
+		ui.logs.AddMessage(line, log.MsgServer)
+	}
 
 	if ui.screen != nil {
 		ui.screen.PostEvent(&tcell.EventInterrupt{})
@@ -166,12 +178,19 @@ func (ui *EntryUI) ShowMessage(msg string, msgType MessageType) {
 	}
 
 	ui.logs.AddMessage(msg, lt)
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
 }
 
 func (ui *EntryUI) SetUsername(username string) {
 	ui.mu.Lock()
-	defer ui.mu.Unlock()
 	ui.username = username
+	screen := ui.screen
+	ui.mu.Unlock()
+	if screen != nil {
+		screen.PostEvent(&tcell.EventInterrupt{})
+	}
 }
 
 func (ui *EntryUI) Prompt(q string) string {
@@ -370,10 +389,6 @@ func (ui *EntryUI) Draw() {
 	common.DrawText(s, w-userLen-2, 0, userStr, userLen, blackStyle)
 
 	sepY := 1
-	if ui.banner != nil {
-		ui.banner.Draw(s, 0, 1, mainW, blackStyle)
-		sepY = 1 + ui.banner.Height()
-	}
 
 	if ui.LogsOnly {
 		logH := h - 2 - sepY
@@ -387,25 +402,41 @@ func (ui *EntryUI) Draw() {
 		return
 	}
 
-	// Separator
+	// 1. Draw horizontal separators
 	for x := 0; x < w; x++ {
-		s.SetContent(x, sepY, '━', nil, sepStyle)
+		s.SetContent(x, sepY, '─', nil, sepStyle)
+		s.SetContent(x, h-2, '─', nil, sepStyle)
 	}
 
-	// Sidebar
+	// 2. Draw Sidebar
 	if sidebarW > 0 && ui.roomsDataSpec != nil {
 		ui.roomsDataSpec.Width = sidebarW
-		ui.roomsDataSpec.Draw(s, mainW, sepY+1, h-sepY-2, blackStyle, sepStyle)
-		s.SetContent(mainW, sepY, '┳', nil, sepStyle)
+		ui.roomsDataSpec.Draw(s, mainW, sepY+1, h-sepY-3, blackStyle, sepStyle)
 	}
 
-	// Logs
-	logH := h - 2 - sepY
+	// 3. Draw Logs
+	logH := h - 3 - sepY
 	if logH > 0 {
-		ui.logs.Draw(s, 1, sepY+1, mainW-2, logH, blackStyle)
+		if ui.logs.ScrollOffset > len(ui.logs.PhysicalLines)-logH {
+			ui.logs.ScrollOffset = len(ui.logs.PhysicalLines) - logH
+		}
+		if ui.logs.ScrollOffset < 0 {
+			ui.logs.ScrollOffset = 0
+		}
+		logW := w - 2
+		if sidebarW > 0 {
+			logW = mainW - 1
+		}
+		ui.logs.Draw(s, 1, sepY+1, logW, logH, blackStyle)
 	}
 
-	// Input
+	// 4. Draw Connectors (last to ensure they aren't overwritten)
+	if sidebarW > 0 {
+		s.SetContent(mainW, sepY, '┬', nil, sepStyle)
+		s.SetContent(mainW, h-2, '┴', nil, sepStyle)
+	}
+
+	// 5. Draw Input
 	ui.cmdInput.Draw(s, 1, h-1, w-2, blackStyle, blackStyle.Foreground(tcell.ColorGreen))
 
 	s.Show()
@@ -413,52 +444,73 @@ func (ui *EntryUI) Draw() {
 
 func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool) {
 	ui.mu.Lock()
-	defer ui.mu.Unlock()
 
 	if ui.InFormMode && ui.registration != nil {
 		submitted, vals := ui.registration.HandleKey(ev)
 		if submitted {
-			ui.FormResult <- vals
+			ch := ui.FormResult
+			ui.mu.Unlock()
+			ch <- vals
+			return false, false
 		}
+		ui.mu.Unlock()
 		return false, false
 	}
 
 	if ui.InFormMode && ui.passwordInput != nil {
 		submitted, val := ui.passwordInput.HandleKey(ev)
 		if submitted {
-			ui.FormResult <- []string{val}
+			ch := ui.FormResult
+			ui.mu.Unlock()
+			ch <- []string{val}
+			return false, false
 		}
+		ui.mu.Unlock()
 		return false, false
 	}
 
+	onExit := ui.onExit
+	onCmd := ui.onCmd
+	prompt := ui.prompt
+	promptChan := ui.promptChan
+
 	if ev.Key() == tcell.KeyCtrlC {
-		if ui.onExit != nil {
-			ui.onExit()
+		ui.mu.Unlock()
+		if onExit != nil {
+			onExit()
 		}
 		return true, false
 	}
 
 	if ev.Key() == tcell.KeyPgUp {
-		ui.scrollOffset += 10
+		ui.logs.ScrollOffset += 10
+		ui.mu.Unlock()
 		return false, false
 	}
 	if ev.Key() == tcell.KeyPgDn {
-		ui.scrollOffset -= 10
-		if ui.scrollOffset < 0 {
-			ui.scrollOffset = 0
+		ui.logs.ScrollOffset -= 10
+		if ui.logs.ScrollOffset < 0 {
+			ui.logs.ScrollOffset = 0
 		}
+		ui.mu.Unlock()
 		return false, false
 	}
 
 	submitted, val := ui.cmdInput.HandleKey(ev)
 	if submitted {
-		if ui.prompt != "" {
+		if prompt != "" {
 			ui.prompt = ""
-			ui.promptChan <- val
-		} else if ui.onCmd != nil {
-			ui.onCmd(val)
+			ui.cmdInput.Prompt = ">"
+			ui.mu.Unlock()
+			promptChan <- val
+			return false, false
+		} else if onCmd != nil {
+			ui.mu.Unlock()
+			onCmd(val)
+			return false, false
 		}
 	}
 
+	ui.mu.Unlock()
 	return false, false
 }
