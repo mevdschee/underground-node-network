@@ -1,6 +1,7 @@
 package sshserver
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -26,6 +27,7 @@ import (
 
 // Person represents a connected person
 type Person struct {
+	SessionID       string
 	Username        string
 	Conn            ssh.Conn
 	ChatUI          *ui.ChatUI
@@ -164,8 +166,8 @@ func (s *Server) GetPeople() []string {
 	defer s.mu.RUnlock()
 
 	names := make([]string, 0, len(s.people))
-	for name := range s.people {
-		names = append(names, name)
+	for _, p := range s.people {
+		names = append(names, p.Username)
 	}
 	return names
 }
@@ -184,10 +186,10 @@ func (s *Server) updatePeopleList(p *Person) {
 	}
 	s.mu.RLock()
 	names := make([]string, 0, len(s.people))
-	for name, person := range s.people {
-		displayName := name
+	for _, person := range s.people {
+		displayName := person.Username
 		if s.isOperator(person.PubKey) {
-			displayName = "@" + name
+			displayName = "@" + person.Username
 		}
 		names = append(names, displayName)
 	}
@@ -278,7 +280,7 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConnection(conn net.Conn) {
 	// handeConnection
 
-	sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.config)
+	sshConn, chans, _, err := ssh.NewServerConn(conn, s.config)
 	if err != nil {
 		if err != io.EOF {
 			log.Printf("Failed SSH handshake: %v", err)
@@ -331,47 +333,73 @@ func (s *Server) handleConnection(conn net.Conn) {
 	s.mu.RUnlock()
 	log.Printf("Person connected: %s", username)
 
-	// Register person
+	sessionID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
+
 	s.mu.Lock()
-	p := &Person{
-		Username: username,
-		Conn:     sshConn,
-		PubKey:   pubKey,
-		UNNAware: strings.Contains(string(sshConn.ClientVersion()), "UNN"),
+	// Disconnect old session with same key
+	if pubKey != nil {
+		pubKeyBytes := pubKey.Marshal()
+		for oldID, old := range s.people {
+			if old.PubKey != nil && bytes.Equal(old.PubKey.Marshal(), pubKeyBytes) {
+				log.Printf("Disconnecting old session %s for user %s (new connection with same key)", oldID, old.Username)
+				s.SendOSC(old, "popup", map[string]interface{}{
+					"title":   "Duplicate Session",
+					"message": "You have been disconnected because you connected from another session.",
+					"type":    "warning",
+				})
+				// Give it a moment to send
+				oldConn := old.Conn
+				go func() {
+					time.Sleep(200 * time.Millisecond)
+					oldConn.Close()
+				}()
+			}
+		}
 	}
-	s.people[username] = p
+
+	p := &Person{
+		SessionID: sessionID,
+		Username:  username,
+		Conn:      sshConn,
+		PubKey:    pubKey,
+		UNNAware:  strings.Contains(string(sshConn.ClientVersion()), "UNN"),
+	}
+	s.people[sessionID] = p
 	s.mu.Unlock()
 	s.updateAllPeople()
 
 	defer func() {
 		s.mu.Lock()
-		delete(s.people, username)
+		if current, ok := s.people[sessionID]; ok && current == p {
+			delete(s.people, sessionID)
+		}
 		s.mu.Unlock()
 		log.Printf("Person disconnected: %s", username)
 		s.updateAllPeople()
 	}()
 
-	// Discard global requests
-	go ssh.DiscardRequests(reqs)
-
-	// Handle channels
+	// Accept channels and requests - these normally go into handleChannel
 	for newChannel := range chans {
-		go s.handleChannel(newChannel, username)
+		go s.handleChannel(newChannel, sessionID)
 	}
 }
 
-func (s *Server) handleChannel(newChannel ssh.NewChannel, username string) {
-	channelType := newChannel.ChannelType()
+func (s *Server) handleChannel(newChannel ssh.NewChannel, sessionID string) {
+	s.mu.RLock()
+	p := s.people[sessionID]
+	s.mu.RUnlock()
+	if p == nil {
+		newChannel.Reject(ssh.Prohibited, "session not found")
+		return
+	}
 
-	switch channelType {
+	switch newChannel.ChannelType() {
 	case "session":
-		s.handleSession(newChannel, username)
-	case "unn-room":
-		s.handleRoomSubsystem(newChannel, username)
+		go s.handleSession(newChannel, sessionID)
 	case "direct-tcpip":
-		s.handleDirectTcpip(newChannel)
+		go s.handleDirectTcpip(newChannel)
 	default:
-		newChannel.Reject(ssh.UnknownChannelType, fmt.Sprintf("unknown channel type: %s", channelType))
+		newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
 	}
 }
 
@@ -420,7 +448,7 @@ func (s *Server) handleDirectTcpip(newChannel ssh.NewChannel) {
 	}()
 }
 
-func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
+func (s *Server) handleSession(newChannel ssh.NewChannel, sessionID string) {
 	rawChannel, requests, err := newChannel.Accept()
 	if err != nil {
 		log.Printf("Could not accept session: %v", err)
@@ -430,7 +458,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 
 	var p *Person
 	s.mu.RLock()
-	p = s.people[username]
+	p = s.people[sessionID]
 	s.mu.RUnlock()
 
 	if p == nil {
@@ -481,7 +509,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 			}()
 
 			// Main interaction loop
-			s.handleInteraction(rawChannel, username)
+			s.handleInteraction(rawChannel, sessionID)
 
 			// Ensure channel close after person done
 			p.Bus.ForceClose()
@@ -492,6 +520,11 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 				req.Reply(false, nil)
 				return
 			}
+			if subsystem == "unn-room" {
+				req.Reply(true, nil)
+				s.handleRoomSubsystem(rawChannel, sessionID)
+				return
+			}
 			req.Reply(false, nil)
 			return
 		default:
@@ -500,27 +533,21 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, username string) {
 	}
 }
 
-func (s *Server) handleRoomSubsystem(newChannel ssh.NewChannel, username string) {
-	channel, _, err := newChannel.Accept()
-	if err != nil {
-		log.Printf("Could not accept room subsystem: %v", err)
-		return
-	}
+func (s *Server) handleRoomSubsystem(channel ssh.Channel, sessionID string) {
 	defer channel.Close()
 
 	// Room subsystem for control channel
 	fmt.Fprintf(channel, "UNN Room Control Channel\n")
 }
 
-func (s *Server) handleInteraction(channel ssh.Channel, username string) {
-	var p *Person
+func (s *Server) handleInteraction(channel ssh.Channel, sessionID string) {
 	s.mu.RLock()
-	p = s.people[username]
+	p := s.people[sessionID]
 	s.mu.RUnlock()
-
 	if p == nil {
 		return
 	}
+	username := p.Username
 
 	// Handle room lock
 	s.mu.RLock()
@@ -652,7 +679,14 @@ func (s *Server) handleInteraction(channel ssh.Channel, username string) {
 	}
 }
 
-func (s *Server) handleCommand(channel ssh.Channel, username string, input string) chan struct{} {
+func (s *Server) handleCommand(channel ssh.Channel, sessionID string, input string) chan struct{} {
+	s.mu.RLock()
+	p := s.people[sessionID]
+	s.mu.RUnlock()
+	if p == nil {
+		return nil
+	}
+	username := p.Username
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return nil
@@ -889,6 +923,12 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			}
 
 			s.Broadcast("Server", fmt.Sprintf("*** %s was kicked by @%s (%s) ***", targetPerson.Username, p.Username, reason))
+			s.SendOSC(targetPerson, "popup", map[string]interface{}{
+				"title":   "Kicked from Room",
+				"message": fmt.Sprintf("You were kicked from %s.\nReason: %s", s.roomName, reason),
+				"type":    "error",
+			})
+			time.Sleep(100 * time.Millisecond)
 			targetPerson.Conn.Close()
 			return true
 		case "kickban":
@@ -924,6 +964,12 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 				s.bannedHashes[targetHash] = reason
 				s.mu.Unlock()
 				s.Broadcast("Server", fmt.Sprintf("*** %s was banned by @%s (%s) ***", targetPerson.Username, p.Username, reason))
+				s.SendOSC(targetPerson, "popup", map[string]interface{}{
+					"title":   "Banned from Room",
+					"message": fmt.Sprintf("You were BANNED from %s.\nReason: %s", s.roomName, reason),
+					"type":    "error",
+				})
+				time.Sleep(100 * time.Millisecond)
 				targetPerson.Conn.Close()
 			} else {
 				// Handle offline ban by hash

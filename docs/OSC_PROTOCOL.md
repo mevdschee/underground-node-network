@@ -14,8 +14,8 @@ Where `<json_payload>` is a JSON object containing at least an `"action"` field.
 
 ## Server to Client (Entrypoint/Room -> Wrapper)
 
-### `reconnect`
-Sent by the entrypoint to trigger an automatic reconnect to a room after hole-punching is complete.
+### `teleport`
+Sent by the entrypoint to trigger an automatic teleport to a room after hole-punching is complete. The client wrapper listens for this and initiates a p2p SSH session.
 
 **Parameters:**
 - `room_name` (string): Name of the room.
@@ -26,7 +26,7 @@ Sent by the entrypoint to trigger an automatic reconnect to a room after hole-pu
 **Payload Example:**
 ```json
 {
-  "action": "reconnect",
+  "action": "teleport",
   "room_name": "lobby",
   "candidates": ["1.2.3.4", "5.6.7.8"],
   "ssh_port": 22,
@@ -36,28 +36,21 @@ Sent by the entrypoint to trigger an automatic reconnect to a room after hole-pu
 
 ---
 
-## Client to Server (Wrapper -> Entrypoint/Room)
-*(Planned / Extensible)*
-
-Currently received OSC messages are logged by the server. Future actions can be added here.
-
----
-
-## Door to Server (Door -> Room Server)
-
-Doors can emit OSC sequences to communicate with the room server. The room server intercepts these before they reach the client wrapper.
-
-### `teleport`
-*(Example candidate)*
-Request the server to move the user to another room or trigger a specific network action.
+### `popup`
+Sent by the server to display a formatted message box in the client wrapper. Used for notifications like being kicked from a room.
 
 **Parameters:**
-- `target` (string): The target room or destination.
+- `title` (string): The title of the popup box.
+- `message` (string): The multi-line message content.
+- `type` (string, optional): One of `info`, `warning`, `error`. Affects the box color.
 
 **Payload Example:**
 ```json
 {
-  "action": "teleport",
-  "target": "other-room"
+  "action": "popup",
+  "title": "Kicked from Room",
+  "message": "You were kicked from lobby.\nReason: Spamming",
+  "type": "error"
 }
 ```
+

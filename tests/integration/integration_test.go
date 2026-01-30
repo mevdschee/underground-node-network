@@ -20,11 +20,11 @@ func TestIntegration_BasicRegistration(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	epBin, clientBin := buildBinaries(t)
+	epBin, roomBin := buildBinaries(t)
 
-	clientName := "testroom1"
-	clientPort := 22223
-	clientHostKey := filepath.Join(tempDir, "client_host_key")
+	roomName := "testroom1"
+	roomPort := 22223
+	roomHostKey := filepath.Join(tempDir, "room_host_key")
 	clientIdentity := "../../tests/integration/test_room_key"
 	filesDir := filepath.Join(tempDir, "files")
 	os.MkdirAll(filesDir, 0700)
@@ -47,8 +47,8 @@ func TestIntegration_BasicRegistration(t *testing.T) {
 	epProcess := startEntryPoint(t, epBin, epPort, epHostKey, tempDir)
 	defer epProcess.Stop()
 
-	clientProcess := startClient(t, clientBin, clientName, clientPort, "localhost:44323", clientHostKey, clientIdentity, filesDir)
-	defer clientProcess.Stop()
+	roomProcess := startRoom(t, roomBin, roomName, roomPort, "localhost:44323", roomHostKey, clientIdentity, filesDir)
+	defer roomProcess.Stop()
 
 	// Wait for registration to complete
 	time.Sleep(2 * time.Second)
@@ -62,22 +62,22 @@ func TestIntegration_BasicRegistration(t *testing.T) {
 	// List rooms
 	fmt.Println("Running /rooms command...")
 	output := runSSHCommand(t, session, "/rooms")
-	if !strings.Contains(output, clientName) {
-		t.Errorf("Expected room %s to be in output, but got:\n%s", clientName, output)
+	if !strings.Contains(output, roomName) {
+		t.Errorf("Expected room %s to be in output, but got:\n%s", roomName, output)
 	}
 
 	// Join room to trigger P2P authorization
-	fmt.Printf("Joining room %s via entrypoint...\n", clientName)
+	fmt.Printf("Joining room %s via entrypoint...\n", roomName)
 	sshClientJoin, sessionJoin := getSSHClient(t, "localhost:44323", "maurits", "../../tests/integration/test_user_key")
 	defer sshClientJoin.Close()
 	defer sessionJoin.Close()
-	runSSHCommand(t, sessionJoin, clientName)
+	runSSHCommand(t, sessionJoin, roomName)
 
 	time.Sleep(2 * time.Second)
 
 	// Connect to the room node directly (since entrypoint doesn't proxy)
-	fmt.Printf("Connecting directly to room at localhost:%d...\n", clientPort)
-	sshClient2, session2 := getSSHClient(t, fmt.Sprintf("localhost:%d", clientPort), "maurits", "../../tests/integration/test_user_key")
+	fmt.Printf("Connecting directly to room at localhost:%d...\n", roomPort)
+	sshClient2, session2 := getSSHClient(t, fmt.Sprintf("localhost:%d", roomPort), "maurits", "../../tests/integration/test_user_key")
 	defer sshClient2.Close()
 	defer session2.Close()
 
@@ -94,11 +94,11 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	epBin, clientBin := buildBinaries(t)
+	epBin, roomBin := buildBinaries(t)
 
-	clientName := "downloadroom"
-	clientPort := 22224
-	clientHostKey := filepath.Join(tempDir, "client_host_key")
+	roomName := "downloadroom"
+	roomPort := 22224
+	roomHostKey := filepath.Join(tempDir, "room_host_key")
 	clientIdentity := "../../tests/integration/test_room_key"
 	filesDir := filepath.Join(tempDir, "files")
 	os.MkdirAll(filesDir, 0700)
@@ -131,8 +131,8 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	epProcess := startEntryPoint(t, epBin, epPort, epHostKey, tempDir)
 	defer epProcess.Stop()
 
-	clientProcess := startClient(t, clientBin, clientName, clientPort, "localhost:44324", clientHostKey, clientIdentity, filesDir)
-	defer clientProcess.Stop()
+	roomProcess := startRoom(t, roomBin, roomName, roomPort, "localhost:44324", roomHostKey, clientIdentity, filesDir)
+	defer roomProcess.Stop()
 
 	time.Sleep(2 * time.Second)
 
@@ -142,11 +142,11 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	defer session.Close()
 
 	// Join room
-	runSSHCommand(t, session, clientName)
+	runSSHCommand(t, session, roomName)
 	time.Sleep(1 * time.Second)
 
 	// Connect to the room node directly and trigger download
-	sshClientRoom, sessionRoom := getSSHClient(t, fmt.Sprintf("localhost:%d", clientPort), "maurits", "../../tests/integration/test_user_key")
+	sshClientRoom, sessionRoom := getSSHClient(t, fmt.Sprintf("localhost:%d", roomPort), "maurits", "../../tests/integration/test_user_key")
 	defer sshClientRoom.Close()
 	defer sessionRoom.Close()
 

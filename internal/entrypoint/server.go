@@ -43,9 +43,13 @@ type Person struct {
 	Username     string
 	TeleportData *protocol.PunchStartPayload
 	UI           *ui.EntryUI
+	DisplayName  string
 	Bus          *ui.SSHBus
 	Bridge       *ui.InputBridge
 	UNNAware     bool
+	PubKey       ssh.PublicKey
+	PubKeyHash   string
+	Conn         *ssh.ServerConn
 }
 
 // Server is the entry point SSH server
@@ -247,14 +251,32 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 	var isOperator bool
 
 	// Process first request to determine if operator or person
+	pubKey := conn.Permissions.Extensions["pubkey"]
+	pubKeyHash := ""
+	var parsedPubKey ssh.PublicKey
+	if pubKey != "" {
+		parsedPubKey, _, _, _, _ = ssh.ParseAuthorizedKey([]byte(pubKey))
+		if parsedPubKey != nil {
+			pubKeyHash = s.calculatePubKeyHash(parsedPubKey)
+		}
+	}
+
 	for req := range requests {
 		switch req.Type {
 		case "subsystem":
 			subsystem := string(req.Payload[4:])
 			if subsystem == "unn-control" {
 				req.Reply(true, nil)
-				isOperator = true
-				log.Printf("Operator connected: %s", username)
+				// Disconnect old operator with same key
+				s.mu.Lock()
+				for name, room := range s.rooms {
+					if room.Connection != nil && room.Connection.Permissions.Extensions["pubkey"] == pubKey {
+						log.Printf("Disconnecting old operator for room %s (new connection with same key)", name)
+						room.Connection.Close()
+					}
+				}
+				s.mu.Unlock()
+
 				// Handle operator - this will block until disconnect
 				s.handleOperator(channel, conn, username, &roomName)
 				// Clean up room when operator disconnects
@@ -286,11 +308,14 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 				sessionID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
 				bridge := ui.NewInputBridge(channel)
 				p := &Person{
-					SessionID: sessionID,
-					Username:  username,
-					Bridge:    bridge,
-					Bus:       ui.NewSSHBus(bridge, int(initialW), int(initialH)),
-					UNNAware:  strings.Contains(string(conn.ClientVersion()), "UNN"),
+					SessionID:  sessionID,
+					Username:   username,
+					Bridge:     bridge,
+					Bus:        ui.NewSSHBus(bridge, int(initialW), int(initialH)),
+					UNNAware:   strings.Contains(string(conn.ClientVersion()), "UNN"),
+					PubKey:     parsedPubKey,
+					PubKeyHash: pubKeyHash,
+					Conn:       conn,
 				}
 				p.UI = ui.NewEntryUI(nil, p.Username, s.address)
 				p.UI.Headless = s.headless
@@ -298,7 +323,26 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 				p.Bridge.SetOSCHandler(func(action string, params map[string]interface{}) {
 					s.HandleOSC(p, action, params)
 				})
+
 				s.mu.Lock()
+				// Disconnect old person with same key
+				if pubKeyHash != "" {
+					for xid, old := range s.people {
+						if old.PubKeyHash == pubKeyHash {
+							log.Printf("Disconnecting old person session %s for user %s (new connection)", xid, username)
+							s.SendOSC(old, "popup", map[string]interface{}{
+								"title":   "Duplicate Session",
+								"message": "You have been disconnected because you connected from another session.",
+								"type":    "warning",
+							})
+							// Give it a moment to send
+							go func(c *ssh.ServerConn) {
+								time.Sleep(200 * time.Millisecond)
+								c.Close()
+							}(old.Conn)
+						}
+					}
+				}
 				s.people[sessionID] = p
 				s.mu.Unlock()
 
@@ -819,8 +863,8 @@ func (s *Server) showTeleportInfo(p *Person) {
 	fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 
 	// Emit invisible ANSI OSC 9 sequence with teleport data
-	data.Action = "reconnect"
-	s.SendOSC(p, "reconnect", map[string]interface{}{
+	data.Action = "teleport"
+	s.SendOSC(p, "teleport", map[string]interface{}{
 		"room_name":   data.RoomName,
 		"candidates":  data.Candidates,
 		"ssh_port":    data.SSHPort,
@@ -828,7 +872,7 @@ func (s *Server) showTeleportInfo(p *Person) {
 	})
 
 	fmt.Fprintf(p.Bus, "\033[1;32mUNN TELEPORTATION READY\033[0m\r\n\r\n")
-	fmt.Fprintf(p.Bus, "The wrapper is automatically reconnecting you to the room.\r\n")
+	fmt.Fprintf(p.Bus, "The wrapper is automatically teleporting you to the room.\r\n")
 	fmt.Fprintf(p.Bus, "If the wrapper fails, you can connect manually using:\r\n\r\n")
 
 	for _, candidate := range data.Candidates {

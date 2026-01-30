@@ -343,11 +343,39 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 
 							var startPayload protocol.PunchStartPayload
 							if err := json.Unmarshal([]byte(jsonData), &startPayload); err == nil {
-								if startPayload.Action == "reconnect" {
+								if startPayload.Action == "teleport" {
 									candidates = startPayload.Candidates
 									sshPort = startPayload.SSHPort
 									hostKeys = startPayload.PublicKeys
 									close(done)
+								} else if startPayload.Action == "popup" {
+									var popupPayload protocol.PopupPayload
+									if err := json.Unmarshal([]byte(jsonData), &popupPayload); err == nil {
+										handleOSCPopup(popupPayload)
+										if !batch {
+											globalStdinManager.Pause()
+											width := 80
+											if w, _, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
+												width = w
+											}
+											prompt := ">>> Press [ENTER] to continue <<<"
+											padding := (width - len(prompt)) / 2
+											if padding < 0 {
+												padding = 0
+											}
+											fmt.Printf("\r%s\033[1m%s\033[0m", strings.Repeat(" ", padding), prompt)
+
+											buf := make([]byte, 1)
+											for {
+												n, err := os.Stdin.Read(buf)
+												if err != nil || n == 0 || buf[0] == '\n' || buf[0] == '\r' {
+													break
+												}
+											}
+											fmt.Print("\033[H\033[J")
+											globalStdinManager.Resume()
+										}
+									}
 								}
 							} else if verbose {
 								log.Printf("JSON unmarshal failed: %v", err)
@@ -409,12 +437,48 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 
 		// Connect to room using native SSH client - stay in room if download triggered
 		for {
-			downloaded, err := runRoomSSH(candidates, sshPort, hostKeys, config, identPath, verbose, oldState, batch)
+			downloaded, popup, err := runRoomSSH(candidates, sshPort, hostKeys, config, identPath, verbose, oldState, batch)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error connecting to room: %v\n", err)
 				time.Sleep(2 * time.Second)
 				break
 			}
+
+			// Show disconnect message
+			fmt.Fprintf(os.Stderr, "\r\n\033[1;33m>>> Disconnected from room: %s <<<\033[0m\r\n\r\n", roomName)
+
+			if popup != nil {
+				handleOSCPopup(*popup)
+				if !batch {
+					globalStdinManager.Pause()
+					// Centered prompt
+					width := 80
+					if w, _, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
+						width = w
+					}
+					prompt := ">>> Press [ENTER] to continue <<<"
+					padding := (width - len(prompt)) / 2
+					if padding < 0 {
+						padding = 0
+					}
+					fmt.Printf("\r%s\033[1m%s\033[0m", strings.Repeat(" ", padding), prompt)
+
+					// Wait for Enter (CR or LF)
+					buf := make([]byte, 1)
+					for {
+						n, err := os.Stdin.Read(buf)
+						if err != nil || n == 0 || buf[0] == '\n' || buf[0] == '\r' {
+							break
+						}
+					}
+					fmt.Print("\033[H\033[J") // Clear screen again after Enter
+					globalStdinManager.Resume()
+				}
+				if popup.Type == "error" {
+					return nil // Stop teleportation if it was a kick/error
+				}
+			}
+
 			if !downloaded {
 				break // Exit back to entry point
 			}
@@ -425,7 +489,7 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 	}
 }
 
-func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointConfig *ssh.ClientConfig, identPath string, verbose bool, normalState *term.State, batch bool) (bool, error) {
+func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointConfig *ssh.ClientConfig, identPath string, verbose bool, normalState *term.State, batch bool) (bool, *protocol.PopupPayload, error) {
 	if verbose {
 		log.Printf("Got connection info: candidates=%v port=%d keys=%d", candidates, sshPort, len(hostKeys))
 	}
@@ -483,7 +547,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 
 		session, err := client.NewSession()
 		if err != nil {
-			return false, fmt.Errorf("failed to create session: %w", err)
+			return false, nil, fmt.Errorf("failed to create session: %w", err)
 		}
 		defer session.Close()
 
@@ -500,11 +564,11 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		}
 
 		if err := session.RequestPty("xterm-256color", h, w, ssh.TerminalModes{}); err != nil {
-			return false, fmt.Errorf("failed to request pty: %w", err)
+			return false, nil, fmt.Errorf("failed to request pty: %w", err)
 		}
 
 		if err := session.Shell(); err != nil {
-			return false, fmt.Errorf("failed to start shell: %w", err)
+			return false, nil, fmt.Errorf("failed to start shell: %w", err)
 		}
 
 		// Handle window changes
@@ -532,6 +596,8 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		var (
 			stdoutDone = make(chan struct{})
 			triggerDl  = make(chan downloadInfo, 1)
+			lastPopup  *protocol.PopupPayload
+			popupMu    sync.Mutex
 		)
 
 		go func() {
@@ -579,9 +645,15 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 									}
 									session.Close()
 									return
+								} else if downloadPayload.Action == "popup" {
+									var popupPayload protocol.PopupPayload
+									if err := json.Unmarshal([]byte(jsonData), &popupPayload); err == nil {
+										popupMu.Lock()
+										lastPopup = &popupPayload
+										popupMu.Unlock()
+									}
 								}
 							} else if verbose {
-								log.Printf("JSON unmarshal failed: %v", err)
 							}
 						} else {
 							oscBuffer.WriteByte(b)
@@ -612,19 +684,19 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 			}
 
 			if verbose {
-				log.Printf("Waiting for reconnection to room...")
+				log.Printf("Waiting for teleportation to room...")
 			}
 			time.Sleep(500 * time.Millisecond) // Give server time to clean up previous session
-			return true, nil                   // Reconnect to room
+			return true, nil, nil              // Reconnect to room
 		default:
-			return false, nil // Exit normally
+			return false, lastPopup, nil // Exit normally
 		}
 	}
 
 	if lastErr != nil {
-		return false, fmt.Errorf("failed to connect to any candidate: %w", lastErr)
+		return false, nil, fmt.Errorf("failed to connect to any candidate: %w", lastErr)
 	}
-	return false, fmt.Errorf("no candidates available")
+	return false, nil, fmt.Errorf("no candidates available")
 }
 
 func loadKey(path string) (ssh.Signer, error) {
@@ -741,4 +813,87 @@ func getUniquePath(path string) string {
 		}
 		counter++
 	}
+}
+
+func handleOSCPopup(p protocol.PopupPayload) {
+	// 1. Clear screen and move to top
+	fmt.Print("\033[H\033[2J")
+
+	// 2. Measure terminal
+	termWidth, termHeight := 80, 24
+	if w, h, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
+		termWidth, termHeight = w, h
+	}
+
+	// 3. Prepare box content
+	lines := strings.Split(p.Message, "\n")
+	contentWidth := len(p.Title) + 4
+	for _, l := range lines {
+		if len(l) > contentWidth {
+			contentWidth = len(l)
+		}
+	}
+
+	boxWidth := contentWidth + 6
+	if boxWidth > termWidth-8 {
+		boxWidth = termWidth - 8
+	}
+	if boxWidth < 30 {
+		boxWidth = 30
+	}
+
+	boxHeight := len(lines) + 4
+
+	// 4. Calculate offsets for centering
+	topOffset := (termHeight - boxHeight) / 2
+	leftPaddingStr := strings.Repeat(" ", (termWidth-boxWidth)/2)
+
+	// 5. Advanced Colors (256-color fallback)
+	borderColor := "38;5;39" // Information blue
+	icon := "ⓘ"
+	if p.Type == "error" {
+		borderColor = "38;5;196" // Error red
+		icon = "✖"
+	} else if p.Type == "warning" {
+		borderColor = "38;5;214" // Warning orange
+		icon = "⚠"
+	}
+
+	titleColor := "\033[1;48;5;235;38;5;255m" // Dark bg, white text
+	primary := "\033[" + borderColor + "m"
+	shadow := "\033[38;5;240m"
+	reset := "\033[0m"
+
+	// 6. Print top offset
+	fmt.Print(strings.Repeat("\r\n", topOffset))
+
+	// 7. Print Box with Shadow
+	// Header line
+	fmt.Printf("%s%s▛%s▜%s\r\n", leftPaddingStr, primary, strings.Repeat("▀", boxWidth-2), reset)
+
+	// Title line
+	titleText := fmt.Sprintf("%s %s", icon, strings.ToUpper(p.Title))
+	tPadLeft := (boxWidth - 4 - len(titleText)) / 2
+	tPadRight := boxWidth - 4 - len(titleText) - tPadLeft
+	fmt.Printf("%s%s▌ %s%s%s%s %s▐%s█%s\r\n", leftPaddingStr, primary, titleColor, strings.Repeat(" ", tPadLeft), titleText, strings.Repeat(" ", tPadRight), reset+primary, shadow, reset)
+
+	// Separator
+	fmt.Printf("%s%s▙%s▟%s█%s\r\n", leftPaddingStr, primary, strings.Repeat("▄", boxWidth-2), shadow, reset)
+
+	// Message body
+	for _, l := range lines {
+		if len(l) > boxWidth-6 {
+			l = l[:boxWidth-9] + "..."
+		}
+		lPadLeft := (boxWidth - 4 - len(l)) / 2
+		lPadRight := boxWidth - 4 - len(l) - lPadLeft
+		fmt.Printf("%s%s▌ %s%s%s %s▐%s█%s\r\n", leftPaddingStr, primary, strings.Repeat(" ", lPadLeft), l, strings.Repeat(" ", lPadRight), primary, shadow, reset)
+	}
+
+	// Bottom border
+	fmt.Printf("%s%s▙%s▟%s█%s\r\n", leftPaddingStr, primary, strings.Repeat("▀", boxWidth-2), shadow, reset)
+	fmt.Printf("%s  %s%s%s\r\n", leftPaddingStr, shadow, strings.Repeat("▀", boxWidth-1), reset)
+
+	// 8. Space for prompt
+	fmt.Print("\r\n\r\n")
 }

@@ -35,8 +35,8 @@ def run_test(file_size_kb, limit_str, expected_duration):
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     time.sleep(2)
 
-    # 3. Start Client
-    client = subprocess.Popen(["./unn-client-bin", "-port", str(client_port), "-room", "myroom", 
+    # 3. Start Room
+    client = subprocess.Popen(["./unn-room-bin", "-port", str(client_port), "-room", "myroom", 
                               "-entrypoint", f"localhost:{ep_port}", "-headless", "-identity", "tests/integration/test_user_key", 
                               "-max-upload", limit_str, "-files", f"./{test_dir}/room_files"], 
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

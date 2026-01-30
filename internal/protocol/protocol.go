@@ -95,6 +95,14 @@ type DownloadPayload struct {
 	Signature  string `json:"signature" yaml:"signature"`
 }
 
+// PopupPayload is sent to show a formatted popup message in the wrapper
+type PopupPayload struct {
+	Action  string `json:"action,omitempty"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+	Type    string `json:"type,omitempty"` // e.g., "info", "warning", "error"
+}
+
 // NewMessage creates a new message with the given type and payload
 func NewMessage(msgType string, payload interface{}) (*Message, error) {
 	payloadBytes, err := json.Marshal(payload)

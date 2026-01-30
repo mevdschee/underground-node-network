@@ -47,7 +47,7 @@ func startEntryPoint(t *testing.T, binPath string, port int, hostKeyPath string,
 	return &UNNProcess{cmd: cmd, stdout: stdout, stderr: stderr}
 }
 
-func startClient(t *testing.T, binPath string, name string, port int, epAddr string, hostKeyPath string, identityPath string, filesDir string) *UNNProcess {
+func startRoom(t *testing.T, binPath string, name string, port int, epAddr string, hostKeyPath string, identityPath string, filesDir string) *UNNProcess {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	args := []string{
@@ -63,10 +63,10 @@ func startClient(t *testing.T, binPath string, name string, port int, epAddr str
 	cmd.Stdout = io.MultiWriter(stdout, os.Stdout)
 	cmd.Stderr = io.MultiWriter(stderr, os.Stderr)
 
-	fmt.Printf("Starting client with command: %s %s\n", binPath, strings.Join(args, " "))
+	fmt.Printf("Starting room node with command: %s %s\n", binPath, strings.Join(args, " "))
 
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("Failed to start client %s: %v", name, err)
+		t.Fatalf("Failed to start room %s: %v", name, err)
 	}
 
 	// Wait for it to be ready (it starts an SSH server)
@@ -95,19 +95,19 @@ func buildBinaries(t *testing.T) (string, string) {
 	}
 
 	epBin := filepath.Join(tempDir, "unn-entrypoint")
-	clientBin := filepath.Join(tempDir, "unn-client")
+	roomBin := filepath.Join(tempDir, "unn-room")
 
 	cmd := exec.Command("go", "build", "-o", epBin, "../../cmd/unn-entrypoint")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to build entrypoint: %v\nOutput: %s", err, string(out))
 	}
 
-	cmd = exec.Command("go", "build", "-o", clientBin, "../../cmd/unn-client")
+	cmd = exec.Command("go", "build", "-o", roomBin, "../../cmd/unn-room")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("Failed to build client: %v\nOutput: %s", err, string(out))
+		t.Fatalf("Failed to build room node: %v\nOutput: %s", err, string(out))
 	}
 
-	return epBin, clientBin
+	return epBin, roomBin
 }
 
 func getSSHClient(t *testing.T, addr string, user string, keyPath string) (*ssh.Client, *ssh.Session) {

@@ -11,8 +11,8 @@ Authentication in the UNN is hierarchical:
 
 ## Connection Lifecycle
 
-1. **Client Startup**: `unn-client` starts a local SSH server. It then connects to the entry point. If this connection fails, the client exits (fatal).
-2. **Registration**: The client registers its room, doors, and connection candidates.
+1. **Room Node Startup**: `unn-room` starts a local SSH server. It then connects to the entry point. If this connection fails, the room node exits (fatal).
+2. **Registration**: The room node registers its room, doors, and connection candidates.
 3. **Person Jump**:
    - Person requests a room at the entry point.
    - Entry point signals the person's public key to the room operator (`punch_offer`).
@@ -28,7 +28,7 @@ While low-level coordination happens over SSH subsystems, the UNN uses **ANSI OS
 
 - **Sequence Format**: `\x1b]9;{"action":"...", ...}\x07`
 - **Actions**:
-  - `reconnect`: Triggers the wrapper to teleport to a room with the provided candidates and host keys.
+  - `teleport`: Triggers the wrapper to move to a room with the provided candidates and host keys.
   - `download`: Triggers the `unn-dl` tool to start an automated file transfer.
 
 ### Signaling JSON (Subsystem)
@@ -70,5 +70,5 @@ The room server maintains an in-memory history to improve the experience of reco
 1. **Identifier**: History is tracked per **person Public Key** (using a SHA256 hash).
 2. **Connection-Only Logging**: To ensure security, messages are only appended to a user's history if they are **currently connected** to the room. Users can never "back-read" messages that were sent when they were offline.
 3. **Replay**: When a user reconnects, the server automatically replays their private history (up to 200 messages) to their TUI.
-4. **Volatility**: History is stored in-memory and is wiped if the room node (client) is restarted.
+4. **Volatility**: History is stored in-memory and is wiped if the room node is restarted.
 5. **Wipe Command**: Users can manually purge their history and clear their screen at any time using the `/clear` command.

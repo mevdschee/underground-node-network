@@ -47,18 +47,18 @@ The wrapper is persistent—when you exit a room (via **Ctrl+C**), you are autom
 To become a part of the network and host your own "room":
 
 1. **Register**: Connect to an entry point and register your SSH public key. Registration is **strictly enforced**—it ensures your username cannot be spoofed and is required for room hosting. UNN usernames must be **alphanumeric** and between 4 and 20 characters.
-2. **Launch Client**: Run the UNN client. It will automatically connect and register your node:
+2. **Launch Room**: Run the UNN room node. It will automatically connect and register your node:
    ```bash
-   ./start-client.sh
+   ./start-room.sh
    ```
-   *Note: If the client cannot connect to the entry point, it will exit immediately with a fatal error.*
+   *Note: If the room node cannot connect to the entry point, it will exit immediately with a fatal error.*
 3. **Open Doors**: Your node will appear on the network. Visitors teleporting to you will undergo **P2P Visitor Authentication**, where the entry point verifies their key and pre-authorizes them with your node.
 
 ## Documentation
 
 - [SSH Wrapper](docs/SSH_WRAPPER.md) - Details on the `unn-ssh` tool.
 - [Download Tool](docs/DOWNLOAD_TOOL.md) - Features and architecture of `unn-dl`.
-- [Client Architecture](docs/CLIENT.md) - How room nodes work.
+- [Room Architecture](docs/ROOM.md) - How room nodes work.
 - [Server Architecture](docs/SERVER.md) - How entry points function.
 - [Implementation Details](docs/IMPLEMENTATION.md) - Protocols and flow.
 - [P2P & NAT Traversal](docs/P2P.md) - How direct connections are established.

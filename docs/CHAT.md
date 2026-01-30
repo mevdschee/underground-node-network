@@ -39,7 +39,7 @@ The UNN Chat is engineered for a "zero-lag" feel. Unlike traditional SSH session
 
 The network prioritizes a balance between convenience and strict volatility:
 
-- **Smart Reconnection**: If you disconnect and return (common during file transfers), the room remembers your previous messages and commands for that session.
+- **Smart Resume**: If you disconnect and return (common during file transfers), the room remembers your previous messages and commands for that session.
 - **Privacy-First Logging**: You only see what you were present for. History is personally isolated, and users cannot "back-read" conversations that occurred before they connected.
 - **Strict Volatility**: All history is ephemeral. If the node is taken offline or restarted, the logs vanish.
 - **Manual Purge**: The `/clear` command allows any user to instantly wipe their personal log and reset their screen.
