@@ -84,9 +84,11 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		rooms:         make(map[string]*Room),
 		people:        make(map[string]*Person),
 		punchSessions: make(map[string]*PunchSession),
-		httpClient:    http.DefaultClient,
-		identities:    make(map[string]string),
-		usernames:     make(map[string]string),
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		identities: make(map[string]string),
+		usernames:  make(map[string]string),
 	}
 
 	// Load users from single file

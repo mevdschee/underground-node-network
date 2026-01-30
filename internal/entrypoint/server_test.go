@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -243,6 +244,8 @@ func TestNewServer(t *testing.T) {
 
 	if s.httpClient == nil {
 		t.Error("httpClient not initialized")
+	} else if s.httpClient.Timeout != 30*time.Second {
+		t.Errorf("Expected httpClient timeout 30s, got %v", s.httpClient.Timeout)
 	}
 
 	if s.identities == nil || s.usernames == nil {

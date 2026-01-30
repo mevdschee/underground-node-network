@@ -77,8 +77,9 @@ def run_test(file_size_kb, limit_str, expected_duration):
         sys.stdout.write(line)
         sys.stdout.flush()
         
-        if "[DOWNLOAD FILE]" in line:
-            print("Transfer started...")
+        # OSC 9 signaling detection
+        if "\x1b]9;" in line and '"download"' in line:
+            print("Transfer started (OSC 9 detected)...")
             start_transfer = time.time()
         
     wrapper.wait()
