@@ -360,10 +360,27 @@ func (ui *ChatUI) Draw() {
 		ui.peopleSidebar.Width = sidebarW
 		ui.doorsSidebar.Width = sidebarW
 
+		// Calculate height for doors (up to half of available space)
+		maxSidebarH := h - 4
+		maxDoorsH := maxSidebarH / 2
+		neededDoorsH := len(ui.doorsSidebar.Items) + 1 // +1 for title
+		doorsH := neededDoorsH
+		if doorsH > maxDoorsH {
+			doorsH = maxDoorsH
+		}
+		if doorsH < 1 {
+			doorsH = 1
+		}
+
 		// Draw doors at top of sidebar
-		ui.doorsSidebar.Draw(s, mainW, 2, h/2-1, blackStyle, sepStyle)
-		// Draw people below
-		ui.peopleSidebar.Draw(s, mainW, h/2+1, h/2-2, blackStyle, sepStyle)
+		ui.doorsSidebar.Draw(s, mainW, 2, doorsH, blackStyle, sepStyle)
+
+		// Draw people below with a one-line gap
+		peopleY := 2 + doorsH + 1
+		peopleH := maxSidebarH - (doorsH + 1)
+		if peopleH > 0 {
+			ui.peopleSidebar.Draw(s, mainW, peopleY, peopleH, blackStyle, sepStyle)
+		}
 	}
 
 	// 3. Draw Logs
