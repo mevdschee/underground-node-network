@@ -56,10 +56,15 @@ To become a part of the network and host your own "room":
 
 ## Documentation
 
-- [SSH Wrapper](docs/SSH_WRAPPER.md) - Details on the `unn-ssh` tool.
-- [Download Tool](docs/DOWNLOAD_TOOL.md) - Features and architecture of `unn-dl`.
-- [Room Architecture](docs/ROOM.md) - How room nodes work.
-- [Server Architecture](docs/SERVER.md) - How entry points function.
-- [Implementation Details](docs/IMPLEMENTATION.md) - Protocols and flow.
-- [P2P & NAT Traversal](docs/P2P.md) - How direct connections are established.
+### [Application Architectures](docs/apps/README.md)
+- [Entrypoint](docs/apps/entrypoint.md) - Signaling hub and discovery back-bone.
+- [Room Node](docs/apps/room.md) - Ephemeral SSH server for hosting rooms and doors.
+- [SSH Wrapper](docs/apps/ssh-wrapper.md) - Automated teleportation and navigation tool.
+
+### [Network Concepts](docs/concepts/README.md)
+- [Identity & Verification](docs/concepts/identity.md) - Decentralized trust and key registration.
+- [P2P & NAT Traversal](docs/concepts/p2p-nat.md) - Hole-punching and direct TCP streams.
+- [Signaling Protocol](docs/concepts/signaling.md) - Custom control subsystems and ANSI OSC 9.
+- [TUI & Interactions](docs/concepts/tui_and_doors.md) - BBS experience, Input Bridges, and Doors.
+- [Technical Details](docs/concepts/implementation_details.md) - Deep dive into internal mechanics.
 
