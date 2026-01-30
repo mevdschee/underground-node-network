@@ -381,6 +381,9 @@ func (ui *ChatUI) Draw() {
 		if peopleH > 0 {
 			ui.peopleSidebar.Draw(s, mainW, peopleY, peopleH, blackStyle, sepStyle)
 		}
+
+		// Add a separator between doors and people
+		s.SetContent(mainW, 2+doorsH, '│', nil, sepStyle)
 	}
 
 	// 3. Draw Logs
