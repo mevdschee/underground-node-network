@@ -188,7 +188,7 @@ func main() {
 					if offer.PersonKey != "" {
 						pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(offer.PersonKey))
 						if err == nil {
-							server.AuthorizeKey(pubKey)
+							server.AuthorizeKey(pubKey, offer.Username)
 						} else {
 							log.Printf("Warning: Failed to parse person public key: %v", err)
 						}

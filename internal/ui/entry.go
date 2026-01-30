@@ -11,8 +11,10 @@ import (
 )
 
 type FormField struct {
-	Label string
-	Value string
+	Label     string
+	Value     string
+	Error     string
+	MaxLength int
 }
 
 type RoomInfo struct {
@@ -143,6 +145,12 @@ func (ui *EntryUI) ShowMessage(msg string, msgType MessageType) {
 	}
 }
 
+func (ui *EntryUI) SetUsername(username string) {
+	ui.mu.Lock()
+	ui.username = username
+	ui.mu.Unlock()
+}
+
 func (ui *EntryUI) Prompt(q string) string {
 	ui.mu.Lock()
 	ui.prompt = q
@@ -161,6 +169,8 @@ func (ui *EntryUI) Prompt(q string) string {
 	ui.mu.Lock()
 	ui.prompt = ""
 	ui.CenteredPrompt = false
+	ui.cursorIdx = 0
+	ui.inputOffset = 0
 	ui.mu.Unlock()
 	return res
 }
@@ -170,6 +180,7 @@ func (ui *EntryUI) PromptForm(fields []FormField) []string {
 	ui.FormFields = fields
 	ui.InFormMode = true
 	ui.FormActiveIdx = 0
+	ui.input = ""
 	ui.cursorIdx = 0
 	ui.inputOffset = 0
 	ui.mu.Unlock()
@@ -184,6 +195,8 @@ func (ui *EntryUI) PromptForm(fields []FormField) []string {
 	ui.mu.Lock()
 	ui.InFormMode = false
 	ui.FormFields = nil
+	ui.cursorIdx = 0
+	ui.inputOffset = 0
 	ui.mu.Unlock()
 
 	return parts
@@ -398,12 +411,24 @@ func (ui *EntryUI) Draw() {
 
 			// Value field
 			valueStyle := boxStyle.Background(tcell.ColorBlack).Foreground(tcell.ColorWhite)
+			if field.Error == "not available" {
+				valueStyle = valueStyle.Foreground(tcell.ColorRed)
+			}
 			if i == ui.FormActiveIdx {
-				valueStyle = valueStyle.Underline(true).Foreground(tcell.ColorYellow)
+				valueStyle = valueStyle.Underline(true)
+				if field.Error != "not available" {
+					valueStyle = valueStyle.Foreground(tcell.ColorYellow)
+				}
 			}
 			valW := boxW - 6
 			ui.fillRegion(startX+4, fieldY+1, valW, 1, ' ', valueStyle)
 			ui.drawText(startX+4, fieldY+1, field.Value, valW, valueStyle)
+
+			// Error message
+			if field.Error != "" {
+				errorStyle := boxStyle.Foreground(tcell.ColorRed).Bold(true)
+				ui.drawText(startX+4, fieldY+2, "  ! "+field.Error, valW, errorStyle)
+			}
 
 			if i == ui.FormActiveIdx {
 				runes := []rune(field.Value)
@@ -688,6 +713,12 @@ func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 			ui.scrollOffset = 0
 		}
 	case tcell.KeyRune:
+		if ui.InFormMode && len(ui.FormFields) > 0 {
+			field := &ui.FormFields[ui.FormActiveIdx]
+			if field.MaxLength > 0 && len(runes) >= field.MaxLength {
+				return false, false
+			}
+		}
 		runes = append(runes[:ui.cursorIdx], append([]rune{ev.Rune()}, runes[ui.cursorIdx:]...)...)
 		if ui.InFormMode {
 			ui.FormFields[ui.FormActiveIdx].Value = string(runes)

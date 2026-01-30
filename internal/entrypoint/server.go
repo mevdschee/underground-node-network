@@ -449,7 +449,6 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 	// Handle verification and command setup in background so entryUI.Run() can start
 	go func() {
 		verified := conn.Permissions != nil && conn.Permissions.Extensions["verified"] == "true"
-		taken := conn.Permissions != nil && conn.Permissions.Extensions["taken"] == "true"
 
 		if !verified {
 			if !s.handleOnboardingForm(p, conn) {
@@ -462,53 +461,13 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 				return
 			}
 			verified = true
-			taken = false
+		} else if conn.Permissions != nil && conn.Permissions.Extensions["username"] != "" {
+			p.Username = conn.Permissions.Extensions["username"]
+			p.UI.SetUsername(p.Username)
 		}
 
 		if len(s.banner) > 0 {
 			entryUI.SetBanner(s.banner)
-		}
-
-		// Check for username conflict if verified but taken
-		if taken {
-			// Identity is verified but they connected with a username owned by someone else
-			eui := p.UI
-			eui.ShowMessage("--- Username Conflict ---", ui.MsgServer)
-			eui.ShowMessage(fmt.Sprintf("The username '%s' is already claimed by another user.", p.Username), ui.MsgServer)
-
-			for {
-				newUsername := eui.Prompt("Enter a new username to use for this session:")
-				if newUsername == "" {
-					continue
-				}
-
-				s.mu.Lock()
-				_, exists := s.usernames[newUsername]
-				if !exists {
-					// Update mapping
-					pubKeyHash := conn.Permissions.Extensions["pubkeyhash"]
-					platform := conn.Permissions.Extensions["platform"]
-
-					// Free old username if we were the owner
-					for u, h := range s.usernames {
-						if h == pubKeyHash {
-							delete(s.usernames, u)
-							break
-						}
-					}
-
-					s.usernames[newUsername] = pubKeyHash
-					p.Username = newUsername
-					s.identities[pubKeyHash] = fmt.Sprintf("%s %s@%s", newUsername, newUsername, platform)
-					s.saveUsers()
-					s.mu.Unlock()
-
-					eui.ShowMessage(fmt.Sprintf("Username updated to '%s'.", newUsername), ui.MsgServer)
-					break
-				}
-				s.mu.Unlock()
-				eui.ShowMessage("That username is also taken. Please try another.", ui.MsgServer)
-			}
 		}
 
 		entryUI.OnCmd(func(cmd string) {
@@ -703,11 +662,17 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 		displayName = fmt.Sprintf("%s (%s)", conn.Permissions.Extensions["username"], conn.Permissions.Extensions["platform"])
 	}
 
+	unnUsername := p.Username
+	if conn.Permissions != nil && conn.Permissions.Extensions["username"] != "" {
+		unnUsername = conn.Permissions.Extensions["username"]
+	}
+
 	offerPayload := protocol.PunchOfferPayload{
 		PersonID:    personID,
 		Candidates:  []string{},
 		PersonKey:   personKey,
 		DisplayName: displayName,
+		Username:    unnUsername,
 	}
 	offerMsg, _ := protocol.NewMessage(protocol.MsgTypePunchOffer, offerPayload)
 
@@ -890,7 +855,7 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 	fields := []ui.FormField{
 		{Label: "Platform (github, gitlab, sourcehut, codeberg)", Value: "github"},
 		{Label: "Platform Username", Value: ""},
-		{Label: "UNN Username", Value: sshUser},
+		{Label: "UNN Username", Value: sshUser, MaxLength: 20},
 	}
 
 	for {
@@ -901,6 +866,15 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 		platform := strings.ToLower(strings.TrimSpace(results[0]))
 		platformUser := strings.TrimSpace(results[1])
 		unnUsername := strings.TrimSpace(results[2])
+
+		fields[0].Value = platform
+		fields[1].Value = platformUser
+		fields[2].Value = unnUsername
+
+		// Clear errors
+		for i := range fields {
+			fields[i].Error = ""
+		}
 
 		if platform == "" || platformUser == "" || unnUsername == "" {
 			continue
@@ -915,6 +889,13 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 			}
 		}
 		if !validPlatform {
+			fields[0].Error = "unsupported platform"
+			continue
+		}
+
+		// Length check
+		if len(unnUsername) < 4 {
+			fields[2].Error = "too short"
 			continue
 		}
 
@@ -923,6 +904,7 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 
 		matched, err := s.VerifyIdentity(platform, platformUser, offeredKey)
 		if err != nil {
+			eui.ShowMessage(fmt.Sprintf("\033[1;31mError verifying identity: %v\033[0m", err), ui.MsgServer)
 			continue
 		}
 
@@ -933,6 +915,7 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 			s.mu.RUnlock()
 
 			if taken && ownerHash != pubKeyHash {
+				fields[2].Error = "not available"
 				continue
 			}
 
@@ -943,10 +926,13 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 			s.mu.Unlock()
 
 			p.Username = unnUsername
+			p.UI.SetUsername(unnUsername)
 			conn.Permissions.Extensions["verified"] = "true"
 			conn.Permissions.Extensions["platform"] = platform
 			conn.Permissions.Extensions["username"] = unnUsername
 			return true
+		} else {
+			eui.ShowMessage("\033[1;31mError: Identity not found on platform.\033[0m", ui.MsgServer)
 		}
 	}
 }

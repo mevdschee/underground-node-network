@@ -41,7 +41,7 @@ type Server struct {
 	doorManager     *doors.Manager
 	roomName        string
 	people          map[string]*Person
-	authorizedKeys  map[string]bool // Marshaled pubkey -> true
+	authorizedKeys  map[string]string // Marshaled pubkey -> verified username
 	filesDir        string
 	hostKey         ssh.Signer
 	downloadTimeout time.Duration
@@ -62,7 +62,7 @@ func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doo
 		roomName:        roomName,
 		filesDir:        filesDir,
 		people:          make(map[string]*Person),
-		authorizedKeys:  make(map[string]bool),
+		authorizedKeys:  make(map[string]string),
 		histories:       make(map[string][]ui.Message),
 		bannedHashes:    make(map[string]string),
 		downloadTimeout: 60 * time.Second,
@@ -77,7 +77,7 @@ func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doo
 		defer s.mu.RUnlock()
 
 		marshaled := pubKey.Marshal()
-		if !s.authorizedKeys[string(marshaled)] {
+		if _, ok := s.authorizedKeys[string(marshaled)]; !ok {
 			return nil, fmt.Errorf("public key not authorized for this room")
 		}
 
@@ -110,11 +110,11 @@ func (s *Server) SetUploadLimit(limit int64) {
 	s.mu.Unlock()
 }
 
-func (s *Server) AuthorizeKey(pubKey ssh.PublicKey) {
+func (s *Server) AuthorizeKey(pubKey ssh.PublicKey, username string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.authorizedKeys[string(pubKey.Marshal())] = true
-	log.Printf("Authorized key for person")
+	s.authorizedKeys[string(pubKey.Marshal())] = username
+	log.Printf("Authorized key for person: %s", username)
 }
 
 // SetDownloadTimeout sets the timeout for one-shot SFTP download servers
@@ -323,6 +323,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer sshConn.Close()
 
 	username := sshConn.User()
+	s.mu.RLock()
+	if mappedName, ok := s.authorizedKeys[string(pubKey.Marshal())]; ok && mappedName != "" {
+		username = mappedName
+	}
+	s.mu.RUnlock()
 	log.Printf("Person connected: %s", username)
 
 	// Register person
