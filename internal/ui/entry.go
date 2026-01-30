@@ -24,7 +24,7 @@ type EntryUI struct {
 	banner        *banner.Banner
 	cmdInput      *input.CommandInput
 	registration  *form.Form
-	passwordInput *password.PasswordEntry // Corrected type
+	passwordInput *password.PasswordEntry
 
 	roomsData []RoomInfo
 

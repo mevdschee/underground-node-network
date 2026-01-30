@@ -62,10 +62,11 @@ To become a part of the network and host your own "room":
 - [UNN Client](docs/apps/client.md) - Automated teleportation and navigation tool.
 
 ### [Software Architecture](docs/architecture/README.md)
+- [File Structure](docs/architecture/file-structure.md) - High-level directory tree and component map.
 - [Entrypoint Internals](docs/architecture/entrypoint.md) - Component-level view of the hub.
 - [Room Node Internals](docs/architecture/room.md) - Building blocks of the node server.
 - [Client Internals](docs/architecture/client.md) - Under the hood of the navigation tool.
-- [UI Component Internals](docs/architecture/ui-components.md) - Behavior of sidebars, logs, and forms.
+- [UI Components](docs/architecture/ui-components.md) - Modular TUI architecture, logs, and forms.
 
 ### [Network Concepts](docs/concepts/README.md)
 - [Identity & Verification](docs/concepts/identity.md) - Decentralized trust and key registration.
