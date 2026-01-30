@@ -1,6 +1,6 @@
 ### The Underground Node Network (UNN)
 
-![UNN screenshot](screenshot.png)
+![UNN screenshot](screenshot.png?1)
 
 The Underground Node Network (UNN) is a distributed, SSH‑based digital underworld disguised as a retro‑styled BBS. It runs entirely over standard SSH, requiring no custom client, no special terminal, and no additional software to participate at the basic level. Anyone with ssh or PuTTY can jack in.
 
