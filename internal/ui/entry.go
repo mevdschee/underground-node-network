@@ -93,6 +93,15 @@ func (ui *EntryUI) GetCommandHistory() []string {
 	return ui.cmdInput.History
 }
 
+func (ui *EntryUI) SetChatHistory(messages []Message) {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	ui.logs.Messages = append([]Message{}, messages...)
+	if ui.screen != nil {
+		ui.screen.PostEvent(&tcell.EventInterrupt{})
+	}
+}
+
 func (ui *EntryUI) OnExit(cb func()) {
 	ui.mu.Lock()
 	ui.onExit = cb

@@ -64,8 +64,10 @@ type Server struct {
 	listener      net.Listener
 	headless      bool
 	httpClient    *http.Client
-	identities    map[string]string // keyHash -> "unnUsername platform_username@platform"
-	usernames     map[string]string // unnUsername -> keyHash
+	identities    map[string]string       // keyHash -> "unnUsername platform_username@platform"
+	usernames     map[string]string       // unnUsername -> keyHash
+	histories     map[string][]ui.Message // keyed by pubkey hash (hex)
+	cmdHistories  map[string][]string     // keyed by pubkey hash (hex)
 }
 
 // NewServer creates a new entry point server
@@ -91,8 +93,10 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		identities: make(map[string]string),
-		usernames:  make(map[string]string),
+		identities:   make(map[string]string),
+		usernames:    make(map[string]string),
+		histories:    make(map[string][]ui.Message),
+		cmdHistories: make(map[string][]string),
 	}
 
 	// Load users from single file
@@ -443,6 +447,21 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 		// Initial room list
 		s.updatePersonRooms(p)
 
+		// Replay history
+		if p.PubKeyHash != "" {
+			s.mu.RLock()
+			chatHistory := s.histories[p.PubKeyHash]
+			cmdHistory := s.cmdHistories[p.PubKeyHash]
+			s.mu.RUnlock()
+
+			if len(chatHistory) > 0 {
+				entryUI.SetChatHistory(chatHistory)
+			}
+			if len(cmdHistory) > 0 {
+				entryUI.SetCommandHistory(cmdHistory)
+			}
+		}
+
 		// Process initial command after onboarding is done
 		if p.InitialCommand != "" {
 			s.handlePersonCommand(p, conn, p.InitialCommand)
@@ -476,6 +495,38 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 	}
 
 	conn.Close() // Ensure immediate disconnect
+}
+
+func (s *Server) addMessageToHistory(pubHash string, msg ui.Message) {
+	if pubHash == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	history := s.histories[pubHash]
+	history = append(history, msg)
+	if len(history) > 200 {
+		history = history[1:]
+	}
+	s.histories[pubHash] = history
+}
+
+func (s *Server) addCommandToHistory(pubHash string, cmd string) {
+	if pubHash == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	history := s.cmdHistories[pubHash]
+	// Avoid duplicate consecutive commands
+	if len(history) > 0 && history[len(history)-1] == cmd {
+		return
+	}
+	history = append(history, cmd)
+	if len(history) > 100 {
+		history = history[1:]
+	}
+	s.cmdHistories[pubHash] = history
 }
 
 func loadOrGenerateHostKey(path string) (ssh.Signer, error) {

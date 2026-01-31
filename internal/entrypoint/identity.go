@@ -184,7 +184,7 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 			if strings.Contains(err.Error(), "status 404") {
 				fields[1].Error = "username not found"
 			} else {
-				eui.ShowMessage(fmt.Sprintf("\033[1;31mError verifying identity: %v\033[0m", err), ui.MsgServer)
+				s.showMessage(p, fmt.Sprintf("\033[1;31mError verifying identity: %v\033[0m", err), ui.MsgServer)
 			}
 			continue
 		}

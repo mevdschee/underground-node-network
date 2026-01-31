@@ -36,10 +36,24 @@ func (s *Server) updatePersonRooms(p *Person) {
 	p.UI.SetRooms(uiRooms)
 }
 
+func (s *Server) showMessage(p *Person, text string, msgType ui.MessageType) {
+	if p.UI != nil {
+		p.UI.ShowMessage(text, msgType)
+	}
+	if p.PubKeyHash != "" {
+		s.addMessageToHistory(p.PubKeyHash, ui.Message{Text: text, Type: msgType})
+	}
+}
+
 func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input string) {
 	log.Printf("Person %s command: %s", p.Username, input)
 	input = strings.TrimSpace(input)
-	p.UI.ShowMessage(fmt.Sprintf("> %s", input), ui.MsgCommand)
+
+	if p.PubKeyHash != "" {
+		s.addCommandToHistory(p.PubKeyHash, input)
+	}
+
+	s.showMessage(p, fmt.Sprintf("> %s", input), ui.MsgCommand)
 
 	if strings.HasPrefix(input, "/") {
 		cmdLine := strings.TrimPrefix(input, "/")
@@ -51,36 +65,36 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 
 		switch command {
 		case "help":
-			p.UI.ShowMessage("/help               - Show this help message", ui.MsgServer)
-			p.UI.ShowMessage("/rooms              - List all active rooms", ui.MsgServer)
-			p.UI.ShowMessage("/join <room_name>   - Join a room by name", ui.MsgServer)
-			p.UI.ShowMessage("Ctrl+C              - Exit", ui.MsgServer)
+			s.showMessage(p, "/help               - Show this help message", ui.MsgServer)
+			s.showMessage(p, "/rooms              - List all active rooms", ui.MsgServer)
+			s.showMessage(p, "/join <room_name>   - Join a room by name", ui.MsgServer)
+			s.showMessage(p, "Ctrl+C              - Exit", ui.MsgServer)
 		case "join":
 			if len(parts) < 2 {
-				p.UI.ShowMessage("Usage: /join <room_name>", ui.MsgServer)
+				s.showMessage(p, "Usage: /join <room_name>", ui.MsgServer)
 				return
 			}
 			s.handleRoomJoin(p, conn, parts[1])
 		case "rooms":
 			s.mu.RLock()
 			if len(s.rooms) == 0 {
-				p.UI.ShowMessage("No rooms found.", ui.MsgServer)
+				s.showMessage(p, "No rooms found.", ui.MsgServer)
 			} else {
-				p.UI.ShowMessage("Rooms:", ui.MsgServer)
+				s.showMessage(p, "Rooms:", ui.MsgServer)
 				for _, room := range s.rooms {
-					p.UI.ShowMessage(fmt.Sprintf("• %s (%d) @%s", room.Info.Name, room.Info.PeopleCount, room.Info.Owner), ui.MsgServer)
+					s.showMessage(p, fmt.Sprintf("• %s (%d) @%s", room.Info.Name, room.Info.PeopleCount, room.Info.Owner), ui.MsgServer)
 				}
 			}
 			s.mu.RUnlock()
 		default:
-			p.UI.ShowMessage(fmt.Sprintf("Unknown command: %s", command), ui.MsgServer)
+			s.showMessage(p, fmt.Sprintf("Unknown command: %s", command), ui.MsgServer)
 		}
 		return
 	}
 
 	// Not a command - this is a chat message attempt
-	p.UI.ShowMessage("Chat is disabled in the entry point.", ui.MsgServer)
-	p.UI.ShowMessage("Use /rooms to list rooms and /join <room> to join.", ui.MsgServer)
+	s.showMessage(p, "Chat is disabled in the entry point.", ui.MsgServer)
+	s.showMessage(p, "Use /rooms to list rooms and /join <room> to join.", ui.MsgServer)
 }
 
 func (s *Server) handleRoomJoin(p *Person, conn *ssh.ServerConn, roomName string) {
@@ -90,7 +104,7 @@ func (s *Server) handleRoomJoin(p *Person, conn *ssh.ServerConn, roomName string
 	s.mu.RUnlock()
 
 	if !ok {
-		p.UI.ShowMessage(fmt.Sprintf("Room not found: %s", roomName), ui.MsgServer)
+		s.showMessage(p, fmt.Sprintf("Room not found: %s", roomName), ui.MsgServer)
 		return
 	}
 
@@ -148,7 +162,7 @@ func (s *Server) handleRoomJoin(p *Person, conn *ssh.ServerConn, roomName string
 	case startMsg := <-personChan:
 		var startPayload protocol.PunchStartPayload
 		if err := startMsg.ParsePayload(&startPayload); err != nil {
-			p.UI.ShowMessage(fmt.Sprintf("\033[1;31mError: %v\033[0m", err), ui.MsgServer)
+			s.showMessage(p, fmt.Sprintf("\033[1;31mError: %v\033[0m", err), ui.MsgServer)
 			return
 		}
 
@@ -156,12 +170,12 @@ func (s *Server) handleRoomJoin(p *Person, conn *ssh.ServerConn, roomName string
 		p.TeleportData = &startPayload
 
 		// Final TUI message
-		p.UI.ShowMessage("", ui.MsgSystem)
-		p.UI.ShowMessage(" \033[1;32m✔ Room joined! Teleporting...\033[0m", ui.MsgSystem)
+		s.showMessage(p, "", ui.MsgSystem)
+		s.showMessage(p, " \033[1;32m✔ Room joined! Teleporting...\033[0m", ui.MsgSystem)
 
 		// Close the TUI loop immediately
 		p.UI.Close(true)
 	case <-time.After(10 * time.Second):
-		p.UI.ShowMessage("Timeout waiting for room operator.", ui.MsgServer)
+		s.showMessage(p, "Timeout waiting for room operator.", ui.MsgServer)
 	}
 }
