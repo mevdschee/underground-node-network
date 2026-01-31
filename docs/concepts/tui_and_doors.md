@@ -7,6 +7,7 @@ Every room node provides a live, IRC-inspired chat console.
 - **Sidebars**: Show active users and available doors.
 - **Multiplexing**: The console manages the transition between chat mode and door execution.
 - **History**: Implements an in-memory, key-isolated history system that replays only the messages you were present for.
+- **Commands**: Use `/quit [message]` or `/exit` to leave. `Esc` key is disabled for exits to prevent accidental disconnects.
 
 ### Doors (Local Services)
 Doors are external programs that travelers can run on the room server.
