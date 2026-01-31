@@ -50,7 +50,7 @@ func TestEntrypointCommands(t *testing.T) {
 		logs := p.UI.GetLogs()
 		found := false
 		for _, l := range logs {
-			if strings.Contains(l.Text, "No active rooms.") {
+			if strings.Contains(l.Text, "No rooms found.") {
 				found = true
 				break
 			}

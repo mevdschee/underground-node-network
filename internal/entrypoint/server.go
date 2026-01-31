@@ -436,10 +436,6 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 			p.UI.SetUsername(p.Username)
 		}
 
-		if len(s.banner) > 0 {
-			entryUI.SetBanner(s.banner)
-		}
-
 		entryUI.OnCmd(func(cmd string) {
 			s.handlePersonCommand(p, conn, cmd)
 		})
@@ -447,12 +443,22 @@ func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
 		// Initial room list
 		s.updatePersonRooms(p)
 
-		// Replay history
 		if p.PubKeyHash != "" {
 			s.mu.RLock()
 			chatHistory := s.histories[p.PubKeyHash]
 			cmdHistory := s.cmdHistories[p.PubKeyHash]
 			s.mu.RUnlock()
+
+			if len(chatHistory) == 0 && len(s.banner) > 0 {
+				for _, line := range s.banner {
+					text := strings.TrimRight(line, "\r\n")
+					s.addMessageToHistory(p.PubKeyHash, ui.Message{Text: text, Type: ui.MsgServer})
+				}
+				// Re-fetch history after adding banner
+				s.mu.RLock()
+				chatHistory = s.histories[p.PubKeyHash]
+				s.mu.RUnlock()
+			}
 
 			if len(chatHistory) > 0 {
 				entryUI.SetChatHistory(chatHistory)

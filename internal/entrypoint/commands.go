@@ -13,17 +13,26 @@ import (
 
 func (s *Server) updateAllPeople() {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	people := make([]*Person, 0, len(s.people))
 	for _, p := range s.people {
-		s.updatePersonRooms(p)
+		people = append(people, p)
+	}
+	s.mu.RUnlock()
+
+	rooms := s.GetRooms()
+	for _, p := range people {
+		s.updatePersonRoomsWithData(p, rooms)
 	}
 }
 
 func (s *Server) updatePersonRooms(p *Person) {
+	s.updatePersonRoomsWithData(p, s.GetRooms())
+}
+
+func (s *Server) updatePersonRoomsWithData(p *Person, rooms []protocol.RoomInfo) {
 	if p.UI == nil {
 		return
 	}
-	rooms := s.GetRooms()
 	uiRooms := make([]ui.RoomInfo, 0, len(rooms))
 	for _, r := range rooms {
 		uiRooms = append(uiRooms, ui.RoomInfo{
@@ -77,15 +86,20 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 			s.handleRoomJoin(p, conn, parts[1])
 		case "rooms":
 			s.mu.RLock()
-			if len(s.rooms) == 0 {
+			var rooms []protocol.RoomInfo
+			for _, room := range s.rooms {
+				rooms = append(rooms, room.Info)
+			}
+			s.mu.RUnlock()
+
+			if len(rooms) == 0 {
 				s.showMessage(p, "No rooms found.", ui.MsgServer)
 			} else {
 				s.showMessage(p, "Rooms:", ui.MsgServer)
-				for _, room := range s.rooms {
-					s.showMessage(p, fmt.Sprintf("• %s (%d) @%s", room.Info.Name, room.Info.PeopleCount, room.Info.Owner), ui.MsgServer)
+				for _, room := range rooms {
+					s.showMessage(p, fmt.Sprintf("• %s (%d) @%s", room.Name, room.PeopleCount, room.Owner), ui.MsgServer)
 				}
 			}
-			s.mu.RUnlock()
 		default:
 			s.showMessage(p, fmt.Sprintf("Unknown command: %s", command), ui.MsgServer)
 		}
