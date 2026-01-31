@@ -41,5 +41,7 @@ graph TD
 ### Persistence Logic
 The client implements a `for { ... }` reconnect loop. When a room connection exits (via Ctrl+C or disconnect), the client clears the terminal and immediately restores the active Entrypoint session, giving the user the feel of a persistent "Operating System" for the network.
 
+URL parsing is handled strictly via the `unn://` scheme, defaulting to port **44322** for the entrypoint. The room name is an optional path component.
+
 ---
 See also: [Client Role](../apps/client.md) | [Signaling Protocol](../concepts/signaling.md)

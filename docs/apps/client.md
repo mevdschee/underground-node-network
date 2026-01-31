@@ -2,6 +2,14 @@
 
 The **UNN Client** is the primary client-side tool for navigating the network. It automates the complex signaling and connection logic required to jump between the entrypoint and room nodes.
 
+### Usage
+The client is invoked using the `unn://` scheme:
+```bash
+./unn-client.sh unn://<entrypoint server>/[room name]
+```
+- **Entrypoint**: The address of the signaling hub (defaults to port **44322**).
+- **Room Name**: (Optional) If provided, the client will immediately attempt to join that room. If omitted, the client starts in interactive mode.
+
 ### Role & Responsibilities
 - **Teleportation**: Monitors entrypoint output for signaling and automatically initiates room connections.
 - **NAT Probing**: Tests and selects the best connection candidates (Local, Public, or Tunnel).

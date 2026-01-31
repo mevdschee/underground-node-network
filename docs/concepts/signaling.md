@@ -20,4 +20,4 @@ To provide a seamless experience for visitors, we use invisible **ANSI OSC 9** s
 Using OSC allows the servers to control the client tool without needing a separate network port or a custom protocol. It works over any standard SSH terminal, though only the `unn-client` is "aware" enough to act on the signals.
 
 ---
-See the [OSC Protocol Details](../apps/client.md) for details.
+See the [UNN Client Usage](../apps/client.md#usage) for details on the `unn://` scheme.
