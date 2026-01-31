@@ -93,7 +93,6 @@ func (s *Server) handleCommand(channel ssh.Channel, sessionID string, input stri
 		return nil
 	}
 
-	fmt.Fprintf(channel, "\rUnknown command: %s\r\n", command)
 	return nil
 }
 
@@ -112,9 +111,11 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			s.mu.Unlock()
 		}
 
+		// Always echo the command itself
+		addMessage(cmd, ui.MsgCommand)
+
 		switch command {
 		case "help":
-			addMessage(cmd, ui.MsgCommand)
 			addMessage("--- Available Commands ---", ui.MsgServer)
 			addMessage("/help         - Show this help", ui.MsgServer)
 			addMessage("/people       - List people in room", ui.MsgServer)
@@ -138,7 +139,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			}
 			return true
 		case "people":
-			addMessage(cmd, ui.MsgCommand)
 			s.mu.RLock()
 			people := make([]string, 0, len(s.people))
 			for _, person := range s.people {
@@ -160,7 +160,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			return true
 		case "me":
 			if len(parts) < 2 {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("Usage: /me <action>", ui.MsgServer)
 				return true
 			}
@@ -170,13 +169,11 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			return true
 		case "whisper":
 			if len(parts) < 2 {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("Usage: /whisper <user> <message>", ui.MsgServer)
 				return true
 			}
 			msgParts := strings.SplitN(parts[1], " ", 2)
 			if len(msgParts) < 2 {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("Usage: /whisper <user> <message>", ui.MsgServer)
 				return true
 			}
@@ -194,7 +191,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			s.mu.Unlock()
 
 			if target == nil {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage(fmt.Sprintf("User '%s' not found.", targetName), ui.MsgServer)
 				return true
 			}
@@ -225,12 +221,10 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			return true
 		case "kick":
 			if !s.isOperator(p.PubKey) {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("You do not have operator privileges.", ui.MsgServer)
 				return true
 			}
 			if len(parts) < 2 {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("Usage: /kick <user/hash> [reason]", ui.MsgServer)
 				return true
 			}
@@ -253,7 +247,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			s.mu.Unlock()
 
 			if targetPerson == nil {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("User not found.", ui.MsgServer)
 				return true
 			}
@@ -269,12 +262,10 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			return true
 		case "kickban":
 			if !s.isOperator(p.PubKey) {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("You do not have operator privileges.", ui.MsgServer)
 				return true
 			}
 			if len(parts) < 2 {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("Usage: /kickban <user/hash> [reason]", ui.MsgServer)
 				return true
 			}
@@ -321,12 +312,10 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			return true
 		case "unban":
 			if !s.isOperator(p.PubKey) {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("You do not have operator privileges.", ui.MsgServer)
 				return true
 			}
 			if len(parts) < 2 {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("Usage: /unban <hash>", ui.MsgServer)
 				return true
 			}
@@ -349,7 +338,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			return true
 		case "banlist":
 			if !s.isOperator(p.PubKey) {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("You do not have operator privileges.", ui.MsgServer)
 				return true
 			}
@@ -362,12 +350,10 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			return true
 		case "lock":
 			if !s.isOperator(p.PubKey) {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("You do not have operator privileges.", ui.MsgServer)
 				return true
 			}
 			if len(parts) < 2 {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("Usage: /lock <key>", ui.MsgServer)
 				return true
 			}
@@ -379,7 +365,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			return true
 		case "unlock":
 			if !s.isOperator(p.PubKey) {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("You do not have operator privileges.", ui.MsgServer)
 				return true
 			}
@@ -390,7 +375,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			return true
 		case "kickall":
 			if !s.isOperator(p.PubKey) {
-				addMessage(cmd, ui.MsgCommand)
 				addMessage("You do not have operator privileges.", ui.MsgServer)
 				return true
 			}
@@ -409,7 +393,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			s.mu.Unlock()
 			return true
 		case "get", "download":
-			addMessage(cmd, ui.MsgCommand)
 			if len(parts) < 2 {
 				addMessage("Usage: /get <filename>", ui.MsgServer)
 				return true
@@ -425,7 +408,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			p.ChatUI.ClearMessages()
 			return true
 		case "doors":
-			addMessage(cmd, ui.MsgCommand)
 			doorList := s.doorManager.List()
 			addMessage("--- Available doors ---", ui.MsgServer)
 			for _, door := range doorList {
@@ -434,11 +416,9 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			addMessage("Type /open <door> to launch a program.", ui.MsgServer)
 			return true
 		case "files":
-			addMessage(cmd, ui.MsgCommand)
 			s.showFiles(p.ChatUI)
 			return true
 		case "open":
-			addMessage(cmd, ui.MsgCommand)
 			if len(parts) < 2 {
 				addMessage("Usage: /open <door>", ui.MsgServer)
 				return true
@@ -457,7 +437,13 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			p.ChatUI.Close(true)
 			return true
 		default:
+			// Check if this is a valid door
+			if _, ok := s.doorManager.Get(command); ok {
+				return false // Exit TUI to execute door
+			}
+			addMessage(fmt.Sprintf("Unknown command: %s", command), ui.MsgServer)
+			return true
 		}
 	}
-	return false // Not handled internally, exit Run() to check if it's a door
+	return false
 }
