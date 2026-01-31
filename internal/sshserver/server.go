@@ -599,7 +599,7 @@ func (s *Server) handleInteraction(channel ssh.Channel, sessionID string) {
 		p.Bus.Reset()
 
 		// Handle external "door" command (anything that returned from Run)
-		done := s.handleCommand(channel, username, cmd)
+		done := s.handleCommand(channel, sessionID, cmd)
 		if done != nil {
 			// Wait for door to finish
 			<-done

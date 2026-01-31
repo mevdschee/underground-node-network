@@ -3,6 +3,7 @@ package sshserver
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,4 +242,78 @@ func TestRoomCommands(t *testing.T) {
 			t.Errorf("handleInternalCommand should return false for valid /open")
 		}
 	})
+}
+
+type mockChannel struct {
+	ssh.Channel
+}
+
+func (m *mockChannel) Write(p []byte) (n int, err error) {
+	return len(p), nil
+}
+
+func (m *mockChannel) Read(p []byte) (n int, err error) {
+	return 0, io.EOF
+}
+
+func (m *mockChannel) Close() error {
+	return nil
+}
+
+func (m *mockChannel) Stderr() io.ReadWriter {
+	return nil
+}
+
+func (m *mockChannel) SendRequest(name string, wantReply bool, payload []byte) (bool, error) {
+	return true, nil
+}
+
+func TestHandleCommand(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "unn-handlecommand-test-*")
+	defer os.RemoveAll(tmpDir)
+
+	filesDir := filepath.Join(tmpDir, "files")
+	os.MkdirAll(filesDir, 0755)
+
+	dm := doors.NewManager(tmpDir)
+	// Create a mock door
+	doorPath := filepath.Join(tmpDir, "testdoor")
+	os.WriteFile(doorPath, []byte("#!/bin/sh\necho door-output"), 0755)
+	dm.Scan()
+
+	hostKeyPath := filepath.Join(tmpDir, "host_key")
+	s, err := NewServer("127.0.0.1:0", hostKeyPath, "testroom", filesDir, dm)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	pubAlice, _, _ := ed25519.GenerateKey(rand.Reader)
+	sshAlice, _ := ssh.NewPublicKey(pubAlice)
+
+	sessionID := "alice-session-123"
+	p := &Person{
+		Username:  "alice",
+		SessionID: sessionID,
+		PubKey:    sshAlice,
+	}
+
+	s.mu.Lock()
+	s.people[sessionID] = p
+	s.mu.Unlock()
+
+	channel := &mockChannel{}
+
+	// Test with correct sessionID
+	done := s.handleCommand(channel, sessionID, "/open testdoor")
+	if done == nil {
+		t.Errorf("handleCommand failed to start door with correct sessionID")
+	} else {
+		<-done // Wait for door to exit
+	}
+
+	// Test with username (should fail)
+	doneFails := s.handleCommand(channel, "alice", "/open testdoor")
+	if doneFails != nil {
+		t.Errorf("handleCommand unexpectedly started door with username instead of sessionID")
+	}
 }

@@ -46,7 +46,7 @@ func (s *Server) handleCommand(channel ssh.Channel, sessionID string, input stri
 		}
 		fname := strings.TrimSpace(parts[1])
 		s.mu.RLock()
-		p := s.people[username]
+		p := s.people[sessionID]
 		s.mu.RUnlock()
 		if p != nil {
 			p.PendingDownload = fname
@@ -67,7 +67,7 @@ func (s *Server) handleCommand(channel ssh.Channel, sessionID string, input stri
 			go func() {
 				// Get current person to access bridge
 				s.mu.RLock()
-				p := s.people[username]
+				p := s.people[sessionID]
 				s.mu.RUnlock()
 
 				var input io.Reader = channel
