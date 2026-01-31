@@ -176,7 +176,7 @@ func (s *Server) handleRoomJoin(p *Person, conn *ssh.ServerConn, roomName string
 	case startMsg := <-personChan:
 		var startPayload protocol.PunchStartPayload
 		if err := startMsg.ParsePayload(&startPayload); err != nil {
-			s.showMessage(p, fmt.Sprintf("\033[1;31mError: %v\033[0m", err), ui.MsgServer)
+			s.showMessage(p, fmt.Sprintf("Error: %v", err), ui.MsgServer)
 			return
 		}
 
@@ -185,7 +185,7 @@ func (s *Server) handleRoomJoin(p *Person, conn *ssh.ServerConn, roomName string
 
 		// Final TUI message
 		s.showMessage(p, "", ui.MsgSystem)
-		s.showMessage(p, " \033[1;32m✔ Room joined! Teleporting...\033[0m", ui.MsgSystem)
+		s.showMessage(p, "Room joined! Teleporting...", ui.MsgSystem)
 
 		// Close the TUI loop immediately
 		p.UI.Close(true)
