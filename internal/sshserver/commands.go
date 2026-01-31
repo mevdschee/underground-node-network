@@ -123,6 +123,7 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			addMessage("/get <file>   - Download a file", ui.MsgServer)
 			addMessage("/clear        - Clear your chat history", ui.MsgServer)
 			addMessage("/open <door>  - Open a door (launch program)", ui.MsgServer)
+			addMessage("/quit [msg]   - Leave the room", ui.MsgServer)
 			addMessage("Ctrl+C        - Exit room", ui.MsgServer)
 
 			if s.isOperator(p.PubKey) {
@@ -449,6 +450,12 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			}
 			// Door exists, return false to exit TUI and execute it in handleCommand
 			return false
+		case "quit", "exit":
+			if len(parts) > 1 {
+				p.QuitReason = strings.TrimSpace(parts[1])
+			}
+			p.ChatUI.Close(true)
+			return true
 		default:
 		}
 	}

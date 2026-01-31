@@ -33,6 +33,7 @@ type Person struct {
 	PendingDownload string
 	PubKey          ssh.PublicKey // The specific key used for auth
 	UNNAware        bool
+	QuitReason      string
 }
 
 type Server struct {
@@ -310,11 +311,20 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	defer func() {
 		s.mu.Lock()
+		reason := p.QuitReason
 		if current, ok := s.people[sessionID]; ok && current == p {
 			delete(s.people, sessionID)
 		}
 		s.mu.Unlock()
+
 		log.Printf("Person disconnected: %s", username)
+
+		msg := fmt.Sprintf("* %s left the room", username)
+		if reason != "" {
+			msg = fmt.Sprintf("* %s left the room: %s", username, reason)
+		}
+		s.broadcastWithHistory(p.PubKey, msg, ui.MsgSystem)
+
 		s.updateAllPeople()
 	}()
 

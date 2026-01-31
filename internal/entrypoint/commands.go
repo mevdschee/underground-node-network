@@ -77,6 +77,7 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 			s.showMessage(p, "/help               - Show this help message", ui.MsgServer)
 			s.showMessage(p, "/rooms              - List all active rooms", ui.MsgServer)
 			s.showMessage(p, "/join <room_name>   - Join a room by name", ui.MsgServer)
+			s.showMessage(p, "/quit               - Exit", ui.MsgServer)
 			s.showMessage(p, "Ctrl+C              - Exit", ui.MsgServer)
 		case "join":
 			if len(parts) < 2 {
@@ -100,6 +101,8 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 					s.showMessage(p, fmt.Sprintf("• %s (%d) @%s", room.Name, room.PeopleCount, room.Owner), ui.MsgServer)
 				}
 			}
+		case "quit", "exit":
+			p.UI.Close(false)
 		default:
 			s.showMessage(p, fmt.Sprintf("Unknown command: %s", command), ui.MsgServer)
 		}
@@ -184,7 +187,6 @@ func (s *Server) handleRoomJoin(p *Person, conn *ssh.ServerConn, roomName string
 		p.TeleportData = &startPayload
 
 		// Final TUI message
-		s.showMessage(p, "", ui.MsgSystem)
 		s.showMessage(p, "Room joined! Teleporting...", ui.MsgSystem)
 
 		// Close the TUI loop immediately

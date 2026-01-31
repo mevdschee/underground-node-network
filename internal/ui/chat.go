@@ -234,7 +234,7 @@ func (ui *ChatUI) Run() string {
 		case *tcell.EventInterrupt:
 			// Just redraw
 		case *tcell.EventKey:
-			if ev.Key() == tcell.KeyCtrlC || ev.Key() == tcell.KeyEscape {
+			if ev.Key() == tcell.KeyCtrlC {
 				ui.Close(false)
 				return ""
 			}
