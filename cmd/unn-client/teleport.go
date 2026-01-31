@@ -23,15 +23,15 @@ import (
 	"golang.org/x/term"
 )
 
-func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
+func teleport(unnUrl string, identPath string, verbose bool, batch bool) error {
 	// Parse the SSH URL
-	u, err := url.Parse(sshURL)
+	u, err := url.Parse(unnUrl)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 
-	if u.Scheme != "ssh" {
-		return fmt.Errorf("URL must use ssh:// scheme")
+	if u.Scheme != "unn" {
+		return fmt.Errorf("URL must use unn:// scheme")
 	}
 
 	// Extract components
@@ -42,7 +42,7 @@ func teleport(sshURL string, identPath string, verbose bool, batch bool) error {
 
 	// Default port if not specified
 	if !strings.Contains(entrypoint, ":") {
-		entrypoint += ":22"
+		entrypoint += ":44322"
 	}
 
 	username := u.User.Username()

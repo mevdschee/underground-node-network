@@ -1,5 +1,5 @@
 #!/bin/bash
-# UNN Client - Teleport to rooms using ssh:// URLs
+# UNN Client - Teleport to rooms using unn:// URLs
 
 cd "$(dirname "$0")"
 

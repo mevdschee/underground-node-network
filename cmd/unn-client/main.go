@@ -88,12 +88,13 @@ var globalStdinManager StdinManager
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] ssh://entrypoint[:port]/roomname\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] unn://entrypoint[:port]/[roomname]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nTeleport to a UNN room via SSH.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  %s ssh://localhost:44322/myroom\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s unn://localhost/myroom\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s unn://localhost (interactive mode)\n", os.Args[0])
 	}
 
 	verbose := flag.Bool("v", false, "Verbose output")
@@ -106,10 +107,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	sshURL := flag.Arg(0)
+	unnUrl := flag.Arg(0)
 	// Ignore SIGINT so it's passed as a byte to the SSH sessions
 	signal.Ignore(os.Interrupt)
-	if err := teleport(sshURL, *identity, *verbose, *batch); err != nil {
+	if err := teleport(unnUrl, *identity, *verbose, *batch); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 }

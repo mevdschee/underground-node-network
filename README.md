@@ -25,13 +25,14 @@ The easiest way to explore the network is using the `unn-client.sh` tool:
 
 ### Teleport to a Room
 ```bash
-./unn-client.sh ssh://localhost:44322/roomname
+./unn-client.sh unn://localhost/roomname
 ```
+*Note: The port defaults to **44322** if not specified.*
 
 ### Interactive Exploration
 If you don't specify a room, you'll enter the entry point's interactive TUI:
 ```bash
-./unn-client.sh ssh://localhost:44322
+./unn-client.sh unn://localhost
 ```
 From here you can:
 - List active rooms with `/rooms`
