@@ -42,7 +42,7 @@ From here you can:
 If you're not using the client, you can connect directly using any SSH client. The entry point and room nodes provide **precalculated host fingerprints** (standard SHA256 base64 format) and **file verification signatures** (hex-encoded SHA256) for easy manual verification.
 
 ### Persistent Navigation
-The client is persistent—when you exit a room (via `/quit [message]`, `/exit` or **Ctrl+C**), you are automatically returned to the entry point. The system uses **invisible ANSI OSC 9 signaling** to coordinate teleports and file transfers, ensuring a clean visual experience. It also supports **window resizing**, **Ctrl+C interruption** for doors, and **integrated block-based file downloads** over the existing SSH channel with **SHA256 integrity verification** and **server-side rate limiting**.
+The client is persistent—when you exit a room (via `/quit [message]`, `/exit` or **Ctrl+C**), you are automatically returned to the entry point. The system uses **invisible ANSI OSC 9 signaling** to coordinate teleports and file transfers, ensuring a clean visual experience. It also supports **window resizing**, **Ctrl+C interruption** for doors, and an **integrated Zmodem‑like block‑based file transfer protocol** that works over the existing SSH channel with **SHA256 integrity verification** and **server‑side rate limiting**.
 
 ## Hosting a Node
 

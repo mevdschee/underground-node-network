@@ -11,9 +11,10 @@ The client is invoked using the `unn://` scheme:
 - **Room Name**: (Optional) If provided, the client will immediately attempt to join that room. If omitted, the client starts in interactive mode.
 - **Downloads**: Use `-downloads <path>` to specify where files are saved (defaults to `~/Downloads`).
 
-### Robust File Transfers
-The client implements a resilient block-based transfer mechanism:
-- **Resumption**: Blocks are stored as NDJSON in `.parts` files, allowing for future resumption if interrupted (coming soon).
+### Zmodem-style File Transfers
+The client implements a resilient, **Zmodem-like block-based transfer mechanism**:
+- **In-band streaming**: Files are sent directly over the active SSH terminal using hidden OSC signals.
+- **Resilient Reassembly**: Blocks are stored as NDJSON in `.parts` files, allowing for future completion of interrupted transfers.
 - **Collision Avoidance**: If a file already exists in the download directory, the client automatically appends a number (e.g., `file (1).ext`) to prevent overwriting data.
 - **Integrity**: Each transfer is verified with a SHA256 checksum after reassembly.
 
