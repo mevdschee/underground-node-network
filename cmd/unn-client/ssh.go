@@ -50,6 +50,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		Auth:            entrypointConfig.Auth,
 		HostKeyCallback: hostKeyCallback,
 		Timeout:         10 * time.Second,
+		ClientVersion:   "SSH-2.0-UNN-CLIENT",
 	}
 
 	// Try each candidate
