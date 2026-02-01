@@ -28,5 +28,12 @@ To avoid opening additional ports or requiring secondary SSH channels, UNN uses 
 ### Why OSC?
 Using OSC allows the servers to control the client tool without needing a separate network port or a custom protocol. It works over any standard SSH terminal, though only the `unn-client` is "aware" enough to act on the signals.
 
+## Message Parameter Reference
+
+Detailed parameter documentation is split into separate files for clarity:
+
+- [**Out-of-Band (Control Subsystem)**](signaling_oob.md) - Messages between nodes for coordination.
+- [**In-Band (ANSI OSC 9)**](signaling_inband.md) - Signals embedded in terminal output for client automation.
+
 ---
 See the [UNN Client Usage](../apps/client.md#usage) for details on the `unn://` scheme.
