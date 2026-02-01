@@ -18,13 +18,9 @@ func TestRoomCommands(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "unn-room-test-*")
 	defer os.RemoveAll(tmpDir)
 
-	filesDir := filepath.Join(tmpDir, "files")
-	os.MkdirAll(filesDir, 0755)
-	os.WriteFile(filepath.Join(filesDir, "test.txt"), []byte("hello"), 0644)
-
 	dm := doors.NewManager(tmpDir)
 	hostKeyPath := filepath.Join(tmpDir, "host_key")
-	s, err := NewServer("127.0.0.1:0", hostKeyPath, "testroom", filesDir, dm)
+	s, err := NewServer("127.0.0.1:0", hostKeyPath, "testroom", dm)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -235,9 +231,6 @@ func TestHandleCommand(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "unn-handlecommand-test-*")
 	defer os.RemoveAll(tmpDir)
 
-	filesDir := filepath.Join(tmpDir, "files")
-	os.MkdirAll(filesDir, 0755)
-
 	dm := doors.NewManager(tmpDir)
 	// Create a mock door
 	doorPath := filepath.Join(tmpDir, "testdoor")
@@ -245,7 +238,7 @@ func TestHandleCommand(t *testing.T) {
 	dm.Scan()
 
 	hostKeyPath := filepath.Join(tmpDir, "host_key")
-	s, err := NewServer("127.0.0.1:0", hostKeyPath, "testroom", filesDir, dm)
+	s, err := NewServer("127.0.0.1:0", hostKeyPath, "testroom", dm)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}

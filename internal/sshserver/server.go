@@ -36,39 +36,34 @@ type Person struct {
 }
 
 type Server struct {
-	address         string
-	config          *ssh.ServerConfig
-	doorManager     *doors.Manager
-	roomName        string
-	people          map[string]*Person
-	authorizedKeys  map[string]string // Marshaled pubkey -> verified username
-	filesDir        string
-	hostKey         ssh.Signer
-	downloadTimeout time.Duration
-	mu              sync.RWMutex
-	listener        net.Listener
-	headless        bool
-	uploadLimit     int64                   // bytes per second
-	histories       map[string][]ui.Message // keyed by pubkey hash (hex)
-	cmdHistories    map[string][]string     // keyed by pubkey hash (hex)
-	bannedHashes    map[string]string       // hash -> reason
-	roomLockKey     string
-	operatorPubKey  ssh.PublicKey
-	OnPeopleChange  func(int)
+	address        string
+	config         *ssh.ServerConfig
+	doorManager    *doors.Manager
+	roomName       string
+	people         map[string]*Person
+	authorizedKeys map[string]string // Marshaled pubkey -> verified username
+	hostKey        ssh.Signer
+	mu             sync.RWMutex
+	listener       net.Listener
+	headless       bool
+	histories      map[string][]ui.Message // keyed by pubkey hash (hex)
+	cmdHistories   map[string][]string     // keyed by pubkey hash (hex)
+	bannedHashes   map[string]string       // hash -> reason
+	roomLockKey    string
+	operatorPubKey ssh.PublicKey
+	OnPeopleChange func(int)
 }
 
-func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doors.Manager) (*Server, error) {
+func NewServer(address, hostKeyPath, roomName string, doorManager *doors.Manager) (*Server, error) {
 	s := &Server{
-		address:         address,
-		doorManager:     doorManager,
-		roomName:        roomName,
-		filesDir:        filesDir,
-		people:          make(map[string]*Person),
-		authorizedKeys:  make(map[string]string),
-		histories:       make(map[string][]ui.Message),
-		cmdHistories:    make(map[string][]string),
-		bannedHashes:    make(map[string]string),
-		downloadTimeout: 60 * time.Second,
+		address:        address,
+		doorManager:    doorManager,
+		roomName:       roomName,
+		people:         make(map[string]*Person),
+		authorizedKeys: make(map[string]string),
+		histories:      make(map[string][]ui.Message),
+		cmdHistories:   make(map[string][]string),
+		bannedHashes:   make(map[string]string),
 	}
 
 	config := &ssh.ServerConfig{
@@ -103,14 +98,12 @@ func NewServer(address, hostKeyPath, roomName, filesDir string, doorManager *doo
 	return s, nil
 }
 
-func (s *Server) SetHeadless(headless bool) {
-	s.headless = headless
+func (s *Server) GetHostKey() ssh.Signer {
+	return s.hostKey
 }
 
-func (s *Server) SetUploadLimit(limit int64) {
-	s.mu.Lock()
-	s.uploadLimit = limit
-	s.mu.Unlock()
+func (s *Server) SetHeadless(headless bool) {
+	s.headless = headless
 }
 
 func (s *Server) AuthorizeKey(pubKey ssh.PublicKey, username string) {
@@ -118,13 +111,6 @@ func (s *Server) AuthorizeKey(pubKey ssh.PublicKey, username string) {
 	defer s.mu.Unlock()
 	s.authorizedKeys[string(pubKey.Marshal())] = username
 	log.Printf("Authorized key for person: %s", username)
-}
-
-// SetDownloadTimeout sets the timeout for one-shot SFTP download servers
-func (s *Server) SetDownloadTimeout(timeout time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.downloadTimeout = timeout
 }
 
 // Start begins listening for SSH connections

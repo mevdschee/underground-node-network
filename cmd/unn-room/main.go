@@ -5,11 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 
 	"time"
@@ -28,14 +24,9 @@ func main() {
 	bind := flag.String("bind", "127.0.0.1", "Address to bind to")
 	doorsDir := flag.String("doors", "./doors", "Directory containing door executables")
 	roomName := flag.String("room", "anonymous", "Name of your room")
-	username := flag.String("user", "", "Username to use for entry point connection (defaults to room name)")
-	identity := flag.String("identity", "", "Path to user private key for authentication (defaults to ~/.unn/user_key)")
 	hostKey := flag.String("hostkey", "", "Path to SSH host key (auto-generated if not specified)")
 	entryPointAddr := flag.String("entrypoint", "", "Entry point address (e.g., localhost:44322)")
-	filesDir := flag.String("files", "./files", "Directory to serve files from")
-	downloadTimeout := flag.Int("timeout", 60, "Timeout for one-shot SFTP download in seconds")
 	headless := flag.Bool("headless", false, "Disable TUI (headless mode)")
-	maxUpload := flag.String("max-upload", "", "Maximum upload speed (e.g. 1MB, 500KB)")
 	flag.Parse()
 
 	// Set default host key path to ephemeral file
@@ -63,14 +54,9 @@ func main() {
 		log.Printf("No doors found in %s", *doorsDir)
 	}
 
-	// Initialize doors and files
-	if err := os.MkdirAll(*filesDir, 0700); err != nil {
-		log.Printf("Warning: Could not create files directory: %v", err)
-	}
-
 	// Create and start SSH server
 	address := fmt.Sprintf("%s:%d", *bind, *port)
-	server, err := sshserver.NewServer(address, *hostKey, *roomName, *filesDir, doorManager)
+	server, err := sshserver.NewServer(address, *hostKey, *roomName, doorManager)
 	if err != nil {
 		log.Fatalf("Failed to create SSH server: %v", err)
 	}
@@ -79,10 +65,6 @@ func main() {
 		log.Fatalf("Failed to start SSH server: %v", err)
 	}
 	server.SetHeadless(*headless)
-	server.SetDownloadTimeout(time.Duration(*downloadTimeout) * time.Second)
-	if *maxUpload != "" {
-		server.SetUploadLimit(parseSpeed(*maxUpload))
-	}
 
 	// Get actual port (important when port 0 is used for random port)
 	actualPort := server.GetPort()
@@ -93,44 +75,9 @@ func main() {
 	// Connect to entry point if specified
 	var epClient *entrypoint.Client
 	if *entryPointAddr != "" {
-		// Determine username
-		epUser := *username
-		if epUser == "" {
-			epUser = *roomName
-		}
-
-		// Load identity key
-		var signer ssh.Signer
-
-		if *identity != "" {
-			// Specific key requested
-			var err error
-			signer, err = loadKey(*identity)
-			if err != nil {
-				log.Fatalf("Failed to load identity key %s: %v", *identity, err)
-			}
-			log.Printf("Using identity: %s", *identity)
-		} else {
-			// Try standard SSH keys
-			homeDir, _ := os.UserHomeDir()
-			possibleKeys := []string{
-				filepath.Join(homeDir, ".ssh", "id_ed25519"),
-				filepath.Join(homeDir, ".ssh", "id_rsa"),
-			}
-
-			for _, keyPath := range possibleKeys {
-				s, err := loadKey(keyPath)
-				if err == nil {
-					signer = s
-					log.Printf("Using system identity: %s", keyPath)
-					break
-				}
-			}
-
-			if signer == nil {
-				log.Fatalf("No SSH identity found. Please specify -identity or ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists.")
-			}
-		}
+		// Use room name as username, and host key as identity
+		epUser := *roomName
+		signer := server.GetHostKey()
 
 		log.Printf("Connecting to entry point: %s as %s", *entryPointAddr, epUser)
 
@@ -227,63 +174,4 @@ func main() {
 		epClient.Close()
 	}
 	server.Stop()
-}
-
-func loadKey(path string) (ssh.Signer, error) {
-	keyBytes, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return ssh.ParsePrivateKey(keyBytes)
-}
-
-func loadOrGenerateKey(path string) (ssh.Signer, error) {
-	keyBytes, err := os.ReadFile(path)
-	if err == nil {
-		return ssh.ParsePrivateKey(keyBytes)
-	}
-
-	log.Printf("Generating new user key at %s", path)
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return nil, err
-	}
-	// Use ssh-keygen to generate a proper OpenSSH format key
-	cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-f", path, "-N", "", "-q")
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ssh-keygen failed: %w", err)
-	}
-
-	keyBytes, err = os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	return ssh.ParsePrivateKey(keyBytes)
-}
-
-func parseSpeed(s string) int64 {
-	if s == "" {
-		return 0
-	}
-	s = strings.ToUpper(s)
-	unit := int64(1)
-	if strings.HasSuffix(s, "KB") {
-		unit = 1024
-		s = s[:len(s)-2]
-	} else if strings.HasSuffix(s, "MB") {
-		unit = 1024 * 1024
-		s = s[:len(s)-2]
-	} else if strings.HasSuffix(s, "GB") {
-		unit = 1024 * 1024 * 1024
-		s = s[:len(s)-2]
-	} else if strings.HasSuffix(s, "K") {
-		unit = 1024
-		s = s[:len(s)-1]
-	} else if strings.HasSuffix(s, "M") {
-		unit = 1024 * 1024
-		s = s[:len(s)-1]
-	}
-
-	val, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-	return val * unit
 }
