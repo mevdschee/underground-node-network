@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -100,6 +101,9 @@ func main() {
 	verbose := flag.Bool("v", false, "Verbose output")
 	identity := flag.String("identity", "", "Path to private key for authentication")
 	batch := flag.Bool("batch", false, "Non-interactive batch mode")
+	homeDir, _ := os.UserHomeDir()
+	defaultDownloads := filepath.Join(homeDir, "Downloads")
+	downloads := flag.String("downloads", defaultDownloads, "Directory for file downloads")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
@@ -110,7 +114,7 @@ func main() {
 	unnUrl := flag.Arg(0)
 	// Ignore SIGINT so it's passed as a byte to the SSH sessions
 	signal.Ignore(os.Interrupt)
-	if err := teleport(unnUrl, *identity, *verbose, *batch); err != nil {
+	if err := teleport(unnUrl, *identity, *verbose, *batch, *downloads); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 }

@@ -14,10 +14,9 @@ The user-hosting environment.
 
 ### [UNN Client](client.md) (`unn-client`)
 The automated navigation tool.
-- **Role**: High-speed teleportation and download management.
+- **Role**: High-speed teleportation and integrated block-based downloads.
 - **Vibe**: The professional's tool for traversing the mesh.
 
 ---
 ### Other Tools
-- **[Download Tool](download-tool.md)** (`unn-dl`): A standalone terminal-reactive download client.
 - **`unn-intro`**: The introductory tutorial and story engine.

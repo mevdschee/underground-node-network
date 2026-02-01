@@ -138,6 +138,10 @@ func (d *OSCDetector) Write(p []byte) (n int, err error) {
 							d.handler(action, payload)
 						}
 					}
+					// Always pass through OSC sequences to the underlying writer
+					if _, err := d.w.Write([]byte(oscStr)); err != nil {
+						return i, err
+					}
 				} else {
 					if _, err := d.w.Write([]byte(oscStr)); err != nil {
 						return i, err

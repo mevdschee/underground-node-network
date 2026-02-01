@@ -9,9 +9,7 @@ This document provides an overview of the directory structure and the main compo
 ├── cmd/                # Executable entry points
 │   ├── unn-entrypoint/ # Main entrypoint server
 │   ├── unn-room/       # Room server (P2P host)
-│   ├── unn-dl/         # File download tool
-│   ├── unn-intro/      # Interactive project intro
-│   └── test-dl-server/ # Mock server for testing downloads
+│   └── unn-intro/      # Interactive project intro
 ├── internal/           # Core library and logic (internal to UNN)
 │   ├── entrypoint/     # Entrypoint server logic & hub
 │   ├── sshserver/      # Room SSH server implementation
@@ -27,7 +25,6 @@ This document provides an overview of the directory structure and the main compo
 │   │   └── sidebar/    # Status and navigation sidebars
 │   ├── protocol/       # Shared JSON messaging protocol
 │   ├── nat/            # Hole-punching and STUN logic
-│   ├── fileserver/     # SFTP/HTTP storage layer
 │   └── doors/          # Door (mod) management
 ├── docs/               # Project documentation
 │   ├── apps/           # Application-specific guides
@@ -42,7 +39,6 @@ This document provides an overview of the directory structure and the main compo
 ### Executables (`cmd/`)
 - **unn-entrypoint**: The central hub that manages room registration and NAT signaling.
 - **unn-room**: The host software that turns a local SSH server into a network node.
-- **unn-dl**: A specialized tool for secure, resumed file downloads over the UNN fabric.
 - **unn-intro**: A visual demonstration tool to introduce users to the UNN concepts.
 
 ### Internal Logic (`internal/`)
@@ -50,7 +46,6 @@ This document provides an overview of the directory structure and the main compo
 - **ui/**: A modular TUI library built on `tcell`, tailored for the UNN's aesthetic and functional needs.
 - **protocol/**: Defines the common JSON structures used for signaling between nodes.
 - **nat/**: Implements the P2P fabric logic, including STUN-based candidate gathering and hole-punching.
-- **fileserver/**: Manages file access and transfers, including rate limiting and security checks.
 - **doors/**: Handles the execution and communication with "Doors" (external programs piped into the TUI).
 
 ### Documentation (`docs/`)

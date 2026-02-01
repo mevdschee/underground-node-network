@@ -88,21 +88,23 @@ type PunchStartPayload struct {
 	StartTime  int64    `json:"start_time"`  // Unix timestamp to sync start
 }
 
-// DownloadPayload is sent by the server to trigger a file download in the client
-type DownloadPayload struct {
-	Action     string `json:"action,omitempty"`
-	Filename   string `json:"filename" yaml:"filename"`
-	Port       int    `json:"port" yaml:"port"`
-	TransferID string `json:"transfer_id" yaml:"transfer_id"`
-	Signature  string `json:"signature" yaml:"signature"`
-}
-
 // PopupPayload is sent to show a formatted popup message in the client
 type PopupPayload struct {
 	Action  string `json:"action,omitempty"`
 	Title   string `json:"title"`
 	Message string `json:"message"`
 	Type    string `json:"type,omitempty"` // e.g., "info", "warning", "error"
+}
+
+// FileBlockPayload is sent by the server to transfer a file in blocks via OSC
+type FileBlockPayload struct {
+	Action   string `json:"action,omitempty"`
+	Filename string `json:"filename"`
+	ID       string `json:"id"`
+	Count    int    `json:"count"`
+	Index    int    `json:"index"`
+	Checksum string `json:"checksum"`
+	Data     string `json:"data"` // Base64 encoded data
 }
 
 // NewMessage creates a new message with the given type and payload

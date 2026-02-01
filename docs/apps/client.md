@@ -9,6 +9,13 @@ The client is invoked using the `unn://` scheme:
 ```
 - **Entrypoint**: The address of the signaling hub (defaults to port **44322**).
 - **Room Name**: (Optional) If provided, the client will immediately attempt to join that room. If omitted, the client starts in interactive mode.
+- **Downloads**: Use `-downloads <path>` to specify where files are saved (defaults to `~/Downloads`).
+
+### Robust File Transfers
+The client implements a resilient block-based transfer mechanism:
+- **Resumption**: Blocks are stored as NDJSON in `.parts` files, allowing for future resumption if interrupted (coming soon).
+- **Collision Avoidance**: If a file already exists in the download directory, the client automatically appends a number (e.g., `file (1).ext`) to prevent overwriting data.
+- **Integrity**: Each transfer is verified with a SHA256 checksum after reassembly.
 
 ### Role & Responsibilities
 - **Teleportation**: Monitors entrypoint output for signaling and automatically initiates room connections.

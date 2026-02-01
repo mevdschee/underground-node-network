@@ -3,17 +3,15 @@ package sshserver
 import (
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/mevdschee/underground-node-network/internal/fileserver"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/ui"
 	"github.com/mevdschee/underground-node-network/internal/ui/common"
@@ -112,8 +110,10 @@ func (s *Server) SendOSC(p *Person, action string, params map[string]interface{}
 }
 
 func (s *Server) HandleOSC(p *Person, action string, params map[string]interface{}) {
+	if action == "transfer_block" {
+		return
+	}
 	log.Printf("Received OSC from %s: %s %v", p.Username, action, params)
-	// Handle OSC messages from client or doors if needed
 }
 
 func (s *Server) showFiles(chatUI *ui.ChatUI) {
@@ -175,6 +175,68 @@ func (s *Server) showFiles(chatUI *ui.ChatUI) {
 	}
 }
 
+func (s *Server) sendOSCFileBlocks(p *Person, filePath string, filename string) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Fprintf(p.Bus, "\033[1;31mError opening file: %v\033[0m\r\n", err)
+		return
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		fmt.Fprintf(p.Bus, "\033[1;31mError stating file: %v\033[0m\r\n", err)
+		return
+	}
+
+	const blockSize = 8192
+	count := int((info.Size() + blockSize - 1) / blockSize)
+	buf := make([]byte, blockSize)
+
+	transferID := uuid.New().String()
+	checksum := s.calculateFileSHA256(filePath)
+
+	s.mu.RLock()
+	limit := s.uploadLimit
+	s.mu.RUnlock()
+
+	var blockDelay time.Duration
+	if limit > 0 {
+		blockDelay = time.Duration(float64(blockSize) / float64(limit) * float64(time.Second))
+	}
+
+	for i := 0; i < count; i++ {
+		n, err := file.Read(buf)
+		if err != nil && err != io.EOF {
+			fmt.Fprintf(p.Bus, "\033[1;31rError reading file: %v\033[0m\r\n", err)
+			return
+		}
+
+		payload := protocol.FileBlockPayload{
+			Action:   "transfer_block",
+			Filename: filename,
+			ID:       transferID,
+			Count:    count,
+			Index:    i,
+			Checksum: checksum,
+			Data:     base64.StdEncoding.EncodeToString(buf[:n]),
+		}
+
+		s.SendOSC(p, "transfer_block", map[string]interface{}{
+			"filename": payload.Filename,
+			"id":       payload.ID,
+			"count":    payload.Count,
+			"index":    payload.Index,
+			"checksum": payload.Checksum,
+			"data":     payload.Data,
+		})
+
+		if blockDelay > 0 {
+			time.Sleep(blockDelay)
+		}
+	}
+}
+
 func (s *Server) showDownloadInfo(p *Person, filename string) {
 	if filename == "" {
 		return
@@ -199,77 +261,22 @@ func (s *Server) showDownloadInfo(p *Person, filename string) {
 
 	filename = cleanTarget
 
-	transferID := uuid.New().String()
-
-	// Start one-shot server
-	s.mu.RLock()
-	dt := s.downloadTimeout
-	s.mu.RUnlock()
-
-	filePort, err := fileserver.StartOneShot(fileserver.Options{
-		HostKey:     s.hostKey,
-		ClientKey:   p.PubKey,
-		Filename:    filename,
-		BaseDir:     s.filesDir,
-		TransferID:  transferID,
-		Timeout:     dt,
-		UploadLimit: s.uploadLimit,
-	})
-	if err != nil {
-		fmt.Fprintf(p.Bus, "\033[1;31mFailed to start download server: %v\033[0m\r\n", err)
-		return
-	}
+	filename = cleanTarget
 
 	// Always clear screen before showing download info
 	// First reset colors to avoid the black background from sticking around
 	fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 
-	// Calculate file signature early to include it in the client's download block
-	sig := s.calculateFileSHA256(absPath)
+	fmt.Fprintf(p.Bus, "\033[1;32mUNN DOWNLOAD STARTING (OSC)\033[0m\r\n\r\n")
+	fmt.Fprintf(p.Bus, "The client is downloading '%s' via OSC blocks.\r\n", filename)
 
-	data := protocol.DownloadPayload{
-		Filename:   filename,
-		Port:       filePort,
-		TransferID: transferID,
-		Signature:  sig,
-	}
+	s.sendOSCFileBlocks(p, path, filename)
 
-	// Emit invisible ANSI OSC 9 sequence with download data
-	data.Action = "download"
-	jsonData, _ := json.Marshal(data)
-	fmt.Fprintf(p.Bus, "\033]9;%s\007", string(jsonData))
-
-	fmt.Fprintf(p.Bus, "\033[1;32mUNN DOWNLOAD READY\033[0m\r\n\r\n")
-	fmt.Fprintf(p.Bus, "The client is automatically downloading the file to your Downloads folder.\r\n")
-	fmt.Fprintf(p.Bus, " \r\n")
-	fmt.Fprintf(p.Bus, "\033[1;33mNote: The transfer must start within %d seconds.\033[0m\r\n", int(dt.Seconds()))
-
-	fmt.Fprintf(p.Bus, "If the client fails, you can download manually using:\r\n\r\n")
-
-	// Get actual address for manual instruction
-	host, _, _ := net.SplitHostPort(s.address)
-	if host == "" || host == "0.0.0.0" || host == "127.0.0.1" || host == "::" {
-		host = "localhost"
-	}
-
-	fmt.Fprintf(p.Bus, "  \033[1;36mscp -P %d %s:%s ~/Downloads/%s\033[0m\r\n\r\n", filePort, host, transferID, filepath.Base(filename))
-
-	// Display the host key fingerprint so the user can verify it
-	fingerprint := s.calculateHostKeyFingerprint()
-	fmt.Fprintf(p.Bus, "\033[1mHost Verification Fingerprint (tunnel):\033[0m\r\n")
-	fmt.Fprintf(p.Bus, "\033[1;36m%s\033[0m\r\n\r\n", fingerprint)
-
-	// Display the file signature (matching entrypoint style)
-	fmt.Fprintf(p.Bus, "\033[1mFile Verification Signature:\033[0m\r\n")
-	fmt.Fprintf(p.Bus, "\033[1;36m%s  %s\033[0m\r\n\r\n", sig, filename)
-
-	fmt.Fprintf(p.Bus, "Disconnecting to allow the transfer...\r\n")
+	fmt.Fprintf(p.Bus, "\r\n\033[1;32mDOWNLOAD COMPLETE\033[0m\r\n")
+	time.Sleep(1 * time.Second)
 
 	// Consume the data
 	p.PendingDownload = ""
-
-	// Give the client documentation and time to start the download.
-	// The connection will stay open until the person disconnects.
 }
 
 func (s *Server) calculateFileSHA256(path string) string {

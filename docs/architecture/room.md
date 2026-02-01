@@ -14,7 +14,6 @@ graph TD
     subgraph "Core Server"
         Srv[Room SSH Server]
         Doors[Door Manager]
-        FileSrv[File Server Manager]
     end
 
     subgraph "Interactive Layer"
@@ -26,7 +25,6 @@ graph TD
     EPClient <--> NAT
     EPClient -- "Registration" --> ExternalEP[Entrypoint Hub]
     Srv --> Doors
-    Srv --> FileSrv
     Srv --> Bridge
     Bridge --> Bus
     Bus --> TUI
@@ -35,9 +33,8 @@ graph TD
 
 ### Key Modules
 
-- **SSH Server (`internal/sshserver`)**: A customized `crypto/ssh` server that implements the UNN authentication model (handover-trust) and manages the multiplexing between the chat console and active doors.
+- **SSH Server (`internal/sshserver`)**: A customized `crypto/ssh` server that implements the UNN authentication model (handover-trust). It manages the multiplexing between the chat console and active doors, and handles **OSC-based inbound file transfers**.
 - **Door Manager (`internal/doors`)**: Responsible for scanning a local directory for executables and managing their lifecycle (execution, TTY allocation, and cleanup).
-- **File Server Manager**: Spawns ephemeral, one-shot SFTP servers (`internal/fileserver`) on random ports for secure, authenticated file transfers.
 - **NAT Discovery (`internal/nat`)**: Uses STUN and local interface enumeration to gather connectivity "candidates" for P2P hole-punching.
 
 ### Process Isolation

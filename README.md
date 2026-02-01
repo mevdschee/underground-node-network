@@ -27,7 +27,7 @@ The easiest way to explore the network is using the `unn-client.sh` tool:
 ```bash
 ./unn-client.sh unn://localhost/roomname
 ```
-*Note: The port defaults to **44322** if not specified.*
+*Note: The port defaults to **44322** if not specified. You can specify a download directory with `-downloads /path/to/dir` (defaults to `~/Downloads`).*
 
 ### Interactive Exploration
 If you don't specify a room, you'll enter the entry point's interactive TUI:
@@ -42,7 +42,7 @@ From here you can:
 If you're not using the client, you can connect directly using any SSH client. The entry point and room nodes provide **precalculated host fingerprints** (standard SHA256 base64 format) and **file verification signatures** (hex-encoded SHA256) for easy manual verification.
 
 ### Persistent Navigation
-The client is persistent—when you exit a room (via `/quit [message]`, `/exit` or **Ctrl+C**), you are automatically returned to the entry point. The system uses **invisible ANSI OSC 9 signaling** to coordinate teleports and file downloads, ensuring a clean visual experience. It also supports **window resizing**, **Ctrl+C interruption** for doors, and **automated file downloads** via a secure, one-shot SFTP server with **mutual authentication** and **filename obfuscation**.
+The client is persistent—when you exit a room (via `/quit [message]`, `/exit` or **Ctrl+C**), you are automatically returned to the entry point. The system uses **invisible ANSI OSC 9 signaling** to coordinate teleports and file transfers, ensuring a clean visual experience. It also supports **window resizing**, **Ctrl+C interruption** for doors, and **integrated block-based file downloads** over the existing SSH channel with **SHA256 integrity verification** and **server-side rate limiting**.
 
 ## Hosting a Node
 

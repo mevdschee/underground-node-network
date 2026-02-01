@@ -20,7 +20,7 @@ graph TD
     subgraph "SSH Connections"
         EPConn[Entrypoint Session]
         RoomConn[Native SSH Connection]
-        DLR[Download Worker]
+        BlockReceiver[OSC Block Receiver]
     end
 
     StdinMgr --> Core
@@ -28,13 +28,13 @@ graph TD
     EPConn -- "Stream" --> Detector
     Detector -- "Teleport Signal" --> Prober
     Prober -- "Success" --> RoomConn
-    Detector -- "Download Signal" --> DLR
+    Detector -- "Block Transfer" --> BlockReceiver
 ```
 
 ### Key Modules
 
 - **Stdin Manager**: A thread-safe input proxy that allows the client to pause/resume user input during transitions (e.g., between the entrypoint and a room). This prevents "ghost" characters from leaking into the terminal during handshakes.
-- **OSC Detector**: A real-time stream analyzer that looks for ANSI OSC 9 sequences (`\x1b]9;...`) in the entrypoint's output. These sequences carry the P2P candidates and download metadata.
+- **OSC Detector**: A real-time stream analyzer that looks for ANSI OSC 9 sequences (`\x1b]9;...`) in the entrypoint's output. These sequences carry the P2P candidates and block transfer metadata.
 - **Candidate Prober**: Executes parallel TCP dials to all advertised room candidates (LAN, Public, Tunnel) to find the fastest reachable path before handing off to the native SSH client.
 - **Native SSH Bridge**: For the final room connection, the client executes the system `ssh` binary (or falls back to an internal client) with pre-configured host key verification extracted from the signaling layer.
 
