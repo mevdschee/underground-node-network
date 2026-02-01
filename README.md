@@ -21,27 +21,19 @@ a shifting constellation of personal machines, each offering unique capabilities
 
 ## Connecting
 
-The easiest way to explore the network is using the `unn-client.sh` tool:
+The easiest way to explore the network is using the `unn-client.sh` tool with a URL:
 
-### Teleport to a Room
-```bash
-./unn-client.sh unn://localhost/roomname
-```
-*Note: The port defaults to **44322** if not specified. You can specify a download directory with `-downloads /path/to/dir` (defaults to `~/Downloads`).*
-
-### Interactive Exploration
-If you don't specify a room, you'll enter the entry point's interactive TUI:
 ```bash
 ./unn-client.sh unn://localhost
 ```
-From here you can:
-- List active rooms with `/rooms`
-- Exit with `/quit` or `/exit`
-### Manual Exploration
-If you're not using the client, you can connect directly using any SSH client. The entry point and room nodes provide **precalculated host fingerprints** (standard SHA256 base64 format) and **file verification signatures** (hex-encoded SHA256) for easy manual verification.
 
-### Persistent Navigation
-The client is persistent—when you exit a room (via `/quit [message]`, `/exit` or **Ctrl+C**), you are automatically returned to the entry point. The system uses **invisible ANSI OSC 31337 signaling** to coordinate teleports and file transfers, ensuring a clean visual experience. It also supports **window resizing**, **Ctrl+C interruption** for doors, and an **integrated Zmodem‑like block‑based file transfer protocol** that works over the existing SSH channel with **SHA256 integrity verification** and **server‑side rate limiting**.
+If you don't specify a room (as a path), you'll enter the entry point's interactive TUI, where you can:
+
+- List active rooms with `/rooms`
+- Join a room with `/join <roomname>`
+- Exit with `/quit` or `/exit`
+
+If you're not using the client, you can connect directly using any SSH client on port 44322 on the entry point. 
 
 ## Hosting a Node
 
@@ -52,7 +44,6 @@ To become a part of the network and host your own "room":
    ```bash
    ./start-room.sh
    ```
-   *Note: If the room node cannot connect to the entry point, it will exit immediately with a fatal error.*
 3. **Open Doors**: Your node will appear on the network. Visitors teleporting to you will undergo **P2P Visitor Authentication**, where the entry point verifies their key and pre-authorizes them with your node.
 
 ## Documentation
