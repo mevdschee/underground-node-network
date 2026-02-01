@@ -38,15 +38,23 @@ func (s *Server) handleCommand(channel ssh.Channel, sessionID string, input stri
 	}
 	command := parts[0]
 
+	doorName := ""
 	if command == "open" {
 		if len(parts) < 2 {
 			fmt.Fprint(channel, "\rUsage: /open <door>\r\n")
 			return nil
 		}
-		doorName := parts[1]
-		// Try to execute as a door
+		doorName = parts[1]
+	} else if _, ok := s.doorManager.Get(command); ok {
+		doorName = command
+	}
+
+	if doorName != "" {
 		if _, ok := s.doorManager.Get(doorName); ok {
 			fmt.Fprintf(channel, "\r[Opening door: %s]\r\n", doorName)
+			// Notification
+			s.broadcastWithHistory(p.PubKey, fmt.Sprintf("* %s started door: %s", username, doorName), ui.MsgSystem)
+
 			done := make(chan struct{})
 			go func() {
 				// Get current person to access bridge
@@ -72,10 +80,9 @@ func (s *Server) handleCommand(channel ssh.Channel, sessionID string, input stri
 				close(done)
 			}()
 			return done
-		} else {
+		} else if command == "open" {
 			fmt.Fprintf(channel, "\rDoor not found: %s\r\n", doorName)
 		}
-		return nil
 	}
 
 	return nil

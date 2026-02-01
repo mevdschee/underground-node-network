@@ -251,6 +251,7 @@ func TestHandleCommand(t *testing.T) {
 		Username:  "alice",
 		SessionID: sessionID,
 		PubKey:    sshAlice,
+		ChatUI:    ui.NewChatUI(nil),
 	}
 
 	s.mu.Lock()
@@ -265,6 +266,27 @@ func TestHandleCommand(t *testing.T) {
 		t.Errorf("handleCommand failed to start door with correct sessionID")
 	} else {
 		<-done // Wait for door to exit
+	}
+
+	// Verify notification
+	msgs := p.ChatUI.GetMessages()
+	found := false
+	for _, m := range msgs {
+		if strings.Contains(m.Text, "* alice started door: testdoor") && m.Type == ui.MsgSystem {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Door launch notification not found in history: %v", msgs)
+	}
+
+	// Test direct door launch (without /open)
+	doneDirect := s.handleCommand(channel, sessionID, "/testdoor")
+	if doneDirect == nil {
+		t.Errorf("handleCommand failed to start door directly by name")
+	} else {
+		<-doneDirect
 	}
 
 	// Test with username (should fail)
