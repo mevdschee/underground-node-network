@@ -27,13 +27,10 @@ type FileBlockPayload struct {
 
 func main() {
 	// Try a few likely locations for the files subfolder
-	filesDir := "./files"
+	filesDir := "./room_files"
 	if _, err := os.Stat(filesDir); os.IsNotExist(err) {
-		// Try parent if we are in a subfolder of doors
-		filesDir = "../files"
-		if _, err := os.Stat(filesDir); os.IsNotExist(err) {
-			filesDir = "." // Fallback to current
-		}
+		fmt.Printf("Error listing files: %v\n", err)
+		return
 	}
 
 	for {
