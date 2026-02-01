@@ -6,8 +6,9 @@ This document provides an overview of the directory structure and the main compo
 
 ```text
 .
-├── cmd/                # Executable entry points
-│   ├── unn-entrypoint/ # Main entrypoint server
+├── cmd/                # CLI executables
+│   ├── unn-client/     # Client application
+│   ├── unn-entrypoint/ # Entrypoint server
 │   ├── unn-room/       # Room server (P2P host)
 │   └── unn-intro/      # Interactive project intro
 ├── internal/           # Core library and logic (internal to UNN)
