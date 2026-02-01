@@ -36,7 +36,6 @@ If you don't specify a room, you'll enter the entry point's interactive TUI:
 ```
 From here you can:
 - List active rooms with `/rooms`
-- Search and download files with `/files` and `/get`
 - Exit with `/quit` or `/exit`
 ### Manual Exploration
 If you're not using the client, you can connect directly using any SSH client. The entry point and room nodes provide **precalculated host fingerprints** (standard SHA256 base64 format) and **file verification signatures** (hex-encoded SHA256) for easy manual verification.

@@ -11,7 +11,7 @@ The **UNN Room Node** is a user-hosted application that creates a personal "room
 ### Key Topics
 - [Hosting Doors](../concepts/tui_and_doors.md#doors) - How to add interactive programs to your room.
 - **Files Door**: A standalone Go application (`doors/files/main.go`) that provides a menu for browsing and downloading files via OSC.
-- [Secure File Downloads](../concepts/signaling.md#osc-9-block-transfers) - Block-based transfers with SHA256 integrity.
+- [Secure File Downloads](../concepts/signaling.md#osc-31337-block-transfers-zmodem-like) - Block-based transfers with SHA256 integrity.
 - [P2P Authentication](../concepts/identity.md#room-auth) - How rooms verify visitor keys without a central proxy.
 - [Chat & Interaction](../concepts/tui_and_doors.md#chat) - The built-in BBS chat experience.
 

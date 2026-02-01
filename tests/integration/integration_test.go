@@ -150,8 +150,8 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	defer sshClientRoom.Close()
 	defer sessionRoom.Close()
 
-	fmt.Printf("Sending /get %s to room server...\n", fileName)
-	outputDownload := runSSHCommand(t, sessionRoom, "/get "+fileName)
+	fmt.Printf("Opening downloads door and selecting first file...\n")
+	outputDownload := runSSHCommand(t, sessionRoom, "/open downloads\n1")
 
 	// Verify OSC 31337 sequence contains correct SHA256
 	if !strings.Contains(outputDownload, "\x1b]31337;") {

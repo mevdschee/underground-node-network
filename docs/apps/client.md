@@ -25,7 +25,7 @@ The client implements a resilient, **Zmodem-like block-based transfer mechanism*
 - **Persistence**: Keeps the session alive and returns the user to the entrypoint when a room connection ends.
 
 ### Key Topics
-- [OSC Signaling](../concepts/signaling.md#osc-9) - The invisible communication layer used for automation.
+- [OSC Signaling](../concepts/signaling.md#2-osc-31337-sequences-in-band) - The invisible communication layer used for automation.
 - [Jump Logic](../concepts/p2p-nat.md#probe-and-select) - How the client picks the fastest path to a node.
 - [Managed I/O](../concepts/tui_and_doors.md#stdin-bridge) - How Ctrl+C and window resizing are preserved across connections.
 

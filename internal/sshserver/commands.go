@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,21 +37,6 @@ func (s *Server) handleCommand(channel ssh.Channel, sessionID string, input stri
 		return nil
 	}
 	command := parts[0]
-
-	if command == "get" || command == "download" {
-		if len(parts) < 2 {
-			fmt.Fprint(channel, "\rUsage: /get <filename>\r\n")
-			return nil
-		}
-		fname := strings.TrimSpace(parts[1])
-		s.mu.RLock()
-		p := s.people[sessionID]
-		s.mu.RUnlock()
-		if p != nil {
-			p.PendingDownload = fname
-		}
-		return nil
-	}
 
 	if command == "open" {
 		if len(parts) < 2 {
@@ -121,8 +105,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			addMessage("/help         - Show this help", ui.MsgServer)
 			addMessage("/people       - List people in room", ui.MsgServer)
 			addMessage("/doors        - List available doors", ui.MsgServer)
-			addMessage("/files        - List available files", ui.MsgServer)
-			addMessage("/get <file>   - Download a file", ui.MsgServer)
 			addMessage("/clear        - Clear your chat history", ui.MsgServer)
 			addMessage("/open <door>  - Open a door (launch program)", ui.MsgServer)
 			addMessage("/quit [msg]   - Leave the room", ui.MsgServer)
@@ -393,15 +375,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 			}
 			s.mu.Unlock()
 			return true
-		case "get", "download":
-			if len(parts) < 2 {
-				addMessage("Usage: /get <filename>", ui.MsgServer)
-				return true
-			}
-			fname := strings.TrimSpace(parts[1])
-			p.PendingDownload = filepath.Clean(fname)
-			p.ChatUI.Close(true)
-			return true
 		case "clear":
 			s.mu.Lock()
 			delete(s.histories, pubHash)
@@ -415,9 +388,6 @@ func (s *Server) handleInternalCommand(p *Person, cmd string) bool {
 				addMessage("• "+door, ui.MsgServer)
 			}
 			addMessage("Type /open <door> to launch a program.", ui.MsgServer)
-			return true
-		case "files":
-			s.showFiles(p.ChatUI)
 			return true
 		case "open":
 			if len(parts) < 2 {

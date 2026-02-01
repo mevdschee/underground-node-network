@@ -24,16 +24,15 @@ import (
 
 // Person represents a connected person
 type Person struct {
-	SessionID       string
-	Username        string
-	Conn            ssh.Conn
-	ChatUI          *ui.ChatUI
-	Bus             *bridge.SSHBus
-	Bridge          *bridge.InputBridge
-	PendingDownload string
-	PubKey          ssh.PublicKey // The specific key used for auth
-	UNNAware        bool
-	QuitReason      string
+	SessionID  string
+	Username   string
+	Conn       ssh.Conn
+	ChatUI     *ui.ChatUI
+	Bus        *bridge.SSHBus
+	Bridge     *bridge.InputBridge
+	PubKey     ssh.PublicKey // The specific key used for auth
+	UNNAware   bool
+	QuitReason string
 }
 
 type Server struct {
@@ -600,7 +599,9 @@ func (s *Server) handleInteraction(channel ssh.Channel, sessionID string) {
 		}
 		s.mu.RUnlock()
 
-		if cmd == "" && p.PendingDownload == "" {
+		if cmd == "" {
+			// Clear screen on manual exit - first reset colors to avoid black background spill
+			fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 			p.Conn.Close() // Force immediate disconnect
 			return         // User exited
 		}
@@ -616,19 +617,6 @@ func (s *Server) handleInteraction(channel ssh.Channel, sessionID string) {
 			// Force the stdin goroutine to exit
 			p.Bus.SignalExit()
 		}
-
-		// If a download was requested, exit the loop to show info in plain terminal
-		if p.PendingDownload != "" {
-			break
-		}
-	}
-
-	// Post-TUI exit download info (mirroring teleport flow)
-	if p.PendingDownload != "" {
-		s.showDownloadInfo(p, p.PendingDownload)
-	} else {
-		// Clear screen on manual exit - first reset colors to avoid black background spill
-		fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 	}
 }
 

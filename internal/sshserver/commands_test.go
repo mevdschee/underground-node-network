@@ -99,43 +99,6 @@ func TestRoomCommands(t *testing.T) {
 		}
 	})
 
-	t.Run("files", func(t *testing.T) {
-		s.handleInternalCommand(p, "/files")
-		msgs := p.ChatUI.GetMessages()
-		found := false
-		for _, m := range msgs {
-			if strings.Contains(m.Text, "test.txt") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Files command didn't show test.txt")
-		}
-	})
-
-	t.Run("download usage", func(t *testing.T) {
-		s.handleInternalCommand(p, "/get")
-		msgs := p.ChatUI.GetMessages()
-		found := false
-		for _, m := range msgs {
-			if strings.Contains(m.Text, "Usage: /get <filename>") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Download without args didn't show usage")
-		}
-	})
-
-	t.Run("download success", func(t *testing.T) {
-		s.handleInternalCommand(p, "/get test.txt")
-		if p.PendingDownload != "test.txt" {
-			t.Errorf("Expected PendingDownload to be 'test.txt', got '%s'", p.PendingDownload)
-		}
-	})
-
 	t.Run("me action", func(t *testing.T) {
 		s.handleInternalCommand(p, "/me hacks the Gibson")
 		msgs := p.ChatUI.GetMessages()
