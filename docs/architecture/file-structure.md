@@ -6,7 +6,7 @@ This document provides an overview of the directory structure and the main compo
 
 ```text
 .
-├── cmd/                # CLI executables
+├── cmd/                # Executables
 │   ├── unn-client/     # Client application
 │   ├── unn-entrypoint/ # Entrypoint server
 │   ├── unn-room/       # Room server (P2P host)
@@ -38,6 +38,7 @@ This document provides an overview of the directory structure and the main compo
 ## Main Component Descriptions
 
 ### Executables (`cmd/`)
+- **unn-client**: The client application for interacting with the network (entrypoint + room).
 - **unn-entrypoint**: The central hub that manages room registration and NAT signaling.
 - **unn-room**: The host software that turns a local SSH server into a network node.
 - **unn-intro**: A visual demonstration tool to introduce users to the UNN concepts.
