@@ -6,8 +6,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
-
 	"time"
 
 	"github.com/mevdschee/underground-node-network/internal/doors"
@@ -75,9 +75,13 @@ func main() {
 	// Connect to entry point if specified
 	var epClient *entrypoint.Client
 	if *entryPointAddr != "" {
-		// Use room name as username, and host key as identity
-		epUser := *roomName
-		signer := server.GetHostKey()
+		// Determine entrypoint connection username (matches client logic)
+		epUser := os.Getenv("USER")
+		if epUser == "" {
+			epUser = "visitor"
+		}
+
+		signer := findPragmaticSigner(server.GetHostKey())
 
 		log.Printf("Connecting to entry point: %s as %s", *entryPointAddr, epUser)
 
@@ -174,4 +178,29 @@ func main() {
 		epClient.Close()
 	}
 	server.Stop()
+}
+
+func findPragmaticSigner(hostKey ssh.Signer) ssh.Signer {
+	homeDir, _ := os.UserHomeDir()
+	possibleKeys := []string{
+		filepath.Join(homeDir, ".ssh", "id_ed25519"),
+		filepath.Join(homeDir, ".ssh", "id_rsa"),
+		filepath.Join(homeDir, ".unn", "user_key"),
+	}
+
+	for _, path := range possibleKeys {
+		if signer, err := loadKey(path); err == nil {
+			return signer
+		}
+	}
+
+	return hostKey
+}
+
+func loadKey(path string) (ssh.Signer, error) {
+	keyBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ssh.ParsePrivateKey(keyBytes)
 }

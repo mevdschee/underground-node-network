@@ -76,6 +76,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		possibleKeys := []string{
 			filepath.Join(homeDir, ".ssh", "id_ed25519"),
 			filepath.Join(homeDir, ".ssh", "id_rsa"),
+			filepath.Join(homeDir, ".unn", "user_key"),
 		}
 
 		for _, keyPath := range possibleKeys {
