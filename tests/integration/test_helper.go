@@ -57,6 +57,7 @@ func startRoom(t *testing.T, binPath string, name string, port int, epAddr strin
 		"-hostkey", hostKeyPath,
 		"-identity", identityPath,
 		"-files", filesDir,
+		"-doors", "../../doors",
 		"-headless",
 	}
 	cmd := exec.Command(binPath, args...)

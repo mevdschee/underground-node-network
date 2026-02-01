@@ -26,8 +26,19 @@ func main() {
 	roomName := flag.String("room", "anonymous", "Name of your room")
 	hostKey := flag.String("hostkey", "", "Path to SSH host key (auto-generated if not specified)")
 	entryPointAddr := flag.String("entrypoint", "", "Entry point address (e.g., localhost:44322)")
+	identity := flag.String("identity", "", "Path to private key for entrypoint registration")
+	roomFiles := flag.String("files", "", "Directory containing files for download")
 	headless := flag.Bool("headless", false, "Disable TUI (headless mode)")
 	flag.Parse()
+
+	// Handle room files symlink
+	if *roomFiles != "" {
+		absFiles, err := filepath.Abs(*roomFiles)
+		if err == nil {
+			os.Remove("./room_files") // Remove existing if any
+			os.Symlink(absFiles, "./room_files")
+		}
+	}
 
 	// Set default host key path to ephemeral file
 	if *hostKey == "" {
@@ -81,7 +92,7 @@ func main() {
 			epUser = "visitor"
 		}
 
-		signer := findPragmaticSigner(server.GetHostKey())
+		signer := findPragmaticSigner(server.GetHostKey(), *identity)
 
 		log.Printf("Connecting to entry point: %s as %s", *entryPointAddr, epUser)
 
@@ -180,7 +191,12 @@ func main() {
 	server.Stop()
 }
 
-func findPragmaticSigner(hostKey ssh.Signer) ssh.Signer {
+func findPragmaticSigner(hostKey ssh.Signer, identityPath string) ssh.Signer {
+	if identityPath != "" {
+		if signer, err := loadKey(identityPath); err == nil {
+			return signer
+		}
+	}
 	homeDir, _ := os.UserHomeDir()
 	possibleKeys := []string{
 		filepath.Join(homeDir, ".ssh", "id_ed25519"),
