@@ -1,2 +1,4 @@
 #!/bin/bash
+clear
 echo "Hello from the underground!"
+read -n1 -r -p "Press any key to continue..."
