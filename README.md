@@ -33,7 +33,7 @@ If you don't specify a room (as a path), you'll enter the entry point's interact
 - Join a room with `/join <roomname>`
 - Exit with `/quit` or `/exit`
 
-If you're not using the client, you can connect directly using any SSH client on port 44322 on the entry point. 
+If you're not using the client, you can connect directly using any SSH client on port 44322 on the entry point. As a normal SSH client will not be able to understand the in-band **OSC 31337 commands**, so you will need to manually teleport to a room and also downloads are not supported.
 
 ## Hosting a Node
 
