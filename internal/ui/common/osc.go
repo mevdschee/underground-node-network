@@ -6,7 +6,7 @@ import (
 	"io"
 )
 
-// SendOSC sends an OSC 9 sequence with a JSON payload
+// SendOSC sends an OSC 31337 sequence with a JSON payload
 func SendOSC(w io.Writer, action string, params map[string]interface{}) error {
 	payload := make(map[string]interface{})
 	payload["action"] = action
@@ -19,6 +19,6 @@ func SendOSC(w io.Writer, action string, params map[string]interface{}) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(w, "\x1b]9;%s\x07", string(jsonData))
+	_, err = fmt.Fprintf(w, "\x1b]31337;%s\x07", string(jsonData))
 	return err
 }

@@ -152,8 +152,8 @@ func downloadFile(path, filename string) {
 func sendOSC(action string, payload interface{}) {
 	jsonData, _ := json.Marshal(payload)
 	// We print directly to stdout as it will be captured by the client
-	// and NOT printed to the terminal if it's a valid OSC 9 sequence.
-	fmt.Printf("\x1b]9;%s\x07", string(jsonData))
+	// and NOT printed to the terminal if it's a valid OSC 31337 sequence.
+	fmt.Printf("\x1b]31337;%s\x07", string(jsonData))
 }
 
 func printProgress(current, total int, filename string) {

@@ -128,8 +128,8 @@ func (d *OSCDetector) Write(p []byte) (n int, err error) {
 			if b == 0x07 { // BEL - terminator
 				d.inOSC = false
 				oscStr := d.buf.String()
-				if strings.HasPrefix(oscStr, "\x1b]9;") {
-					jsonStr := strings.TrimPrefix(oscStr, "\x1b]9;")
+				if strings.HasPrefix(oscStr, "\x1b]31337;") {
+					jsonStr := strings.TrimPrefix(oscStr, "\x1b]31337;")
 					jsonStr = strings.TrimSuffix(jsonStr, "\x07")
 					var payload map[string]interface{}
 					if err := json.Unmarshal([]byte(jsonStr), &payload); err == nil {

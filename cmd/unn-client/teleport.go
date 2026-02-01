@@ -215,13 +215,13 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 				for i := 0; i < n; i++ {
 					b := buf[i]
 
-					// OSC 9 Detection: \x1b]9; ... \x07
+					// OSC 31337 Detection: \x1b]31337; ... \x07
 					if b == 0x1b && !inOSC {
-						// Peek for ]9;
-						if i+3 < n && string(buf[i+1:i+4]) == "]9;" {
+						// Peek for ]31337;
+						if i+7 < n && string(buf[i+1:i+8]) == "]31337;" {
 							inOSC = true
 							oscBuffer.Reset()
-							i += 3
+							i += 7
 							continue
 						}
 					}
@@ -231,7 +231,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 							inOSC = false
 							jsonData := oscBuffer.String()
 							if verbose {
-								log.Printf("Captured OSC 9 data (%d bytes)", len(jsonData))
+								log.Printf("Captured OSC 31337 data (%d bytes)", len(jsonData))
 							}
 
 							var startPayload protocol.PunchStartPayload

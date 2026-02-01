@@ -264,7 +264,7 @@ func (s *Server) showTeleportInfo(p *Person) {
 	// First reset colors to avoid the black background from sticking around
 	fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
 
-	// Emit invisible ANSI OSC 9 sequence with teleport data
+	// Emit invisible ANSI OSC 31337 sequence with teleport data
 	data.Action = "teleport"
 	s.SendOSC(p, "teleport", map[string]interface{}{
 		"room_name":   data.RoomName,

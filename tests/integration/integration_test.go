@@ -153,9 +153,9 @@ func TestIntegration_DownloadVerification(t *testing.T) {
 	fmt.Printf("Sending /get %s to room server...\n", fileName)
 	outputDownload := runSSHCommand(t, sessionRoom, "/get "+fileName)
 
-	// Verify OSC 9 sequence contains correct SHA256
-	if !strings.Contains(outputDownload, "\x1b]9;") {
-		t.Errorf("Expected OSC 9 sequence in output, but got:\n%s", outputDownload)
+	// Verify OSC 31337 sequence contains correct SHA256
+	if !strings.Contains(outputDownload, "\x1b]31337;") {
+		t.Errorf("Expected OSC 31337 sequence in output, but got:\n%s", outputDownload)
 	}
 
 	if !strings.Contains(outputDownload, expectedSig) {

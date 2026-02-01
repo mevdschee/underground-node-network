@@ -1,10 +1,10 @@
-# In-Band (OSC 9) Signaling Reference
+# In-Band (OSC 31337) Signaling Reference
 
-This document describes the parameters for invisible ANSI OSC 9 sequences embedded in the server's stdout stream.
+This document describes the parameters for invisible ANSI OSC 31337 sequences embedded in the server's stdout stream.
 
 ### Message Format
 ```text
-\x1b]9;{"action": "...", ...}\x07
+\x1b]31337;{"action": "...", ...}\x07
 ```
 
 #### `teleport` (Action)

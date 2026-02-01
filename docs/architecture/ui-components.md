@@ -38,7 +38,7 @@ The UNN uses a modular Terminal User Interface (TUI) layer built on top of `tcel
 - **SSHBus**: A dedicated implementation of `tcell.Tty`. It allows the TUI components to interact with an SSH stream as if it were a local Tty, handling window resizing and EOF gracefully.
 
 ### 7. Popups (`popup/`)
-- **Behavior**: Stylized overlays triggered by OSC signals (`\x1b]9;...`).
+- **Behavior**: Stylized overlays triggered by OSC signals (`\x1b]31337;...`).
 - **Styling**: Distinctive shadows and high-contrast colors (e.g., Dark Red for warnings).
 
 ### 8. Common Utilities (`common/`)

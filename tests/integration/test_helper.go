@@ -128,6 +128,7 @@ func getSSHClient(t *testing.T, addr string, user string, keyPath string) (*ssh.
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         5 * time.Second,
+		ClientVersion:   "SSH-2.0-UNN-Test-Client",
 	}
 
 	client, err := ssh.Dial("tcp", addr, config)
