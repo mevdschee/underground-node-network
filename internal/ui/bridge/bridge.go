@@ -89,10 +89,11 @@ func (b *InputBridge) Read(p []byte) (int, error) {
 
 // OSCDetector wraps an io.Writer to intercept OSC sequences from doors
 type OSCDetector struct {
-	w       io.Writer
-	handler func(action string, params map[string]interface{})
-	buf     strings.Builder
-	inOSC   bool
+	w        io.Writer
+	handler  func(action string, params map[string]interface{})
+	buf      strings.Builder
+	inOSC    bool
+	UNNAware bool
 }
 
 func NewOSCDetector(w io.Writer, handler func(action string, params map[string]interface{})) *OSCDetector {
@@ -138,9 +139,11 @@ func (d *OSCDetector) Write(p []byte) (n int, err error) {
 							d.handler(action, payload)
 						}
 					}
-					// Always pass through OSC sequences to the underlying writer
-					if _, err := d.w.Write([]byte(oscStr)); err != nil {
-						return i, err
+					// Only pass through OSC sequences to the underlying writer if the client is UNN-aware
+					if d.UNNAware {
+						if _, err := d.w.Write([]byte(oscStr)); err != nil {
+							return i, err
+						}
 					}
 				} else {
 					if _, err := d.w.Write([]byte(oscStr)); err != nil {
