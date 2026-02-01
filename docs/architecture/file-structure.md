@@ -10,7 +10,7 @@ This document provides an overview of the directory structure and the main compo
 │   ├── unn-client/     # Client application
 │   ├── unn-entrypoint/ # Entrypoint server
 │   ├── unn-room/       # Room server (P2P host)
-│   └── unn-intro/      # Interactive project intro
+│   └── unn-intro/      # Interactive project intro (demo)
 ├── internal/           # Core library and logic (internal to UNN)
 │   ├── entrypoint/     # Entrypoint server logic & hub
 │   ├── sshserver/      # Room SSH server implementation
