@@ -53,21 +53,22 @@ type Person struct {
 
 // Server is the entry point SSH server
 type Server struct {
-	address       string
-	usersDir      string
-	config        *ssh.ServerConfig
-	rooms         map[string]*Room
-	people        map[string]*Person
-	punchSessions map[string]*PunchSession // keyed by person ID
-	banner        []string
-	mu            sync.RWMutex
-	listener      net.Listener
-	headless      bool
-	httpClient    *http.Client
-	identities    map[string]string       // keyHash -> "unnUsername platform_username@platform"
-	usernames     map[string]string       // unnUsername -> keyHash
-	histories     map[string][]ui.Message // keyed by pubkey hash (hex)
-	cmdHistories  map[string][]string     // keyed by pubkey hash (hex)
+	address         string
+	usersDir        string
+	config          *ssh.ServerConfig
+	rooms           map[string]*Room
+	people          map[string]*Person
+	punchSessions   map[string]*PunchSession // keyed by person ID
+	banner          []string
+	mu              sync.RWMutex
+	listener        net.Listener
+	headless        bool
+	httpClient      *http.Client
+	identities      map[string]string       // keyHash -> "unnUsername platform_username@platform"
+	usernames       map[string]string       // unnUsername -> keyHash
+	registeredRooms map[string]string       // roomName -> "hostKeyHash ownerUsername lastSeenDate"
+	histories       map[string][]ui.Message // keyed by pubkey hash (hex)
+	cmdHistories    map[string][]string     // keyed by pubkey hash (hex)
 }
 
 // NewServer creates a new entry point server
@@ -93,14 +94,16 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		identities:   make(map[string]string),
-		usernames:    make(map[string]string),
-		histories:    make(map[string][]ui.Message),
-		cmdHistories: make(map[string][]string),
+		identities:      make(map[string]string),
+		usernames:       make(map[string]string),
+		registeredRooms: make(map[string]string),
+		histories:       make(map[string][]ui.Message),
+		cmdHistories:    make(map[string][]string),
 	}
 
-	// Load users from single file
+	// Load data from files
 	s.loadUsers()
+	s.loadRooms()
 
 	config.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
 		pubKeyHash := s.calculatePubKeyHash(pubKey)
@@ -119,16 +122,23 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		}
 
 		if verified {
-			// identity is "unnUsername platform_username@platform"
-			parts := strings.SplitN(identity, " ", 2)
-			verifiedUsername := parts[0]
-			platformInfo := parts[1]
+			// identity is "unnUsername platform_username@platform [lastSeenDate]"
+			fields := strings.Fields(identity)
+			verifiedUsername := fields[0]
+			platformInfo := fields[1]
 
 			perms.Extensions["verified"] = "true"
 			perms.Extensions["username"] = verifiedUsername
 
 			pParts := strings.Split(platformInfo, "@")
 			perms.Extensions["platform"] = pParts[1]
+
+			// Update last seen
+			currentDate := time.Now().Format("2006-01-02")
+			s.mu.Lock()
+			s.identities[pubKeyHash] = fmt.Sprintf("%s %s %s", verifiedUsername, platformInfo, currentDate)
+			s.saveUsers()
+			s.mu.Unlock()
 		} else {
 			perms.Extensions["verified"] = "false"
 		}

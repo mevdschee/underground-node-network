@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/ui"
 	"github.com/mevdschee/underground-node-network/internal/ui/common"
 	"github.com/mevdschee/underground-node-network/internal/ui/form"
@@ -20,8 +21,7 @@ import (
 )
 
 func (s *Server) calculatePubKeyHash(key ssh.PublicKey) string {
-	hash := sha256.Sum256(key.Marshal())
-	return fmt.Sprintf("%x", hash)
+	return protocol.CalculatePubKeyHash(key)
 }
 
 func (s *Server) loadUsers() {
@@ -36,13 +36,17 @@ func (s *Server) loadUsers() {
 		if line == "" {
 			continue
 		}
-		// format: hash unn_username platform_username@platform
-		parts := strings.SplitN(line, " ", 3)
-		if len(parts) == 3 {
+		// format: hash unn_username platform_username@platform [lastSeenDate]
+		parts := strings.SplitN(line, " ", 4)
+		if len(parts) >= 3 {
 			hash := parts[0]
 			unnName := parts[1]
 			platformId := parts[2]
-			s.identities[hash] = fmt.Sprintf("%s %s", unnName, platformId)
+			lastSeen := ""
+			if len(parts) == 4 {
+				lastSeen = parts[3]
+			}
+			s.identities[hash] = fmt.Sprintf("%s %s %s", unnName, platformId, lastSeen)
 			s.usernames[unnName] = hash
 		}
 	}
@@ -54,15 +58,69 @@ func (s *Server) saveUsers() error {
 		return err
 	}
 	var buf bytes.Buffer
-	// We want to save both maps into the single file.
-	// Since identities map contains info for all hashes, we iterate it.
 	for hash, info := range s.identities {
-		// info is "unnUsername platform_username@platform"
-		buf.WriteString(fmt.Sprintf("%s %s\n", hash, info))
+		// info is "unnUsername platform_username@platform lastSeenDate"
+		// Ensure we don't have multiple spaces
+		fields := strings.Fields(info)
+		if len(fields) >= 2 {
+			unnUsername := fields[0]
+			platformInfo := fields[1]
+			lastSeen := ""
+			if len(fields) >= 3 {
+				lastSeen = fields[2]
+			}
+			buf.WriteString(fmt.Sprintf("%s %s %s %s\n", hash, unnUsername, platformInfo, lastSeen))
+		}
 	}
 	err := os.WriteFile(filepath.Join(s.usersDir, "users"), buf.Bytes(), 0600)
 	if err != nil {
 		log.Printf("Error saving users file: %v", err)
+	}
+	return err
+}
+
+func (s *Server) loadRooms() {
+	path := filepath.Join(s.usersDir, "rooms")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// format: hostKeyHash roomName owner lastSeenDate
+		parts := strings.Split(line, " ")
+		if len(parts) == 4 {
+			hostHash := parts[0]
+			roomName := parts[1]
+			owner := parts[2]
+			date := parts[3]
+			s.registeredRooms[roomName] = fmt.Sprintf("%s %s %s", hostHash, owner, date)
+		}
+	}
+}
+
+func (s *Server) saveRooms() error {
+	if err := os.MkdirAll(s.usersDir, 0700); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	for name, info := range s.registeredRooms {
+		// info is "hostKeyHash owner date"
+		parts := strings.Split(info, " ")
+		if len(parts) == 3 {
+			hostHash := parts[0]
+			owner := parts[1]
+			date := parts[2]
+			buf.WriteString(fmt.Sprintf("%s %s %s %s\n", hostHash, name, owner, date))
+		}
+	}
+	err := os.WriteFile(filepath.Join(s.usersDir, "rooms"), buf.Bytes(), 0600)
+	if err != nil {
+		log.Printf("Error saving rooms file: %v", err)
 	}
 	return err
 }
@@ -201,8 +259,9 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 			}
 
 			s.mu.Lock()
+			currentDate := time.Now().Format("2006-01-02")
 			s.usernames[unnUsername] = pubKeyHash
-			s.identities[pubKeyHash] = fmt.Sprintf("%s %s@%s", unnUsername, platformUser, platform)
+			s.identities[pubKeyHash] = fmt.Sprintf("%s %s@%s %s", unnUsername, platformUser, platform, currentDate)
 			s.saveUsers()
 			s.mu.Unlock()
 

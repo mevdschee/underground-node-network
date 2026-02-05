@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,16 +41,17 @@ func main() {
 		}
 	}
 
-	// Set default host key path to ephemeral file
+	// Set default host key path
 	if *hostKey == "" {
-		f, err := os.CreateTemp("", "unn_host_key_*")
+		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			log.Fatalf("Failed to create temp host key: %v", err)
+			log.Fatalf("Failed to get home directory: %v", err)
 		}
-		f.Close()
-		*hostKey = f.Name()
-		os.Remove(*hostKey) // Remove empty file so it gets generated
-		defer os.Remove(*hostKey)
+		*hostKey = filepath.Join(homeDir, ".unn", "room_host_key")
+
+		if err := os.MkdirAll(filepath.Dir(*hostKey), 0700); err != nil {
+			log.Fatalf("Failed to create .unn directory: %v", err)
+		}
 	}
 
 	// Initialize door manager
@@ -94,6 +96,16 @@ func main() {
 
 		signer := findPragmaticSigner(server.GetHostKey(), *identity)
 
+		// Calculate host key hash for registration advice
+		var hostKeyHash string
+		pubKeyBytes, err := os.ReadFile(*hostKey + ".pub")
+		if err == nil {
+			hPubKey, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyBytes)
+			if err == nil {
+				hostKeyHash = protocol.CalculatePubKeyHash(hPubKey)
+			}
+		}
+
 		log.Printf("Connecting to entry point: %s as %s", *entryPointAddr, epUser)
 
 		go func() {
@@ -126,17 +138,11 @@ func main() {
 				candidateStrs := nat.CandidatesToStrings(candidates)
 
 				// Read public key
-				pubKeyPath := *hostKey + ".pub"
-				var publicKeys []string
-				pubKeyBytes, err := os.ReadFile(pubKeyPath)
-				if err != nil {
-					log.Printf("Warning: Could not read public key %s: %v", pubKeyPath, err)
-				} else {
-					publicKeys = []string{string(pubKeyBytes)}
-				}
+				publicKeys := []string{string(pubKeyBytes)}
 
 				// Register with entry point
-				if err := epClient.Register(*roomName, doorList, actualPort, publicKeys, 0); err != nil {
+				peopleCount := len(server.GetPeople())
+				if err := epClient.Register(*roomName, doorList, actualPort, publicKeys, peopleCount); err != nil {
 					log.Printf("Failed to register with entry point: %v. Reconnecting...", err)
 					epClient.Close()
 					time.Sleep(1 * time.Second)
@@ -152,9 +158,6 @@ func main() {
 					}
 				}
 
-				// Initial update
-				server.OnPeopleChange(len(server.GetPeople()))
-
 				// Listen for messages (this blocks until the connection is lost)
 				err = epClient.ListenForMessages(nil, func(offer protocol.PunchOfferPayload) {
 					if offer.PersonKey != "" {
@@ -168,6 +171,16 @@ func main() {
 				}, nil, actualPort, candidateStrs)
 
 				// If we reach here, the connection was lost
+				if err != nil {
+					errMsg := err.Error()
+					if strings.Contains(errMsg, "not registered") || strings.Contains(errMsg, "Unauthorized") || strings.Contains(errMsg, "mismatch") {
+						fmt.Printf("\n\033[1;31mRegistration Error: %s\033[0m\n", errMsg)
+						fmt.Printf("\033[1mYour Room Host Key Hash is:\033[0m \033[1;36m%s\033[0m\n", hostKeyHash)
+						fmt.Printf("Use this in the entrypoint: \033[1m/register %s %s\033[0m\n\n", *roomName, hostKeyHash)
+						os.Exit(1)
+					}
+				}
+
 				log.Printf("Entry point connection broken: %v. Reconnecting in %v...", err, backoff)
 				epClient.Close()
 				time.Sleep(backoff)
@@ -197,6 +210,11 @@ func findPragmaticSigner(hostKey ssh.Signer, identityPath string) ssh.Signer {
 			return signer
 		}
 	}
+	// Primarily use the host key as the room's identity
+	if hostKey != nil {
+		return hostKey
+	}
+
 	homeDir, _ := os.UserHomeDir()
 	possibleKeys := []string{
 		filepath.Join(homeDir, ".ssh", "id_ed25519"),
@@ -210,7 +228,7 @@ func findPragmaticSigner(hostKey ssh.Signer, identityPath string) ssh.Signer {
 		}
 	}
 
-	return hostKey
+	return nil
 }
 
 func loadKey(path string) (ssh.Signer, error) {

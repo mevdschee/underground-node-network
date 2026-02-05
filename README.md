@@ -39,12 +39,16 @@ If you're not using the client, you can connect directly using any SSH client on
 
 To become a part of the network and host your own "room":
 
-1. **Register**: Connect to an entry point and register your SSH public key. Registration is **strictly enforced**—it ensures your username cannot be spoofed and is required for room hosting. UNN usernames must be **alphanumeric** and between 4 and 20 characters.
-2. **Launch Room**: Run the UNN room node. It will automatically connect and register your node:
+1. **Register User**: Connect to an entry point and register your SSH public key. Registration is **strictly enforced**—it ensures your username cannot be spoofed and is required for room hosting. UNN usernames must be **alphanumeric** and between 4 and 20 characters.
+2. **Register Room**: Obtain your Room Host Key Hash (printed when starting `unn-room` for the first time) and register it in the entrypoint UI:
+   ```bash
+   /register <roomname> <hostkeyhash>
+   ```
+3. **Launch Room**: Run the UNN room node. It will now successfully connect to the entrypoint and go online. Room names are **permanently tied** to the authorized host key:
    ```bash
    ./start-room.sh
    ```
-3. **Open Doors**: Your node will appear on the network. Visitors teleporting to you will undergo **P2P Visitor Authentication**, where the entry point verifies their key and pre-authorizes them with your node.
+4. **Open Doors**: Your node will appear on the network. Visitors teleporting to you will undergo **P2P Visitor Authentication**, where the entrypoint verifies their key and pre-authorizes them with your node.
 
 ## Documentation
 

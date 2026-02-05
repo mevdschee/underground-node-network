@@ -6,7 +6,7 @@ This document provides a deep dive into the technical architecture and security 
 Authentication in UNN is hierarchical and relies on a "handover" of trust from the entrypoint to the room node:
 1. **Entrypoint Auth**: Standard SSH public key authentication.
 2. **Identity Handover**: When a visitor "teleports," the entrypoint signals the visitor's verified public key and platform-username to the room node.
-3. **Room Auth**: The room node's ephemeral SSH server enforces strict public key authentication, only accepting keys that match those pre-authorized by the signaling hub.
+3. **Room Auth**: The room node's SSH server enforces strict public key authentication, only accepting keys that match those pre-authorized by the signaling hub. The room node's identity is defined by its **SSH Host Key**. 
 
 ### Managed I/O bridging
 To ensure a smooth transition between the Chat UI and external "Doors," we implement a custom I/O bridging layer:

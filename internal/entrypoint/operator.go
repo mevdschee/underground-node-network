@@ -2,8 +2,11 @@ package entrypoint
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"strings"
+	"time"
 
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
@@ -30,15 +33,42 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 				continue
 			}
 
-			// Enforce registration
-			if conn.Permissions == nil || conn.Permissions.Extensions["verified"] != "true" {
-				log.Printf("Rejected room registration for unverified user: %s", username)
-				s.sendError(encoder, "User not verified. Please connect manually and verify your identity first.")
+			s.mu.Lock()
+			currentDate := time.Now().Format("2006-01-02")
+			connPubKeyHash := conn.Permissions.Extensions["pubkeyhash"]
+
+			if info, ok := s.registeredRooms[payload.RoomName]; ok {
+				parts := strings.Split(info, " ")
+				// format: hostKeyHash owner date
+				registeredHostHash := parts[0]
+				registeredOwner := parts[1]
+
+				if registeredHostHash != connPubKeyHash {
+					s.mu.Unlock()
+					log.Printf("Rejected room registration: %s host key mismatch (connection: %s, registered: %s)", payload.RoomName, connPubKeyHash, registeredHostHash)
+					s.sendError(encoder, "Unauthorized host key for this room name.")
+					continue
+				}
+
+				// If we have no owner in registration yet (unlikely with manual registration),
+				// or if we want to allow the current connection to be identifying as the room,
+				// we use the registered owner for metadata.
+				username = registeredOwner
+
+				// Update last seen date
+				s.registeredRooms[payload.RoomName] = fmt.Sprintf("%s %s %s", registeredHostHash, registeredOwner, currentDate)
+				s.saveRooms()
+			} else {
+				// Rejected: Room must be pre-registered
+				s.mu.Unlock()
+				log.Printf("Rejected room registration: %s not pre-registered (attempted by key %s)", payload.RoomName, connPubKeyHash)
+				s.sendError(encoder, "Room name not registered. Use /register in the entrypoint first.")
 				continue
 			}
 
-			s.mu.Lock()
+			_, alreadyOnline := s.rooms[payload.RoomName]
 			*roomName = payload.RoomName
+
 			s.rooms[payload.RoomName] = &Room{
 				Info: protocol.RoomInfo{
 					Name:        payload.RoomName,
@@ -55,7 +85,9 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 			}
 			s.mu.Unlock()
 
-			log.Printf("Room registered: %s by %s", payload.RoomName, username)
+			if !alreadyOnline {
+				log.Printf("Room online: %s by %s", payload.RoomName, username)
+			}
 
 			// Send back room list
 			s.sendRoomList(encoder)

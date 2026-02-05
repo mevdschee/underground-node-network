@@ -1,8 +1,18 @@
 package protocol
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+
+	"golang.org/x/crypto/ssh"
 )
+
+// CalculatePubKeyHash returns the hex-encoded SHA256 hash of a public key's wire format
+func CalculatePubKeyHash(key ssh.PublicKey) string {
+	hash := sha256.Sum256(key.Marshal())
+	return fmt.Sprintf("%x", hash)
+}
 
 // Message types for entry point protocol
 const (
