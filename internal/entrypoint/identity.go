@@ -47,7 +47,7 @@ func (s *Server) loadUsers() {
 				lastSeen = parts[3]
 			}
 			s.identities[hash] = fmt.Sprintf("%s %s %s", unnName, platformId, lastSeen)
-			s.usernames[unnName] = hash
+			s.usernames[unnName] = platformId
 		}
 	}
 }
@@ -248,20 +248,21 @@ func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
 		}
 
 		if matched {
-			pubKeyHash := s.calculatePubKeyHash(offeredKey)
+			currentPlatform := fmt.Sprintf("%s@%s", platformUser, platform)
 			s.mu.RLock()
-			ownerHash, taken := s.usernames[unnUsername]
+			ownerPlatform, taken := s.usernames[unnUsername]
 			s.mu.RUnlock()
 
-			if taken && ownerHash != pubKeyHash {
+			if taken && ownerPlatform != currentPlatform {
 				fields[2].Error = "not available"
 				continue
 			}
 
 			s.mu.Lock()
 			currentDate := time.Now().Format("2006-01-02")
-			s.usernames[unnUsername] = pubKeyHash
-			s.identities[pubKeyHash] = fmt.Sprintf("%s %s@%s %s", unnUsername, platformUser, platform, currentDate)
+			pubKeyHash := s.calculatePubKeyHash(offeredKey)
+			s.usernames[unnUsername] = currentPlatform
+			s.identities[pubKeyHash] = fmt.Sprintf("%s %s %s", unnUsername, currentPlatform, currentDate)
 			s.saveUsers()
 			s.mu.Unlock()
 

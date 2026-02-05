@@ -44,26 +44,47 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 				registeredOwner := parts[1]
 
 				if registeredHostHash != connPubKeyHash {
-					s.mu.Unlock()
-					log.Printf("Rejected room registration: %s host key mismatch (connection: %s, registered: %s)", payload.RoomName, connPubKeyHash, registeredHostHash)
-					s.sendError(encoder, "Unauthorized host key for this room name.")
-					continue
+					// Check if this is the owner rotating the key
+					isOwner := conn.Permissions.Extensions["verified"] == "true" && conn.Permissions.Extensions["username"] == registeredOwner
+					if isOwner && len(payload.PublicKeys) > 0 {
+						hPubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(payload.PublicKeys[0]))
+						if err == nil {
+							newHash := protocol.CalculatePubKeyHash(hPubKey)
+							log.Printf("Room %s host key rotated by owner %s (new hash: %s)", payload.RoomName, registeredOwner, newHash)
+							registeredHostHash = newHash
+						}
+					} else {
+						s.mu.Unlock()
+						log.Printf("Rejected room registration: %s host key mismatch (connection: %s, registered: %s)", payload.RoomName, connPubKeyHash, registeredHostHash)
+						s.sendError(encoder, fmt.Sprintf("Room name '%s' is already taken by another user.", payload.RoomName))
+						continue
+					}
 				}
 
-				// If we have no owner in registration yet (unlikely with manual registration),
-				// or if we want to allow the current connection to be identifying as the room,
-				// we use the registered owner for metadata.
 				username = registeredOwner
 
-				// Update last seen date
+				// Update registry (handles both rotation and last-seen updates)
 				s.registeredRooms[payload.RoomName] = fmt.Sprintf("%s %s %s", registeredHostHash, registeredOwner, currentDate)
 				s.saveRooms()
 			} else {
-				// Rejected: Room must be pre-registered
-				s.mu.Unlock()
-				log.Printf("Rejected room registration: %s not pre-registered (attempted by key %s)", payload.RoomName, connPubKeyHash)
-				s.sendError(encoder, "Room name not registered. Use /register in the entrypoint first.")
-				continue
+				// Silent auto-registration
+				if !isValidRoomName(payload.RoomName) {
+					s.mu.Unlock()
+					s.sendError(encoder, "Invalid room name. Must be 3-20 characters, alphanumeric.")
+					continue
+				}
+
+				hostKeyHash := connPubKeyHash
+				if len(payload.PublicKeys) > 0 {
+					hPubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(payload.PublicKeys[0]))
+					if err == nil {
+						hostKeyHash = protocol.CalculatePubKeyHash(hPubKey)
+					}
+				}
+
+				s.registeredRooms[payload.RoomName] = fmt.Sprintf("%s %s %s", hostKeyHash, username, currentDate)
+				s.saveRooms()
+				log.Printf("New room auto-registered: %s by %s", payload.RoomName, username)
 			}
 
 			_, alreadyOnline := s.rooms[payload.RoomName]
@@ -153,4 +174,16 @@ func (s *Server) sendError(encoder *json.Encoder, message string) {
 	payload := protocol.ErrorPayload{Message: message}
 	msg, _ := protocol.NewMessage(protocol.MsgTypeError, payload)
 	encoder.Encode(msg)
+}
+
+func isValidRoomName(name string) bool {
+	if len(name) < 3 || len(name) > 20 {
+		return false
+	}
+	for _, char := range name {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_') {
+			return false
+		}
+	}
+	return true
 }

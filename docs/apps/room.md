@@ -11,15 +11,11 @@ The **UNN Room Node** is a user-hosted application that creates a personal "room
 ### Persistence & Identity
 A Room Node identifies itself on the network using its **Host Key**:
 - **Room Host Key**: Defined by `~/.unn/room_host_key`. This is the room's cryptographic identity on the entrypoint and what visitors use to verify the server.
-- **Owner Identity**: While the room name is registered by an owner (using their SSH key), the room node *itself* connects using its host key to prove it is the authorized server for that name.
-- **Identity Stability**: Storing the host key locally ensures that your room's identity remains stable across restarts. Visitors' SSH clients will not trigger "Host Key Changed" warnings.
-
-- **Manual Registration**: Before a room can connect, the owner must manual register it within the entrypoint UI using the command:
-  ```bash
-  /register <roomname> <host_key_hash>
-  ```
-  You can find your host key hash in the logs when starting `unn-room` (or by hashing the public key).
-- **Name Ownership**: Once registered, the entrypoint locks that name to your **Owner Identity**. Other users cannot hijack your room name. 
+- **Owner-First Identity**: The room node primarily connects to the entrypoint using your **Owner Identity** (from `~/.ssh/id_rsa` or similar). This ensures the room is always linked to your verified platform account.
+- **Identity Stability**: While the connection uses your identity, the room still has a **Host Key** (`~/.unn/room_host_key`). This key is what visitors verify when they connect directly to your node.
+- **Auto-Registration**: Registration is **silent**. When you launch `unn-room` with a free name, the entrypoint automatically claims it for you and authorizes your current host key.
+- **Automatic Key Rotation**: If you rotate your host key, the entrypoint will automatically detect that you are the owner (via your personal identity) and trust the new key.
+- **Name Protection**: Once a name is claimed, it is locked to your account. No other user can hijacked your room name, even if they have your host key (because they lack your personal identity key).
 - **Last Seen**: The entrypoint tracks the "last seen" date of both users and rooms to maintain an active registry.
 
 ### Key Topics

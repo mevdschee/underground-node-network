@@ -65,7 +65,7 @@ type Server struct {
 	headless        bool
 	httpClient      *http.Client
 	identities      map[string]string       // keyHash -> "unnUsername platform_username@platform"
-	usernames       map[string]string       // unnUsername -> keyHash
+	usernames       map[string]string       // unnUsername -> platformOwner (e.g. user@github)
 	registeredRooms map[string]string       // roomName -> "hostKeyHash ownerUsername lastSeenDate"
 	histories       map[string][]ui.Message // keyed by pubkey hash (hex)
 	cmdHistories    map[string][]string     // keyed by pubkey hash (hex)
@@ -111,7 +111,7 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 
 		s.mu.RLock()
 		identity, verified := s.identities[pubKeyHash]
-		ownerHash, taken := s.usernames[requestedUser]
+		ownerPlatform, taken := s.usernames[requestedUser]
 		s.mu.RUnlock()
 
 		perms := &ssh.Permissions{
@@ -143,9 +143,19 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 			perms.Extensions["verified"] = "false"
 		}
 
-		// Check if requested username is taken by someone else
-		if taken && ownerHash != pubKeyHash {
-			perms.Extensions["taken"] = "true"
+		// Check if requested username is taken by a different platform account
+		if taken {
+			isOwner := false
+			if verified {
+				fields := strings.Fields(identity)
+				platformInfo := fields[1]
+				if ownerPlatform == platformInfo {
+					isOwner = true
+				}
+			}
+			if !isOwner {
+				perms.Extensions["taken"] = "true"
+			}
 		}
 
 		return perms, nil

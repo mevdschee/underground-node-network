@@ -35,20 +35,15 @@ If you don't specify a room (as a path), you'll enter the entry point's interact
 
 If you're not using the client, you can connect directly using any SSH client on port 44322 on the entry point. As a normal SSH client will not be able to understand the in-band **OSC 31337 commands**, so you will need to manually teleport to a room and also downloads are not supported.
 
-## Hosting a Node
+### Hosting a Node
+Becoming a part of the network is designed to be frictionless:
 
-To become a part of the network and host your own "room":
-
-1. **Register User**: Connect to an entry point and register your SSH public key. Registration is **strictly enforced**—it ensures your username cannot be spoofed and is required for room hosting. UNN usernames must be **alphanumeric** and between 4 and 20 characters.
-2. **Register Room**: Obtain your Room Host Key Hash (printed when starting `unn-room` for the first time) and register it in the entrypoint UI:
+1. **Register Identity**: Connect to an entry point to link your SSH public key to a social account (GitHub/GitLab). This establishes your verified UNN username.
+2. **Launch Room**: Run the UNN room node. It will automatically find your personal SSH key and register your room node using that identity:
    ```bash
-   /register <roomname> <hostkeyhash>
+   ./start-room.sh -room <yourname>
    ```
-3. **Launch Room**: Run the UNN room node. It will now successfully connect to the entrypoint and go online. Room names are **permanently tied** to the authorized host key:
-   ```bash
-   ./start-room.sh
-   ```
-4. **Open Doors**: Your node will appear on the network. Visitors teleporting to you will undergo **P2P Visitor Authentication**, where the entrypoint verifies their key and pre-authorizes them with your node.
+3. **P2P Ready**: Your node is now online. Visitors can `/join` your room, and you'll coordinate direct connections via the entrypoint hub.
 
 ## Documentation
 

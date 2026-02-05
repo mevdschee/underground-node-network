@@ -173,10 +173,13 @@ func main() {
 				// If we reach here, the connection was lost
 				if err != nil {
 					errMsg := err.Error()
-					if strings.Contains(errMsg, "not registered") || strings.Contains(errMsg, "Unauthorized") || strings.Contains(errMsg, "mismatch") {
+					if strings.Contains(errMsg, "taken") || strings.Contains(errMsg, "Invalid") {
 						fmt.Printf("\n\033[1;31mRegistration Error: %s\033[0m\n", errMsg)
-						fmt.Printf("\033[1mYour Room Host Key Hash is:\033[0m \033[1;36m%s\033[0m\n", hostKeyHash)
-						fmt.Printf("Use this in the entrypoint: \033[1m/register %s %s\033[0m\n\n", *roomName, hostKeyHash)
+						if strings.Contains(errMsg, "taken") {
+							fmt.Printf("\033[1mYour Room Host Key Hash is:\033[0m \033[1;36m%s\033[0m\n", hostKeyHash)
+							fmt.Printf("If you are the owner, run with \033[1m-identity <your_personal_key>\033[0m to authorize this host key.\n")
+							fmt.Printf("Otherwise, please choose a different room name.\n\n")
+						}
 						os.Exit(1)
 					}
 				}
@@ -205,27 +208,29 @@ func main() {
 }
 
 func findPragmaticSigner(hostKey ssh.Signer, identityPath string) ssh.Signer {
+	// 1. Explicit identity takes precedence
 	if identityPath != "" {
 		if signer, err := loadKey(identityPath); err == nil {
 			return signer
 		}
 	}
-	// Primarily use the host key as the room's identity
-	if hostKey != nil {
-		return hostKey
-	}
 
+	// 2. Personal SSH keys (Social Identity) preferred over host key
 	homeDir, _ := os.UserHomeDir()
 	possibleKeys := []string{
 		filepath.Join(homeDir, ".ssh", "id_ed25519"),
 		filepath.Join(homeDir, ".ssh", "id_rsa"),
-		filepath.Join(homeDir, ".unn", "user_key"),
 	}
 
 	for _, path := range possibleKeys {
 		if signer, err := loadKey(path); err == nil {
 			return signer
 		}
+	}
+
+	// 3. Last resort: Host Key (Room Identity)
+	if hostKey != nil {
+		return hostKey
 	}
 
 	return nil

@@ -45,46 +45,6 @@ func (s *Server) updatePersonRoomsWithData(p *Person, rooms []protocol.RoomInfo)
 	p.UI.SetRooms(uiRooms)
 }
 
-func (s *Server) handleRoomRegistration(p *Person, roomName, hostKeyHash string) {
-	// Basic validation
-	if len(roomName) < 3 || len(roomName) > 20 {
-		s.showMessage(p, "Room name must be between 3 and 20 characters.", ui.MsgServer)
-		return
-	}
-	// Alphanumeric only
-	for _, char := range roomName {
-		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_') {
-			s.showMessage(p, "Room name contains invalid characters.", ui.MsgServer)
-			return
-		}
-	}
-
-	s.mu.Lock()
-
-	// Check if already registered
-	if info, ok := s.registeredRooms[roomName]; ok {
-		parts := strings.Split(info, " ")
-		registeredOwner := parts[1]
-		if registeredOwner != p.Username {
-			s.mu.Unlock()
-			s.showMessage(p, fmt.Sprintf("Room name '%s' is already registered to %s.", roomName, registeredOwner), ui.MsgServer)
-			return
-		}
-		// Allow owner to update the host key hash
-		s.registeredRooms[roomName] = fmt.Sprintf("%s %s %s", hostKeyHash, p.Username, time.Now().Format("2006-01-02"))
-		s.saveRooms()
-		s.mu.Unlock()
-		s.showMessage(p, fmt.Sprintf("Room '%s' host key updated successfully.", roomName), ui.MsgServer)
-		return
-	}
-
-	// New registration
-	s.registeredRooms[roomName] = fmt.Sprintf("%s %s %s", hostKeyHash, p.Username, time.Now().Format("2006-01-02"))
-	s.saveRooms()
-	s.mu.Unlock()
-	s.showMessage(p, fmt.Sprintf("Room '%s' registered successfully to %s.", roomName, p.Username), ui.MsgServer)
-}
-
 func (s *Server) showMessage(p *Person, text string, msgType ui.MessageType) {
 	if p.UI != nil {
 		p.UI.ShowMessage(text, msgType)
@@ -117,17 +77,8 @@ func (s *Server) handlePersonCommand(p *Person, conn *ssh.ServerConn, input stri
 			s.showMessage(p, "/help                     - Show this help message", ui.MsgServer)
 			s.showMessage(p, "/rooms                    - List all active rooms", ui.MsgServer)
 			s.showMessage(p, "/join <room_name>         - Join a room by name", ui.MsgServer)
-			s.showMessage(p, "/register <name> <hash>   - Register a room name to a host key hash", ui.MsgServer)
 			s.showMessage(p, "/quit                     - Exit", ui.MsgServer)
 			s.showMessage(p, "Ctrl+C                    - Exit", ui.MsgServer)
-		case "register":
-			if len(parts) < 3 {
-				s.showMessage(p, "Usage: /register <room_name> <host_key_hash>", ui.MsgServer)
-				return
-			}
-			roomName := parts[1]
-			hostKeyHash := parts[2]
-			s.handleRoomRegistration(p, roomName, hostKeyHash)
 		case "join":
 			if len(parts) < 2 {
 				s.showMessage(p, "Usage: /join <room_name>", ui.MsgServer)
