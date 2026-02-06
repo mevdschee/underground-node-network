@@ -66,11 +66,11 @@ func (m *StdinManager) Start() {
 			readfds.Bits[fd/64] |= 1 << (uint(fd) % 64)
 			timeout := &syscall.Timeval{Sec: 0, Usec: 100000} // 100ms
 
-			n, err := syscall.Select(fd+1, readfds, nil, nil, timeout)
+			ready, err := selectReady(fd+1, readfds, timeout)
 			if err != nil && err != syscall.EINTR {
 				return
 			}
-			if n > 0 {
+			if ready {
 				n, err := os.Stdin.Read(buf)
 				if err != nil {
 					return
