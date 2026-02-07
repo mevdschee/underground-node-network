@@ -488,24 +488,36 @@ func main() {
 
 		log.Println("QUIC connection established!")
 
-		// Open a stream and send a message
+		// Open a stream and continuously exchange messages
 		stream, err := conn.OpenStreamSync(context.Background())
 		if err != nil {
 			log.Fatalf("Failed to open stream: %v", err)
 		}
 		defer stream.Close()
 
-		message := "Hello from UDP hole-punched QUIC connection!"
-		log.Printf("Sending: %s", message)
-		stream.Write([]byte(message))
+		log.Println("Starting continuous message exchange...")
 
 		buf := make([]byte, 1024)
-		n, err := stream.Read(buf)
-		if err != nil {
-			log.Fatalf("Failed to read response: %v", err)
-		}
+		for {
+			// Send message
+			message := "Hello from client!"
+			_, err := stream.Write([]byte(message))
+			if err != nil {
+				log.Printf("Failed to send: %v", err)
+				break
+			}
+			log.Printf("Sent: %s", message)
 
-		log.Printf("Received response: %s", string(buf[:n]))
-		log.Println("Demo completed successfully!")
+			// Receive response
+			n, err := stream.Read(buf)
+			if err != nil {
+				log.Printf("Connection closed: %v", err)
+				break
+			}
+			log.Printf("Received: %s", string(buf[:n]))
+
+			// Wait before next message
+			time.Sleep(5 * time.Second)
+		}
 	}
 }
