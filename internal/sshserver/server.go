@@ -2,6 +2,7 @@ package sshserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -15,10 +16,12 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mevdschee/underground-node-network/internal/doors"
+	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/ui"
 	"github.com/mevdschee/underground-node-network/internal/ui/bridge"
 	"github.com/mevdschee/underground-node-network/internal/ui/common"
 	"github.com/mevdschee/underground-node-network/internal/ui/password"
+	"github.com/quic-go/quic-go"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -44,7 +47,7 @@ type Server struct {
 	authorizedKeys map[string]string // Marshaled pubkey -> verified username
 	hostKey        ssh.Signer
 	mu             sync.RWMutex
-	listener       net.Listener
+	quicListener   *nat.QUICListener
 	headless       bool
 	histories      map[string][]ui.Message // keyed by pubkey hash (hex)
 	cmdHistories   map[string][]string     // keyed by pubkey hash (hex)
@@ -113,16 +116,27 @@ func (s *Server) AuthorizeKey(pubKey ssh.PublicKey, username string) {
 	log.Printf("Authorized key for person: %s", username)
 }
 
-// Start begins listening for SSH connections
+// Start begins listening for QUIC connections
 func (s *Server) Start() error {
-	listener, err := net.Listen("tcp", s.address)
+	// Parse address to get port
+	_, portStr, err := net.SplitHostPort(s.address)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", s.address, err)
+		return fmt.Errorf("invalid address %s: %w", s.address, err)
 	}
-	s.listener = listener
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		return fmt.Errorf("invalid port in address %s: %w", s.address, err)
+	}
 
-	// Get actual address (important when port 0 is used for random port)
-	actualAddr := listener.Addr().String()
+	// Create QUIC listener
+	quicListener, err := nat.NewQUICListener(port)
+	if err != nil {
+		return fmt.Errorf("failed to create QUIC listener on %s: %w", s.address, err)
+	}
+	s.quicListener = quicListener
+
+	// Get actual address
+	actualAddr := quicListener.LocalAddr().String()
 	log.Printf("SSH server listening on %s", actualAddr)
 
 	go s.acceptLoop()
@@ -131,17 +145,17 @@ func (s *Server) Start() error {
 
 // GetPort returns the actual port the server is listening on
 func (s *Server) GetPort() int {
-	if s.listener == nil {
+	if s.quicListener == nil {
 		return 0
 	}
-	addr := s.listener.Addr().(*net.TCPAddr)
+	addr := s.quicListener.LocalAddr().(*net.UDPAddr)
 	return addr.Port
 }
 
 // Stop stops the SSH server
 func (s *Server) Stop() error {
-	if s.listener != nil {
-		return s.listener.Close()
+	if s.quicListener != nil {
+		return s.quicListener.Close()
 	}
 	return nil
 }
@@ -192,14 +206,27 @@ func (s *Server) updatePeopleList(p *Person) {
 
 func (s *Server) acceptLoop() {
 	for {
-		conn, err := s.listener.Accept()
+		// Accept QUIC connection
+		quicConn, err := s.quicListener.Accept(context.Background())
 		if err != nil {
-			if !strings.Contains(err.Error(), "use of closed network connection") {
-				log.Printf("Failed to accept connection: %v", err)
+			if !strings.Contains(err.Error(), "server closed") {
+				log.Printf("Failed to accept QUIC connection: %v", err)
 			}
 			return
 		}
-		go s.handleConnection(conn)
+
+		// Accept a stream for SSH
+		go func(qc *quic.Conn) {
+			stream, err := qc.AcceptStream(context.Background())
+			if err != nil {
+				log.Printf("Failed to accept stream: %v", err)
+				return
+			}
+
+			// Wrap stream as net.Conn for SSH
+			conn := nat.NewQUICStreamConn(stream, qc)
+			s.handleConnection(conn)
+		}(quicConn)
 	}
 }
 

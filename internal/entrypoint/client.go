@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
 )
@@ -43,7 +44,7 @@ func NewClient(address, username string, signer ssh.Signer) *Client {
 
 // Connect establishes an SSH connection to the entry point
 func (c *Client) Connect() error {
-	conn, err := net.Dial("tcp", c.address)
+	conn, err := nat.DialQUIC(c.address)
 	if err != nil {
 		return fmt.Errorf("failed to connect to entry point: %w", err)
 	}
