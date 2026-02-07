@@ -34,9 +34,9 @@ graph TD
 ### Key Modules
 
 - **Stdin Manager**: A thread-safe input proxy that allows the client to pause/resume user input during transitions (e.g., between the entrypoint and a room). This prevents "ghost" characters from leaking into the terminal during handshakes.
-- **OSC Detector**: A real-time stream analyzer that looks for ANSI OSC 31337 sequences (`\x1b]31337;...`) in the entrypoint's output. These sequences carry the P2P candidates and block transfer metadata.
-- **Candidate Prober**: Executes parallel TCP dials to all advertised room candidates (LAN, Public, Tunnel) to find the fastest reachable path before handing off to the native SSH client.
-- **Native SSH Bridge**: For the final room connection, the client executes the system `ssh` binary (or falls back to an internal client) with pre-configured host key verification extracted from the signaling layer.
+- **OSC Detector**: A real-time stream analyzer that looks for ANSI OSC 31337 sequences (`\x1b]31337;...`) in the entrypoint's output. These sequences carry P2P candidates and connection metadata.
+- **P2P Connector**: Coordinates with the entrypoint to perform **two-way UDP hole-punching**, then establishes a QUIC connection to the room using the `p2pquic` library.
+- **SSH over QUIC**: Wraps the QUIC stream in a `net.Conn` interface (`QUICStreamConn`) and establishes an SSH session over it for the interactive terminal.
 
 ### Persistence Logic
 The client implements a `for { ... }` reconnect loop. When a room connection exits (via Ctrl+C or disconnect), the client clears the terminal and immediately restores the active Entrypoint session, giving the user the feel of a persistent "Operating System" for the network.

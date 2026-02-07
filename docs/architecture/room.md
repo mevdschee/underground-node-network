@@ -35,7 +35,7 @@ graph TD
 
 - **SSH Server (`internal/sshserver`)**: A customized `crypto/ssh` server that implements the UNN authentication model (handover-trust). It manages the multiplexing between the chat console and active doors, and handles **OSC-based inbound file transfers**.
 - **Door Manager (`internal/doors`)**: Responsible for scanning a local directory for executables and managing their lifecycle (execution, TTY allocation, and cleanup).
-- **NAT Discovery (`internal/nat`)**: Uses STUN and local interface enumeration to gather connectivity "candidates" for P2P hole-punching.
+- **NAT/QUIC (`internal/nat`)**: Provides `QUICStreamConn` (wraps QUIC streams as `net.Conn` for SSH) and `SSHSignalingClient` for p2pquic peer registration. Server-reflexive addresses are provided by the entrypoint from the TCP connection.
 
 ### Process Isolation
 When a visitor executes a Door:

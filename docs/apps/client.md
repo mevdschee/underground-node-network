@@ -20,13 +20,13 @@ The client implements a resilient, **Zmodem-like block-based transfer mechanism*
 
 ### Role & Responsibilities
 - **Teleportation**: Monitors entrypoint output for signaling and automatically initiates room connections.
-- **NAT Probing**: Tests and selects the best connection candidates (Local, Public, or Tunnel).
+- **P2P Connection**: Coordinates with the entrypoint for two-way UDP hole-punching, then establishes **SSH over QUIC** connections to rooms.
 - **Automation**: Handles automated file downloads and terminal state management during jumps.
 - **Persistence**: Keeps the session alive and returns the user to the entrypoint when a room connection ends.
 
 ### Key Topics
 - [OSC Signaling](../concepts/signaling.md#2-osc-31337-sequences-in-band) - The invisible communication layer used for automation.
-- [Jump Logic](../concepts/p2p-nat.md#probe-and-select) - How the client picks the fastest path to a node.
+- [P2P & NAT Traversal](../concepts/p2p-nat.md) - How QUIC connections are established via UDP hole-punching.
 - [Managed I/O](../concepts/tui_and_doors.md#stdin-bridge) - How Ctrl+C and window resizing are preserved across connections.
 
 ---

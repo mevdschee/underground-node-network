@@ -2,10 +2,11 @@
 
 The network uses two distinct layers of communication to keep everything in sync.
 
-### 1. Control Subsystem (Out-of-Band)
-The `unn-control` SSH subsystem is used for high-level coordination between the entrypoint and room nodes.
-- **Protocol**: JSON messages.
-- **Usage**: Room registration, P2P candidate exchange, and identity handover.
+### 1. Control Subsystems (Out-of-Band)
+UNN uses SSH subsystems for high-level coordination:
+- **`unn-control`**: Used between room nodes and the entrypoint for room registration, identity handover, and **coordinated two-way hole-punching**.
+- **`unn-signaling`**: Used by clients and rooms for p2pquic peer registration and candidate exchange. The entrypoint adds **server-reflexive addresses** (the public IP:port as seen from the TCP connection) to candidate lists.
+- **Protocol**: JSON messages over SSH subsystem channels.
 
 ### 2. OSC 31337 Sequences (In-Band)
 To provide a seamless experience for visitors, we use invisible **ANSI OSC 31337** sequences. These sequences are embedded in the normal terminal output stream and captured by the `unn-client` tool.
@@ -26,7 +27,7 @@ To avoid opening additional ports or requiring secondary SSH channels, UNN uses 
 6. **Rate Limiting**: The server can introduce small delays between blocks to stay within configured upload limits without affecting terminal responsiveness.
 
 ### Why OSC?
-Using OSC allows the servers to control the client tool without needing a separate network port or a custom protocol. It works over any standard SSH terminal, though only the `unn-client` is "aware" enough to act on the signals.
+Using OSC allows the servers to control the client tool without needing a separate network port or a custom protocol. The `unn-client` is required to interpret these signals and establish SSH over QUIC connections to rooms.
 
 ## Message Parameter Reference
 

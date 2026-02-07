@@ -47,7 +47,7 @@ This document provides an overview of the directory structure and the main compo
 - **entrypoint/ & sshserver/**: Contain the core SSH handling and orchestration logic for the two primary node types.
 - **ui/**: A modular TUI library built on `tcell`, tailored for the UNN's aesthetic and functional needs.
 - **protocol/**: Defines the common JSON structures used for signaling between nodes.
-- **nat/**: Implements the P2P fabric logic, including STUN-based candidate gathering and hole-punching.
+- **nat/**: Provides `QUICStreamConn` (wraps QUIC streams as `net.Conn` for SSH over QUIC) and `SSHSignalingClient` for p2pquic peer registration.
 - **doors/**: Handles the execution and communication with "Doors" (external programs piped into the TUI).
 
 ### Documentation (`docs/`)
