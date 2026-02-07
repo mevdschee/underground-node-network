@@ -67,15 +67,61 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 			target = net.JoinHostPort(candidate, strconv.Itoa(sshPort))
 		}
 
-		conn, err := nat.DialQUIC(target)
+		if verbose {
+			log.Printf("Attempting to connect to %s", target)
+		}
+
+		// Parse target for UDP hole-punching
+		host, portStr, err := net.SplitHostPort(target)
 		if err != nil {
 			lastErr = err
+			continue
+		}
+		var port int
+		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Perform UDP hole-punching before QUIC connection
+		udpAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", host, port))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Create local UDP socket for punching
+		localUDP, err := net.ListenUDP("udp4", nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Send punch packets (try a few times)
+		for i := 0; i < 5; i++ {
+			localUDP.WriteToUDP([]byte("PUNCH"), udpAddr)
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		if verbose {
+			log.Printf("Sent UDP punch packets to %s", target)
+		}
+
+		// Now try QUIC connection using the SAME UDP socket (maintains NAT hole)
+		conn, err := nat.DialQUICWithUDP(localUDP, target)
+		if err != nil {
+			localUDP.Close()
+			lastErr = err
+			if verbose {
+				log.Printf("QUIC dial failed to %s: %v", target, err)
+			}
 			continue
 		}
 
 		sshConn, chans, reqs, err := ssh.NewClientConn(conn, target, config)
 		if err != nil {
 			conn.Close()
+			localUDP.Close()
 			lastErr = err
 			continue
 		}
