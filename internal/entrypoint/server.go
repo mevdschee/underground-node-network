@@ -1,6 +1,7 @@
 package entrypoint
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,10 +15,12 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/ui"
 	"github.com/mevdschee/underground-node-network/internal/ui/bridge"
 	"github.com/mevdschee/underground-node-network/internal/ui/common"
+	"github.com/quic-go/quic-go"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -61,7 +64,7 @@ type Server struct {
 	punchSessions   map[string]*PunchSession // keyed by person ID
 	banner          []string
 	mu              sync.RWMutex
-	listener        net.Listener
+	quicListener    *nat.QUICListener
 	headless        bool
 	httpClient      *http.Client
 	identities      map[string]string       // keyHash -> "unnUsername platform_username@platform"
@@ -190,14 +193,25 @@ func (s *Server) SetHeadless(headless bool) {
 	s.headless = headless
 }
 
-// Start begins listening for SSH connections
+// Start begins listening for QUIC connections
 func (s *Server) Start() error {
-	listener, err := net.Listen("tcp", s.address)
+	// Parse address to get port
+	_, portStr, err := net.SplitHostPort(s.address)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", s.address, err)
+		return fmt.Errorf("invalid address %s: %w", s.address, err)
 	}
-	s.listener = listener
-	log.Printf("Entry point listening on %s", s.address)
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		return fmt.Errorf("invalid port in address %s: %w", s.address, err)
+	}
+
+	// Create QUIC listener
+	quicListener, err := nat.NewQUICListener(port)
+	if err != nil {
+		return fmt.Errorf("failed to create QUIC listener on %s: %w", s.address, err)
+	}
+	s.quicListener = quicListener
+	log.Printf("Entry point listening on %s (QUIC/UDP)", s.address)
 
 	go s.acceptLoop()
 	return nil
@@ -205,8 +219,8 @@ func (s *Server) Start() error {
 
 // Stop stops the server
 func (s *Server) Stop() error {
-	if s.listener != nil {
-		return s.listener.Close()
+	if s.quicListener != nil {
+		return s.quicListener.Close()
 	}
 	return nil
 }
@@ -225,14 +239,27 @@ func (s *Server) GetRooms() []protocol.RoomInfo {
 
 func (s *Server) acceptLoop() {
 	for {
-		conn, err := s.listener.Accept()
+		// Accept QUIC connection
+		quicConn, err := s.quicListener.Accept(context.Background())
 		if err != nil {
-			if !strings.Contains(err.Error(), "use of closed network connection") {
-				log.Printf("Failed to accept connection: %v", err)
+			if !strings.Contains(err.Error(), "server closed") {
+				log.Printf("Failed to accept QUIC connection: %v", err)
 			}
 			return
 		}
-		go s.handleConnection(conn)
+
+		// Accept a stream for SSH
+		go func(qc *quic.Conn) {
+			stream, err := qc.AcceptStream(context.Background())
+			if err != nil {
+				log.Printf("Failed to accept stream: %v", err)
+				return
+			}
+
+			// Wrap stream as net.Conn for SSH
+			conn := nat.NewQUICStreamConn(stream, qc)
+			s.handleConnection(conn)
+		}(quicConn)
 	}
 }
 

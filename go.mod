@@ -19,6 +19,8 @@ require (
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/pkg/sftp v1.13.10 // indirect
+	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 )
