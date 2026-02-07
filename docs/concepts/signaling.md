@@ -22,7 +22,7 @@ To avoid opening additional ports or requiring secondary SSH channels, UNN uses 
 1. **Segmentation**: The server reads the file in 8192-byte chunks.
 2. **Encoding & Framing**: Each chunk is **Base64 encoded** and wrapped in an OSC 31337 JSON payload (`transfer_block`).
 3. **Transmission**: The payloads are printed to the server's stdout, where they are captured by the `unn-client`.
-4. **Res resilient Storage**: The client stores blocks as **NDJSON (Newline Delimited JSON)** in a `.parts` file. This ensures that even if a transfer is interrupted, the received data is preserved.
+4. **Resilient Storage**: The client stores blocks as **NDJSON (Newline Delimited JSON)** in a `.parts` file. This ensures that even if a transfer is interrupted, the received data is preserved.
 5. **Reassembly & Integrity**: Once the last block (index == total-1) is received, the client reassembles the file and verifies it against a SHA256 checksum provided in the first block's metadata.
 6. **Rate Limiting**: The server can introduce small delays between blocks to stay within configured upload limits without affecting terminal responsiveness.
 

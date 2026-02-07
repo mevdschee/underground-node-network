@@ -61,7 +61,7 @@ Becoming a part of the network is designed to be frictionless:
 
 ### [Network Concepts](docs/concepts/README.md)
 - [Identity & Verification](docs/concepts/identity.md) - Decentralized trust and key registration.
-- [P2P & NAT Traversal](docs/concepts/p2p-nat.md) - Hole-punching and direct TCP streams.
+- [P2P & NAT Traversal](docs/concepts/p2p-nat.md) - Hole-punching and SSH over QUIC streams.
 - [Signaling Protocol](docs/concepts/signaling.md) - Custom control subsystems and ANSI OSC 31337.
 - [TUI & Interactions](docs/concepts/tui_and_doors.md) - BBS experience, Input Bridges, and Doors.
 - [Technical Details](docs/concepts/implementation_details.md) - Deep dive into internal mechanics.
