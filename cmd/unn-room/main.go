@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -82,6 +83,38 @@ func main() {
 
 	// Get actual port (important when port 0 is used for random port)
 	actualPort := server.GetPort()
+
+	// Configure p2pquic peer with signaling URL if entrypoint is specified
+	if *entryPointAddr != "" {
+		// Extract host from entrypoint address for signaling URL
+		epHost := strings.Split(*entryPointAddr, ":")[0]
+		signalingURL := fmt.Sprintf("http://%s:8080", epHost)
+
+		// Get the p2pquic peer from server and configure it
+		p2pPeer := server.GetP2PQUICPeer()
+		if p2pPeer != nil {
+			// Update signaling URL
+			p2pPeer.SetSignalingURL(signalingURL)
+
+			// Discover candidates (STUN + local)
+			candidates, err := p2pPeer.DiscoverCandidates()
+			if err != nil {
+				log.Printf("Warning: Failed to discover candidates: %v", err)
+			} else {
+				log.Printf("Discovered %d candidates", len(candidates))
+			}
+
+			// Register with signaling server
+			if err := p2pPeer.Register(); err != nil {
+				log.Printf("Warning: Failed to register with signaling server: %v", err)
+			} else {
+				log.Printf("Registered with p2pquic signaling server at %s", signalingURL)
+			}
+
+			// Start continuous hole-punching
+			go p2pPeer.ContinuousHolePunch(context.Background())
+		}
+	}
 
 	log.Printf("UNN Room '%s' is now online", *roomName)
 	log.Printf("Connect with: ssh -p %d %s", actualPort, *bind)

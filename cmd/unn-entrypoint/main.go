@@ -48,6 +48,11 @@ func main() {
 		log.Fatalf("Failed to start entry point: %v", err)
 	}
 
+	// Start p2pquic signaling HTTP server on port 8080
+	if err := server.StartSignalingHTTPServer(8080); err != nil {
+		log.Fatalf("Failed to start signaling HTTP server: %v", err)
+	}
+
 	log.Printf("UNN Entry Point is online")
 	log.Printf("Connect with: ssh -p %d %s", *port, *bind)
 

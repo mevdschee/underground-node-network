@@ -126,11 +126,56 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 			sshPort    int
 		)
 
-		// Connect to entry point
-		conn, err := nat.DialQUIC(entrypoint)
+		// Create p2pquic peer for entrypoint connection
+		clientID := fmt.Sprintf("client-%s-%d", username, time.Now().UnixNano())
+
+		// Extract host from entrypoint for signaling URL
+		epHost := strings.Split(entrypoint, ":")[0]
+		signalingURL := fmt.Sprintf("http://%s:8080", epHost)
+
+		if verbose {
+			log.Printf("Creating p2pquic peer: %s", clientID)
+			log.Printf("Signaling server: %s", signalingURL)
+		}
+
+		p2pPeer, err := nat.NewP2PQUICPeer(clientID, 0, signalingURL, true)
 		if err != nil {
+			return fmt.Errorf("failed to create p2pquic peer: %w", err)
+		}
+
+		// Discover candidates and register with signaling server
+		if _, err := p2pPeer.DiscoverCandidates(); err != nil {
+			p2pPeer.Close()
+			if verbose {
+				log.Printf("Warning: Failed to discover candidates: %v", err)
+			}
+		}
+
+		if err := p2pPeer.Register(); err != nil {
+			p2pPeer.Close()
+			if verbose {
+				log.Printf("Warning: Failed to register with signaling server: %v", err)
+			}
+		}
+
+		if verbose {
+			log.Printf("Registered client with signaling server")
+		}
+
+		// Extract entrypoint peer ID (use "entrypoint" as the peer ID)
+		entrypointPeerID := "entrypoint"
+
+		// Connect to entry point via p2pquic
+		if verbose {
+			log.Printf("Connecting to entrypoint peer: %s", entrypointPeerID)
+		}
+
+		conn, err := p2pPeer.Connect(entrypointPeerID)
+		if err != nil {
+			p2pPeer.Close()
 			return fmt.Errorf("failed to connect to entry point: %w", err)
 		}
+		defer p2pPeer.Close()
 
 		sshConn, chans, reqs, err := ssh.NewClientConn(conn, entrypoint, config)
 		if err != nil {

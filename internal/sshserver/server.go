@@ -21,7 +21,6 @@ import (
 	"github.com/mevdschee/underground-node-network/internal/ui/bridge"
 	"github.com/mevdschee/underground-node-network/internal/ui/common"
 	"github.com/mevdschee/underground-node-network/internal/ui/password"
-	"github.com/quic-go/quic-go"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -47,7 +46,7 @@ type Server struct {
 	authorizedKeys map[string]string // Marshaled pubkey -> verified username
 	hostKey        ssh.Signer
 	mu             sync.RWMutex
-	quicListener   *nat.QUICListener
+	p2pPeer        *nat.P2PQUICPeer // p2pquic peer for connections
 	headless       bool
 	histories      map[string][]ui.Message // keyed by pubkey hash (hex)
 	cmdHistories   map[string][]string     // keyed by pubkey hash (hex)
@@ -116,7 +115,12 @@ func (s *Server) AuthorizeKey(pubKey ssh.PublicKey, username string) {
 	log.Printf("Authorized key for person: %s", username)
 }
 
-// Start begins listening for QUIC connections
+// GetP2PQUICPeer returns the p2pquic peer for configuration
+func (s *Server) GetP2PQUICPeer() *nat.P2PQUICPeer {
+	return s.p2pPeer
+}
+
+// Start begins listening for QUIC connections via p2pquic
 func (s *Server) Start() error {
 	// Parse address to get port
 	_, portStr, err := net.SplitHostPort(s.address)
@@ -128,16 +132,29 @@ func (s *Server) Start() error {
 		return fmt.Errorf("invalid port in address %s: %w", s.address, err)
 	}
 
-	// Create QUIC listener
-	quicListener, err := nat.NewQUICListener(port)
+	// Create p2pquic peer with requested port (may be 0 for random)
+	// We'll update it with actual port after Listen() if needed
+	// Enable STUN to discover public IP address
+	p2pPeer, err := nat.NewP2PQUICPeer(s.roomName, port, "", true)
 	if err != nil {
-		return fmt.Errorf("failed to create QUIC listener on %s: %w", s.address, err)
+		return fmt.Errorf("failed to create p2pquic peer: %w", err)
 	}
-	s.quicListener = quicListener
+	s.p2pPeer = p2pPeer
 
-	// Get actual address
-	actualAddr := quicListener.LocalAddr().String()
-	log.Printf("SSH server listening on %s", actualAddr)
+	// Start listening - this will bind to an actual port
+	if err := p2pPeer.Listen(); err != nil {
+		return fmt.Errorf("failed to start p2pquic listener: %w", err)
+	}
+
+	// Get actual port from the peer's listener
+	actualPort := p2pPeer.GetActualPort()
+	if actualPort != port {
+		// Port was 0 or changed, update the peer's config
+		p2pPeer.UpdatePort(actualPort)
+		log.Printf("Updated p2pquic peer port from %d to %d", port, actualPort)
+	}
+
+	log.Printf("SSH server listening on %s:%d", strings.Split(s.address, ":")[0], actualPort)
 
 	go s.acceptLoop()
 	return nil
@@ -145,25 +162,26 @@ func (s *Server) Start() error {
 
 // GetPort returns the actual port the server is listening on
 func (s *Server) GetPort() int {
-	if s.quicListener == nil {
+	if s.p2pPeer == nil {
 		return 0
 	}
-	addr := s.quicListener.LocalAddr().(*net.UDPAddr)
-	return addr.Port
+	// p2pquic peer doesn't expose port directly, return from config
+	// This is a limitation - we'll need to track it separately
+	return s.p2pPeer.GetPort()
 }
 
 // GetUDPConn returns the underlying UDP connection for hole-punching
 func (s *Server) GetUDPConn() *net.UDPConn {
-	if s.quicListener == nil {
+	if s.p2pPeer == nil {
 		return nil
 	}
-	return s.quicListener.GetUDPConn()
+	return s.p2pPeer.GetUDPConn()
 }
 
 // Stop stops the SSH server
 func (s *Server) Stop() error {
-	if s.quicListener != nil {
-		return s.quicListener.Close()
+	if s.p2pPeer != nil {
+		return s.p2pPeer.Close()
 	}
 	return nil
 }
@@ -214,27 +232,17 @@ func (s *Server) updatePeopleList(p *Person) {
 
 func (s *Server) acceptLoop() {
 	for {
-		// Accept QUIC connection
-		quicConn, err := s.quicListener.Accept(context.Background())
+		// Accept QUIC connection via p2pquic
+		conn, err := s.p2pPeer.Accept(context.Background())
 		if err != nil {
-			if !strings.Contains(err.Error(), "server closed") {
-				log.Printf("Failed to accept QUIC connection: %v", err)
+			if !strings.Contains(err.Error(), "server closed") && !strings.Contains(err.Error(), "closed") {
+				log.Printf("Failed to accept connection: %v", err)
 			}
 			return
 		}
 
-		// Accept a stream for SSH
-		go func(qc *quic.Conn) {
-			stream, err := qc.AcceptStream(context.Background())
-			if err != nil {
-				log.Printf("Failed to accept stream: %v", err)
-				return
-			}
-
-			// Wrap stream as net.Conn for SSH
-			conn := nat.NewQUICStreamConn(stream, qc)
-			s.handleConnection(conn)
-		}(quicConn)
+		// Connection is already a net.Conn (stream wrapped), handle directly
+		go s.handleConnection(conn)
 	}
 }
 

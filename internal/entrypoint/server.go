@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mevdschee/p2pquic-go/pkg/signaling"
 	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"github.com/mevdschee/underground-node-network/internal/ui"
@@ -65,6 +66,8 @@ type Server struct {
 	banner          []string
 	mu              sync.RWMutex
 	quicListener    *nat.QUICListener
+	p2pPeer         *nat.P2PQUICPeer  // p2pquic peer for this entrypoint
+	signalingServer *signaling.Server // signaling server for p2pquic peers
 	headless        bool
 	httpClient      *http.Client
 	identities      map[string]string       // keyHash -> "unnUsername platform_username@platform"
@@ -87,6 +90,23 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 	}
 	config.AddHostKey(hostKey)
 
+	// Parse address to get port for p2pquic peer
+	_, portStr, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address %s: %w", address, err)
+	}
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		return nil, fmt.Errorf("invalid port in address %s: %w", address, err)
+	}
+
+	// Create p2pquic peer for signaling (use "entrypoint" as peer ID)
+	// Use port+1 to avoid conflict with main QUIC listener
+	p2pPeer, err := nat.NewP2PQUICPeer("entrypoint", port+1, "", false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create p2pquic peer: %w", err)
+	}
+
 	s := &Server{
 		address:       address,
 		usersDir:      usersDir,
@@ -97,6 +117,8 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		signalingServer: signaling.NewServer(),
+		p2pPeer:         p2pPeer, // Assign the created p2pPeer
 		identities:      make(map[string]string),
 		usernames:       make(map[string]string),
 		registeredRooms: make(map[string]string),
@@ -212,6 +234,34 @@ func (s *Server) Start() error {
 	}
 	s.quicListener = quicListener
 	log.Printf("Entry point listening on %s (QUIC/UDP)", s.address)
+
+	// Start p2pquic peer listening (for p2pquic-based connections)
+	if s.p2pPeer != nil {
+		if err := s.p2pPeer.Listen(); err != nil {
+			log.Printf("Warning: Failed to start p2pquic listener: %v", err)
+		} else {
+			// Discover candidates
+			candidates, err := s.p2pPeer.DiscoverCandidates()
+			if err != nil {
+				log.Printf("Warning: Failed to discover p2pquic candidates: %v", err)
+			}
+
+			// Register directly with our own signaling server (not via HTTP)
+			// Convert nat.Candidate to signaling.Candidate
+			signalingCandidates := make([]signaling.Candidate, len(candidates))
+			for i, c := range candidates {
+				signalingCandidates[i] = signaling.Candidate{
+					IP:   c.IP,
+					Port: c.Port,
+				}
+			}
+			if err := s.signalingServer.Register("entrypoint", signalingCandidates); err != nil {
+				log.Printf("Warning: Failed to register entrypoint with signaling server: %v", err)
+			} else {
+				log.Printf("Entrypoint registered as p2pquic peer 'entrypoint' with %d candidates", len(signalingCandidates))
+			}
+		}
+	}
 
 	go s.acceptLoop()
 	return nil

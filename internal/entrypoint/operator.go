@@ -135,24 +135,47 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 			s.mu.RUnlock()
 
 			if ok {
-				// Look up room keys
-				var publicKeys []string
+				// Look up room info
+				var roomName string
+				var roomSSHPort int
+				var roomPublicKeys []string
 				s.mu.RLock()
 				if room, exists := s.rooms[session.RoomName]; exists {
-					publicKeys = room.Info.PublicKeys
+					roomName = room.Info.Name
+					roomSSHPort = room.Info.SSHPort
+					roomPublicKeys = room.Info.PublicKeys
 				}
 				s.mu.RUnlock()
 
-				// Send punch_start to person with room's candidates
+				if roomName == "" {
+					log.Printf("Room %s not found for punch answer from person %s", session.RoomName, payload.PersonID)
+					continue
+				}
+
+				// Convert candidates to include room peer ID
+				// payload.Candidates are already strings in format "ip:port"
+				candidateStrs := make([]string, len(payload.Candidates))
+				for i, c := range payload.Candidates {
+					// Format: "roomname:ip:port" so client can extract room peer ID
+					candidateStrs[i] = fmt.Sprintf("%s:%s", roomName, c)
+				}
+
 				startPayload := protocol.PunchStartPayload{
-					RoomName:   session.RoomName,
-					Candidates: payload.Candidates,
-					SSHPort:    payload.SSHPort,
-					PublicKeys: publicKeys,
+					Action:     "teleport",
+					RoomName:   roomName,
+					Candidates: candidateStrs,
+					SSHPort:    roomSSHPort,
+					PublicKeys: roomPublicKeys,
 				}
 				startMsg, _ := protocol.NewMessage(protocol.MsgTypePunchStart, startPayload)
-				session.PersonChan <- startMsg
-				log.Printf("Punch start sent to person %s", payload.PersonID)
+
+				// Send to person
+				select {
+				case session.PersonChan <- startMsg:
+					log.Printf("Sent PunchStart to person %s", payload.PersonID)
+				default:
+					log.Printf("Person channel full for %s", payload.PersonID)
+				}
 			}
 		}
 	}

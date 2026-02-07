@@ -71,57 +71,83 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 			log.Printf("Attempting to connect to %s", target)
 		}
 
-		// Parse target for UDP hole-punching
-		host, portStr, err := net.SplitHostPort(target)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		var port int
-		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-			lastErr = err
-			continue
+		// Extract room peer ID from candidate (format: "roomname:ip:port")
+		var roomPeerID string
+		if strings.Count(candidate, ":") >= 2 {
+			parts := strings.Split(candidate, ":")
+			if len(parts) >= 1 {
+				roomPeerID = parts[0]
+			}
 		}
 
-		// Perform UDP hole-punching before QUIC connection
-		udpAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", host, port))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		// Create local UDP socket for punching
-		localUDP, err := net.ListenUDP("udp4", nil)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		// Send punch packets (try a few times)
-		for i := 0; i < 5; i++ {
-			localUDP.WriteToUDP([]byte("PUNCH"), udpAddr)
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		if verbose {
-			log.Printf("Sent UDP punch packets to %s", target)
-		}
-
-		// Now try QUIC connection using the SAME UDP socket (maintains NAT hole)
-		conn, err := nat.DialQUICWithUDP(localUDP, target)
-		if err != nil {
-			localUDP.Close()
-			lastErr = err
+		if roomPeerID == "" {
 			if verbose {
-				log.Printf("QUIC dial failed to %s: %v", target, err)
+				log.Printf("Could not extract room peer ID from candidate: %s", candidate)
 			}
 			continue
 		}
 
+		// Create p2pquic peer for room connection
+		clientID := fmt.Sprintf("client-%s-%d", entrypointConfig.User, time.Now().UnixNano())
+
+		// Extract signaling URL from target
+		host, _, err := net.SplitHostPort(target)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		signalingURL := fmt.Sprintf("http://%s:8080", host)
+
+		if verbose {
+			log.Printf("Creating p2pquic peer for room connection: %s", clientID)
+			log.Printf("Signaling URL: %s", signalingURL)
+			log.Printf("Room peer ID: %s", roomPeerID)
+		}
+
+		p2pPeer, err := nat.NewP2PQUICPeer(clientID, 0, signalingURL, true)
+		if err != nil {
+			lastErr = err
+			if verbose {
+				log.Printf("Failed to create p2pquic peer: %v", err)
+			}
+			continue
+		}
+
+		// Discover candidates and register
+		if _, err := p2pPeer.DiscoverCandidates(); err != nil {
+			p2pPeer.Close()
+			if verbose {
+				log.Printf("Warning: Failed to discover candidates: %v", err)
+			}
+		}
+
+		if err := p2pPeer.Register(); err != nil {
+			p2pPeer.Close()
+			if verbose {
+				log.Printf("Warning: Failed to register with signaling server: %v", err)
+			}
+		}
+
+		if verbose {
+			log.Printf("Registered client with signaling server")
+		}
+
+		// Connect to room via p2pquic
+		conn, err := p2pPeer.Connect(roomPeerID)
+		if err != nil {
+			p2pPeer.Close()
+			lastErr = err
+			if verbose {
+				log.Printf("p2pquic connection failed to %s: %v", roomPeerID, err)
+			}
+			continue
+		}
+		defer p2pPeer.Close()
+
 		sshConn, chans, reqs, err := ssh.NewClientConn(conn, target, config)
 		if err != nil {
 			conn.Close()
-			localUDP.Close()
+			p2pPeer.Close()
 			lastErr = err
 			continue
 		}
