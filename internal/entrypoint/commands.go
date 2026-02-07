@@ -160,9 +160,19 @@ func (s *Server) handleRoomJoin(p *Person, conn *ssh.ServerConn, roomName string
 		unnUsername = conn.Permissions.Extensions["username"]
 	}
 
+	// Get client's remote address for hole-punching
+	clientCandidates := []string{}
+	if remoteAddr := conn.RemoteAddr(); remoteAddr != nil {
+		// Extract IP:port from remote address
+		if addr := remoteAddr.String(); addr != "" {
+			clientCandidates = append(clientCandidates, addr)
+			log.Printf("Client %s candidates for hole-punching: %v", unnUsername, clientCandidates)
+		}
+	}
+
 	offerPayload := protocol.PunchOfferPayload{
 		PersonID:    personID,
-		Candidates:  []string{},
+		Candidates:  clientCandidates,
 		PersonKey:   personKey,
 		DisplayName: displayName,
 		Username:    unnUsername,

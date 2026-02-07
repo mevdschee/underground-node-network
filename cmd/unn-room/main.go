@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -160,12 +161,39 @@ func main() {
 
 				// Listen for messages (this blocks until the connection is lost)
 				err = epClient.ListenForMessages(nil, func(offer protocol.PunchOfferPayload) {
+					// Authorize the person's key
 					if offer.PersonKey != "" {
 						pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(offer.PersonKey))
 						if err == nil {
 							server.AuthorizeKey(pubKey, offer.Username)
 						} else {
 							log.Printf("Warning: Failed to parse person public key: %v", err)
+						}
+					}
+
+					// Send UDP punch packets to client's candidates
+					if len(offer.Candidates) > 0 {
+						log.Printf("Sending UDP punch packets to client %s at %v", offer.Username, offer.Candidates)
+
+						// Get the room's UDP connection from the server
+						udpConn := server.GetUDPConn()
+						if udpConn != nil {
+							for _, candidate := range offer.Candidates {
+								addr, err := net.ResolveUDPAddr("udp4", candidate)
+								if err != nil {
+									log.Printf("Failed to resolve candidate %s: %v", candidate, err)
+									continue
+								}
+
+								// Send multiple punch packets
+								for i := 0; i < 5; i++ {
+									udpConn.WriteToUDP([]byte("PUNCH"), addr)
+									time.Sleep(100 * time.Millisecond)
+								}
+								log.Printf("Sent UDP punch packets to %s", candidate)
+							}
+						} else {
+							log.Printf("Warning: No UDP connection available for hole-punching")
 						}
 					}
 				}, nil, actualPort, candidateStrs)

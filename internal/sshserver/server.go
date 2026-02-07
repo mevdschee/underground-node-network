@@ -152,6 +152,14 @@ func (s *Server) GetPort() int {
 	return addr.Port
 }
 
+// GetUDPConn returns the underlying UDP connection for hole-punching
+func (s *Server) GetUDPConn() *net.UDPConn {
+	if s.quicListener == nil {
+		return nil
+	}
+	return s.quicListener.GetUDPConn()
+}
+
 // Stop stops the SSH server
 func (s *Server) Stop() error {
 	if s.quicListener != nil {

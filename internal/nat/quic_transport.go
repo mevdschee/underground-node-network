@@ -120,6 +120,35 @@ func (ql *QUICListener) continuousHolePunch() {
 	}
 }
 
+// respondToPunchPackets listens for incoming UDP "PUNCH" packets and responds
+// This creates bidirectional NAT holes automatically
+func (ql *QUICListener) respondToPunchPackets() {
+	buf := make([]byte, 1024)
+
+	for {
+		select {
+		case <-ql.stopHolePunch:
+			return
+		default:
+			// Set read deadline to avoid blocking forever
+			ql.udpConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+
+			n, addr, err := ql.udpConn.ReadFromUDP(buf)
+			if err != nil {
+				// Timeout is expected, just continue
+				continue
+			}
+
+			// Check if it's a PUNCH packet
+			if n >= 5 && string(buf[:5]) == "PUNCH" {
+				// Respond with PUNCH packet to same address
+				ql.udpConn.WriteToUDP([]byte("PUNCH"), addr)
+				log.Printf("Received PUNCH from %s, responded", addr.String())
+			}
+		}
+	}
+}
+
 // getAllPeers retrieves all registered peers from signaling server
 func (ql *QUICListener) getAllPeers() ([]PeerInfo, error) {
 	if ql.signalingURL == "" {
@@ -159,6 +188,11 @@ func (ql *QUICListener) Close() error {
 // LocalAddr returns the local network address
 func (ql *QUICListener) LocalAddr() net.Addr {
 	return ql.udpConn.LocalAddr()
+}
+
+// GetUDPConn returns the underlying UDP connection for hole-punching
+func (ql *QUICListener) GetUDPConn() *net.UDPConn {
+	return ql.udpConn
 }
 
 // generateTLSConfig creates a self-signed certificate for QUIC
