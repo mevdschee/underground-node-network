@@ -208,3 +208,13 @@ func discoverCandidates() []string {
 
 	return candidates
 }
+
+// SendPunchAnswer sends a punch answer back to the entry point
+func (c *Client) SendPunchAnswer(answer protocol.PunchAnswerPayload) error {
+encoder := json.NewEncoder(c.channel)
+msg, err := protocol.NewMessage(protocol.MsgTypePunchAnswer, answer)
+if err != nil {
+ return err
+}
+return encoder.Encode(msg)
+}

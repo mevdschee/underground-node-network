@@ -196,6 +196,18 @@ func main() {
 							log.Printf("Warning: No UDP connection available for hole-punching")
 						}
 					}
+
+					// Send PunchAnswer back to entrypoint with room's candidates
+					answer := protocol.PunchAnswerPayload{
+						PersonID:   offer.PersonID,
+						Candidates: candidateStrs,
+						SSHPort:    actualPort,
+					}
+					if err := epClient.SendPunchAnswer(answer); err != nil {
+						log.Printf("Failed to send punch answer: %v", err)
+					} else {
+						log.Printf("Sent PunchAnswer for person %s", offer.PersonID)
+					}
 				}, nil, actualPort, candidateStrs)
 
 				// If we reach here, the connection was lost
