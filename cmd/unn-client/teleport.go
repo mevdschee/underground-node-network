@@ -1,22 +1,23 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/mevdschee/underground-node-network/internal/nat"
-	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
+
+// RoomInfo is an alias for the entrypoint client's roomInfo type
+type RoomInfo = roomInfo
 
 var globalDownloadsDir string
 
@@ -118,318 +119,310 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 
 	// Loop for persistent entry point session
 	currentRoom := roomName
-	for {
-		// Reset connection variables for each entry point session
-		var (
-			candidates []string
-			hostKeys   []string
-			sshPort    int
-		)
 
-		// Create p2pquic peer for entrypoint connection
-		clientID := fmt.Sprintf("client-%s-%d", username, time.Now().UnixNano())
+	// First, connect to entrypoint to handle registration
+	if verbose {
+		log.Printf("Connecting to entrypoint for registration check...")
+	}
 
-		// Extract host from entrypoint for signaling URL
-		epHost := strings.Split(entrypoint, ":")[0]
-		signalingURL := fmt.Sprintf("http://%s:8080", epHost)
+	// Resolve to IPv4 only
+	host, port, err := net.SplitHostPort(entrypoint)
+	if err != nil {
+		return fmt.Errorf("invalid entrypoint address: %w", err)
+	}
 
-		if verbose {
-			log.Printf("Creating p2pquic peer: %s", clientID)
-			log.Printf("Signaling server: %s", signalingURL)
-		}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("failed to resolve %s: %w", host, err)
+	}
 
-		p2pPeer, err := nat.NewP2PQUICPeer(clientID, 0, signalingURL, true)
-		if err != nil {
-			return fmt.Errorf("failed to create p2pquic peer: %w", err)
-		}
-
-		// Discover candidates and register with signaling server
-		if _, err := p2pPeer.DiscoverCandidates(); err != nil {
-			p2pPeer.Close()
-			if verbose {
-				log.Printf("Warning: Failed to discover candidates: %v", err)
-			}
-		}
-
-		if err := p2pPeer.Register(); err != nil {
-			p2pPeer.Close()
-			if verbose {
-				log.Printf("Warning: Failed to register with signaling server: %v", err)
-			}
-		}
-
-		if verbose {
-			log.Printf("Registered client with signaling server")
-		}
-
-		// Extract entrypoint peer ID (use "entrypoint" as the peer ID)
-		entrypointPeerID := "entrypoint"
-
-		// Connect to entry point via p2pquic
-		if verbose {
-			log.Printf("Connecting to entrypoint peer: %s", entrypointPeerID)
-		}
-
-		conn, err := p2pPeer.Connect(entrypointPeerID)
-		if err != nil {
-			p2pPeer.Close()
-			return fmt.Errorf("failed to connect to entry point: %w", err)
-		}
-		defer p2pPeer.Close()
-
-		sshConn, chans, reqs, err := ssh.NewClientConn(conn, entrypoint, config)
-		if err != nil {
-			conn.Close()
-			return fmt.Errorf("SSH handshake failed: %w", err)
-		}
-		client := ssh.NewClient(sshConn, chans, reqs)
-
-		if verbose {
-			log.Printf("Connected to entry point")
-		}
-
-		// Open a session
-		session, err := client.NewSession()
-		if err != nil {
-			client.Close()
-			return fmt.Errorf("failed to create session: %w", err)
-		}
-
-		// Set up pipes
-		stdinPipe, err := session.StdinPipe()
-		if err != nil {
-			session.Close()
-			client.Close()
-			return fmt.Errorf("failed to get stdin pipe: %w", err)
-		}
-
-		stdoutPipe, err := session.StdoutPipe()
-		if err != nil {
-			session.Close()
-			client.Close()
-			return fmt.Errorf("failed to get stdout pipe: %w", err)
-		}
-
-		// Request PTY
-		width, height, err := term.GetSize(fd)
-		if err != nil {
-			width, height = 80, 24
-		}
-
-		if err := session.RequestPty("xterm", height, width, ssh.TerminalModes{}); err != nil {
-			session.Close()
-			client.Close()
-			return fmt.Errorf("failed to request PTY: %w", err)
-		}
-
-		// Handle window size changes
-		winch := make(chan os.Signal, 1)
-		signal.Notify(winch, syscall.SIGWINCH)
-		stopWinch := make(chan bool)
-
-		go func() {
-			for {
-				select {
-				case <-winch:
-					width, height, err := term.GetSize(fd)
-					if err == nil {
-						session.WindowChange(height, width)
-					}
-				case <-stopWinch:
-					return
-				}
-			}
-		}()
-
-		// Start interactive session
-		if err := session.Shell(); err != nil {
-			session.Close()
-			client.Close()
-			return fmt.Errorf("failed to start interactive session: %w", err)
-		}
-
-		// Variables for connection info
-		var (
-			done       = make(chan bool)
-			userExited = make(chan bool)
-		)
-
-		// Monitor output for connection data and echo to user
-		go func() {
-			buf := make([]byte, 1024)
-			var oscBuffer strings.Builder
-			var inOSC bool
-			for {
-				n, err := stdoutPipe.Read(buf)
-				if err != nil {
-					close(userExited)
-					return
-				}
-
-				for i := 0; i < n; i++ {
-					b := buf[i]
-
-					// OSC 31337 Detection: \x1b]31337; ... \x07
-					if b == 0x1b && !inOSC {
-						// Peek for ]31337;
-						if i+7 < n && string(buf[i+1:i+8]) == "]31337;" {
-							inOSC = true
-							oscBuffer.Reset()
-							i += 7
-							continue
-						}
-					}
-
-					if inOSC {
-						if b == 0x07 {
-							inOSC = false
-							jsonData := oscBuffer.String()
-							if verbose {
-								log.Printf("Captured OSC 31337 data (%d bytes)", len(jsonData))
-							}
-
-							var startPayload protocol.PunchStartPayload
-							if err := json.Unmarshal([]byte(jsonData), &startPayload); err == nil {
-								if startPayload.Action == "teleport" {
-									candidates = startPayload.Candidates
-									sshPort = startPayload.SSHPort
-									hostKeys = startPayload.PublicKeys
-									close(done)
-								} else if startPayload.Action == "popup" {
-									var popupPayload protocol.PopupPayload
-									if err := json.Unmarshal([]byte(jsonData), &popupPayload); err == nil {
-										handleOSCPopup(popupPayload)
-										if !batch {
-											globalStdinManager.Pause()
-											width := 80
-											if w, _, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
-												width = w
-											}
-											prompt := ">>> Press [ENTER] to continue <<<"
-											padding := (width - len(prompt)) / 2
-											if padding < 0 {
-												padding = 0
-											}
-											fmt.Printf("\r%s\033[1m%s\033[0m", strings.Repeat(" ", padding), prompt)
-
-											buf := make([]byte, 1)
-											for {
-												n, err := os.Stdin.Read(buf)
-												if err != nil || n == 0 || buf[0] == '\n' || buf[0] == '\r' {
-													break
-												}
-											}
-											fmt.Print("\033[H\033[J")
-											globalStdinManager.Resume()
-										}
-									}
-								}
-							} else if verbose {
-								log.Printf("JSON unmarshal failed: %v", err)
-							}
-						} else {
-							oscBuffer.WriteByte(b)
-						}
-						continue
-					}
-
-					os.Stdout.Write([]byte{b})
-				}
-			}
-		}()
-
-		// Proxy stdin using the global manager
-		globalStdinManager.Start()
-		globalStdinManager.SetWriter(stdinPipe)
-
-		// If room name was provided, send it automatically
-		if currentRoom != "" {
-			if verbose {
-				log.Printf("Automatically selecting room: %s", currentRoom)
-			}
-			//time.Sleep(500 * time.Millisecond) // Small delay to allow server to be ready
-			fmt.Fprintf(stdinPipe, "/join %s\r\n", currentRoom)
-			currentRoom = "" // Only do it once per URL invocation
-		}
-		var (
-			shouldConnect bool
-			timeout       = 300 * time.Second
-		)
-		select {
-		case <-userExited:
-			// Server closed connection, hopefully after printing data and instructions
-			shouldConnect = len(candidates) > 0
-		case <-done:
-			// Captured connection data, jump to room immediately
-			shouldConnect = true
-		case <-time.After(timeout):
-			return fmt.Errorf("timeout waiting for connection info")
-		}
-
-		// Ensure we've at least tried to parse the data
-		select {
-		case <-done:
-		case <-time.After(100 * time.Millisecond):
-		}
-
-		globalStdinManager.SetWriter(nil)
-		session.Close()
-		client.Close()
-
-		if !shouldConnect {
-			return nil // User exited manually
-		}
-
-		// Connect to room using native SSH client - stay in room if download triggered
-		for {
-			downloaded, popup, err := runRoomSSH(candidates, sshPort, hostKeys, config, identPath, verbose, oldState, batch)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error connecting to room: %v\n", err)
-				time.Sleep(2 * time.Second)
-				break
-			}
-
-			// Show disconnect message
-			fmt.Fprintf(os.Stderr, "\r\n\033[1;33m>>> Disconnected from room: %s <<<\033[0m\r\n\r\n", roomName)
-
-			if popup != nil {
-				handleOSCPopup(*popup)
-				if !batch {
-					globalStdinManager.Pause()
-					// Centered prompt
-					width := 80
-					if w, _, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
-						width = w
-					}
-					prompt := ">>> Press [ENTER] to continue <<<"
-					padding := (width - len(prompt)) / 2
-					if padding < 0 {
-						padding = 0
-					}
-					fmt.Printf("\r%s\033[1m%s\033[0m", strings.Repeat(" ", padding), prompt)
-
-					// Wait for Enter (CR or LF)
-					buf := make([]byte, 1)
-					for {
-						n, err := os.Stdin.Read(buf)
-						if err != nil || n == 0 || buf[0] == '\n' || buf[0] == '\r' {
-							break
-						}
-					}
-					fmt.Print("\033[H\033[J") // Clear screen again after Enter
-					globalStdinManager.Resume()
-				}
-				if popup.Type == "error" {
-					return nil // Stop teleportation if it was a kick/error
-				}
-			}
-
-			if !downloaded {
-				break // Exit back to entry point
-			}
-			if verbose {
-				log.Printf("Reconnecting to room after automatic download...")
-			}
+	var ipv4Addr string
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			ipv4Addr = ip.String()
+			break
 		}
 	}
+
+	if ipv4Addr == "" {
+		return fmt.Errorf("no IPv4 address found for %s", host)
+	}
+
+	ipv4Address := net.JoinHostPort(ipv4Addr, port)
+	entrypointClient, err := ssh.Dial("tcp", ipv4Address, config)
+	if err != nil {
+		return fmt.Errorf("failed to connect to entrypoint: %w", err)
+	}
+	defer entrypointClient.Close()
+
+	// Handle registration/verification
+	verifiedUsername, err := handleRegistration(entrypointClient, username)
+	if err != nil {
+		return fmt.Errorf("registration failed: %w", err)
+	}
+
+	if verbose {
+		log.Printf("Verified as: %s", verifiedUsername)
+	}
+
+	// Now we can proceed with room teleportation
+
+	// Create an EntrypointClient to query for room info
+	epClient, err := NewEntrypointClient(entrypointClient)
+	if err != nil {
+		return fmt.Errorf("failed to create entrypoint client: %w", err)
+	}
+	defer epClient.Close()
+
+	// Get list of rooms
+	rooms, err := epClient.GetRooms()
+	if err != nil {
+		return fmt.Errorf("failed to get room list: %w", err)
+	}
+
+	// If no room specified, show interactive browser
+	if currentRoom == "" {
+		if len(rooms) == 0 {
+			fmt.Printf("\nNo rooms currently online.\n")
+			return nil
+		}
+
+		fmt.Printf("\n\033[1mAvailable Rooms:\033[0m\n\n")
+		for i, room := range rooms {
+			peopleText := "person"
+			if room.PeopleCount != 1 {
+				peopleText = "people"
+			}
+			fmt.Printf("  \033[1;36m%d.\033[0m \033[1m%s\033[0m (%d %s)\n",
+				i+1, room.Name, room.PeopleCount, peopleText)
+			if len(room.Doors) > 0 {
+				fmt.Printf("     Doors: %s\n", strings.Join(room.Doors, ", "))
+			}
+		}
+
+		fmt.Printf("\n\033[1mEnter room number or name (or 'q' to quit):\033[0m ")
+
+		var input string
+		fmt.Scanln(&input)
+
+		if input == "q" || input == "quit" || input == "" {
+			return nil
+		}
+
+		// Try to parse as number first
+		var selectedRoom *roomInfo
+		num := 0
+		if _, err := fmt.Sscanf(input, "%d", &num); err == nil && num > 0 && num <= len(rooms) {
+			selectedRoom = &rooms[num-1]
+		} else {
+			// Try to match by name
+			for i := range rooms {
+				if rooms[i].Name == input {
+					selectedRoom = &rooms[i]
+					break
+				}
+			}
+		}
+
+		if selectedRoom == nil {
+			return fmt.Errorf("invalid selection: %s", input)
+		}
+
+		currentRoom = selectedRoom.Name
+		if verbose {
+			log.Printf("Selected room: %s", currentRoom)
+		}
+	}
+
+	// User has selected or requested a specific room
+	if verbose {
+		log.Printf("Connecting to room: %s", currentRoom)
+	}
+
+	// Find the requested room in the list
+	var targetRoom *RoomInfo
+	for i := range rooms {
+		if rooms[i].Name == currentRoom {
+			targetRoom = &rooms[i]
+			break
+		}
+	}
+
+	if targetRoom == nil {
+		fmt.Printf("Room '%s' not found.\n", currentRoom)
+		fmt.Printf("\nAvailable rooms:\n")
+		if len(rooms) == 0 {
+			fmt.Printf("  (no rooms currently online)\n")
+		} else {
+			for _, room := range rooms {
+				fmt.Printf("  - %s (%d people)\n", room.Name, room.PeopleCount)
+			}
+		}
+		return fmt.Errorf("room not found")
+	}
+
+	if verbose {
+		log.Printf("Found room: %s with %d people", targetRoom.Name, targetRoom.PeopleCount)
+		log.Printf("Room SSH port: %d", targetRoom.SSHPort)
+		log.Printf("Room candidates: %v", targetRoom.Candidates)
+	}
+
+	// Connect to room via p2pquic using SSH signaling
+	if verbose {
+		log.Printf("Connecting to room via p2pquic")
+	}
+
+	// Create p2pquic peer for client
+	clientID := fmt.Sprintf("client-%d", time.Now().UnixNano())
+	p2pPeer, err := nat.NewP2PQUICPeer(clientID, 0, "", false)
+	if err != nil {
+		return fmt.Errorf("failed to create p2pquic peer: %w", err)
+	}
+	defer p2pPeer.Close()
+
+	// Discover client candidates
+	clientCandidates, err := p2pPeer.DiscoverCandidates()
+	if err != nil {
+		return fmt.Errorf("failed to discover candidates: %w", err)
+	}
+
+	if verbose {
+		log.Printf("Client discovered %d candidates", len(clientCandidates))
+	}
+
+	// Register client with signaling via SSH
+	signalingClient, err := nat.NewSSHSignalingClient(entrypointClient)
+	if err != nil {
+		return fmt.Errorf("failed to create signaling client: %w", err)
+	}
+	defer signalingClient.Close()
+
+	signalingCandidates := nat.ConvertCandidates(clientCandidates)
+	if err := signalingClient.Register(clientID, signalingCandidates); err != nil {
+		return fmt.Errorf("failed to register with signaling:  %w", err)
+	}
+
+	if verbose {
+		log.Printf("Registered with signaling server")
+	}
+
+	// Get room's peer info from signaling
+	roomPeerID := fmt.Sprintf("room-%s", currentRoom)
+	roomPeerInfo, err := signalingClient.GetPeer(roomPeerID)
+	if err != nil {
+		return fmt.Errorf("failed to get room peer info: %w", err)
+	}
+
+	if verbose {
+		log.Printf("Got room peer info with %d candidates", len(roomPeerInfo.Candidates))
+	}
+
+	// Convert signaling.Candidate to string addresses for connection
+	roomCandidates := make([]string, len(roomPeerInfo.Candidates))
+	for i, cand := range roomPeerInfo.Candidates {
+		roomCandidates[i] = fmt.Sprintf("%s:%d", cand.IP, cand.Port)
+	}
+
+	// Request coordinated hole-punching via entrypoint
+	// This tells the room to start punching to us while we punch to it
+	clientCandidateStrs := make([]string, len(clientCandidates))
+	for i, c := range clientCandidates {
+		clientCandidateStrs[i] = fmt.Sprintf("%s:%d", c.IP, c.Port)
+	}
+
+	if verbose {
+		log.Printf("Requesting coordinated punch to room %s", currentRoom)
+	}
+
+	if err := epClient.RequestPreparePunch(currentRoom, clientID, clientCandidateStrs); err != nil {
+		log.Printf("Warning: Coordinated punch request failed: %v (continuing anyway)", err)
+	} else if verbose {
+		log.Printf("Room notified to start punching, waiting briefly...")
+	}
+
+	// Connect via p2pquic using the peer info we got from SSH signaling
+	if verbose {
+		log.Printf("Attempting p2pquic connection to room peer: %s with %d candidates", roomPeerID, len(roomCandidates))
+	}
+
+	// Connect and get the underlying QUIC connection using peer info
+	ctx := context.Background()
+	quicConn, err := p2pPeer.ConnectWithPeerInfo(ctx, roomPeerID, roomCandidates)
+
+	if err != nil {
+		return fmt.Errorf("failed to connect via p2pquic: %w", err)
+	}
+	defer quicConn.CloseWithError(0, "client disconnecting")
+
+	if verbose {
+		log.Printf("p2pquic connection established")
+	}
+
+	// Open a stream for SSH
+	stream, err := quicConn.OpenStreamSync(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to open stream: %w", err)
+	}
+
+	// Wrap stream as net.Conn for SSH
+	sshConn := nat.NewQUICStreamConn(stream, quicConn)
+
+	// Connect SSH client over the QUIC stream
+	sshConnWrapper, chans, reqs, err := ssh.NewClientConn(sshConn, targetRoom.Name, config)
+	if err != nil {
+		return fmt.Errorf("failed to establish SSH over p2pquic: %w", err)
+	}
+
+	roomSSHClient := ssh.NewClient(sshConnWrapper, chans, reqs)
+	defer roomSSHClient.Close()
+
+	// Open a session
+	session, err := roomSSHClient.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create room session: %w", err)
+	}
+	defer session.Close()
+
+	// Set up pipes
+	session.Stdin = os.Stdin
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+
+	// Request PTY
+	fd = int(os.Stdin.Fd())
+	var width, height = 80, 24
+	if !batch {
+		var w, h int
+		w, h, err = term.GetSize(fd)
+		if err == nil {
+			width, height = w, h
+		}
+	}
+
+	if err := session.RequestPty("xterm-256color", height, width, ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}); err != nil {
+		return fmt.Errorf("failed to request PTY: %w", err)
+	}
+
+	// Start shell
+	if err := session.Shell(); err != nil {
+		return fmt.Errorf("failed to start shell: %w", err)
+	}
+
+	fmt.Printf("\n\033[1;32m>>> Connected to room: %s <<<\033[0m\n\n", currentRoom)
+
+	// Wait for session to end
+	if err := session.Wait(); err != nil {
+		// Exit status errors are normal when user disconnects
+		if _, ok := err.(*ssh.ExitError); !ok {
+			return fmt.Errorf("session error: %w", err)
+		}
+	}
+
+	fmt.Printf("\n\033[1;33m>>> Disconnected from room: %s <<<\033[0m\n\n", currentRoom)
+
+	return nil
 }

@@ -2,25 +2,20 @@ package entrypoint
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
-	"sync"
 
-	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
 )
 
-// Client handles communication with an entry point via SSH
+// Client handles communication with an entry point via SSH subsystem
+// This is used by room servers to register with the entrypoint
 type Client struct {
-	address    string
-	sshConfig  *ssh.ClientConfig
-	conn       ssh.Conn
-	channel    ssh.Channel
-	mu         sync.Mutex
-	registered bool
-	rooms      []protocol.RoomInfo
+	address   string
+	sshConfig *ssh.ClientConfig
+	sshClient *ssh.Client
+	channel   ssh.Channel
 }
 
 // NewClient creates a new entry point client
@@ -38,36 +33,48 @@ func NewClient(address, username string, signer ssh.Signer) *Client {
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 			ClientVersion:   "SSH-2.0-UNN-ROOM",
 		},
-		rooms: make([]protocol.RoomInfo, 0),
 	}
 }
 
 // Connect establishes an SSH connection to the entry point
 func (c *Client) Connect() error {
-	conn, err := nat.DialQUIC(c.address)
+	// Resolve address and force IPv4
+	host, port, err := net.SplitHostPort(c.address)
 	if err != nil {
-		return fmt.Errorf("failed to connect to entry point: %w", err)
+		return fmt.Errorf("invalid address format: %w", err)
 	}
 
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, c.address, c.sshConfig)
+	// Resolve to IPv4 only
+	ips, err := net.LookupIP(host)
 	if err != nil {
-		conn.Close()
-		return fmt.Errorf("SSH handshake failed: %w", err)
+		return fmt.Errorf("failed to resolve %s: %w", host, err)
 	}
 
-	c.conn = sshConn
-
-	// Discard incoming channels and requests
-	go ssh.DiscardRequests(reqs)
-	go func() {
-		for range chans {
+	// Find first IPv4 address
+	var ipv4Addr string
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			ipv4Addr = ip.String()
+			break
 		}
-	}()
+	}
+
+	if ipv4Addr == "" {
+		return fmt.Errorf("no IPv4 address found for %s", host)
+	}
+
+	// Connect via TCP SSH using IPv4
+	ipv4Address := net.JoinHostPort(ipv4Addr, port)
+	sshClient, err := ssh.Dial("tcp", ipv4Address, c.sshConfig)
+	if err != nil {
+		return fmt.Errorf("failed to connect to entrypoint: %w", err)
+	}
+	c.sshClient = sshClient
 
 	// Open control channel with subsystem
-	channel, reqs, err := sshConn.OpenChannel("session", nil)
+	channel, reqs, err := sshClient.OpenChannel("session", nil)
 	if err != nil {
-		sshConn.Close()
+		sshClient.Close()
 		return fmt.Errorf("failed to open session: %w", err)
 	}
 
@@ -77,7 +84,7 @@ func (c *Client) Connect() error {
 	ok, err := channel.SendRequest("subsystem", true, ssh.Marshal(struct{ Name string }{"unn-control"}))
 	if err != nil || !ok {
 		channel.Close()
-		sshConn.Close()
+		sshClient.Close()
 		return fmt.Errorf("failed to request unn-control subsystem")
 	}
 
@@ -90,17 +97,20 @@ func (c *Client) Close() error {
 	if c.channel != nil {
 		c.channel.Close()
 	}
-	if c.conn != nil {
-		c.conn.Close()
+	if c.sshClient != nil {
+		c.sshClient.Close()
 	}
 	return nil
 }
 
-// Register registers this node with the entry point
-func (c *Client) Register(roomName string, doors []string, sshPort int, publicKeys []string, peopleCount int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// Connection returns the underlying SSH client for use with subsystems
+func (c *Client) Connection() *ssh.Client {
+	return c.sshClient
+}
 
+// Register registers this room with the entry point
+func (c *Client) Register(roomName string, doors []string, sshPort int, publicKeys []string, peopleCount int) error {
+	// Discover candidates
 	candidates := discoverCandidates()
 
 	payload := protocol.RegisterPayload{
@@ -122,7 +132,6 @@ func (c *Client) Register(roomName string, doors []string, sshPort int, publicKe
 		return fmt.Errorf("failed to send register message: %w", err)
 	}
 
-	c.registered = true
 	return nil
 }
 
@@ -144,9 +153,6 @@ func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), onPunch
 		case protocol.MsgTypeRoomList:
 			var payload protocol.RoomListPayload
 			if err := msg.ParsePayload(&payload); err == nil {
-				c.mu.Lock()
-				c.rooms = payload.Rooms
-				c.mu.Unlock()
 				if onRoomList != nil {
 					onRoomList(payload.Rooms)
 				}
@@ -155,11 +161,9 @@ func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), onPunch
 		case protocol.MsgTypeError:
 			var payload protocol.ErrorPayload
 			if err := msg.ParsePayload(&payload); err == nil {
-				errObj := errors.New(payload.Message)
 				if onError != nil {
-					onError(errObj)
+					onError(fmt.Errorf(payload.Message))
 				}
-				return errObj
 			}
 
 		case protocol.MsgTypePunchOffer:
@@ -184,11 +188,14 @@ func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), onPunch
 	}
 }
 
-// GetRooms returns the list of active rooms
-func (c *Client) GetRooms() []protocol.RoomInfo {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.rooms
+// SendPunchAnswer sends a punch answer back to the entry point
+func (c *Client) SendPunchAnswer(answer protocol.PunchAnswerPayload) error {
+	encoder := json.NewEncoder(c.channel)
+	msg, err := protocol.NewMessage(protocol.MsgTypePunchAnswer, answer)
+	if err != nil {
+		return err
+	}
+	return encoder.Encode(msg)
 }
 
 // discoverCandidates finds NAT traversal candidates
@@ -207,14 +214,4 @@ func discoverCandidates() []string {
 	}
 
 	return candidates
-}
-
-// SendPunchAnswer sends a punch answer back to the entry point
-func (c *Client) SendPunchAnswer(answer protocol.PunchAnswerPayload) error {
-encoder := json.NewEncoder(c.channel)
-msg, err := protocol.NewMessage(protocol.MsgTypePunchAnswer, answer)
-if err != nil {
- return err
-}
-return encoder.Encode(msg)
 }

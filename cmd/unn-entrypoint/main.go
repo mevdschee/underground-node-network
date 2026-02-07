@@ -17,7 +17,6 @@ func main() {
 	bind := flag.String("bind", "0.0.0.0", "Address to bind to")
 	hostKey := flag.String("hostkey", "", "Path to SSH host key")
 	usersDir := flag.String("users", "", "Path to users directory (defaults to <hostkey_dir>)")
-	headless := flag.Bool("headless", false, "Disable TUI (headless mode)")
 	flag.Parse()
 
 	// Set default host key path
@@ -42,19 +41,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create entry point: %v", err)
 	}
-	server.SetHeadless(*headless)
 
 	if err := server.Start(); err != nil {
 		log.Fatalf("Failed to start entry point: %v", err)
 	}
 
-	// Start p2pquic signaling HTTP server on port 8080
-	if err := server.StartSignalingHTTPServer(8080); err != nil {
-		log.Fatalf("Failed to start signaling HTTP server: %v", err)
-	}
-
 	log.Printf("UNN Entry Point is online")
 	log.Printf("Connect with: ssh -p %d %s", *port, *bind)
+	log.Printf("Available subsystems: unn-control (rooms), unn-api (clients), unn-signaling (p2p)")
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

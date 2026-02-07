@@ -3,10 +3,10 @@ package nat
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 
 	"github.com/mevdschee/p2pquic-go/pkg/p2pquic"
+	"github.com/quic-go/quic-go"
 )
 
 // P2PQUICPeer wraps p2pquic.Peer to provide UNN-compatible interface
@@ -21,7 +21,7 @@ func NewP2PQUICPeer(peerID string, localPort int, signalingURL string, enableSTU
 		PeerID:       peerID,
 		LocalPort:    localPort,
 		SignalingURL: signalingURL,
-		EnableSTUN:   enableSTUN,
+		EnableSTUN:   false, // Disabled - using server-reflexive IPv4 from entrypoint
 	}
 
 	peer, err := p2pquic.NewPeer(config)
@@ -100,6 +100,18 @@ func (p *P2PQUICPeer) Connect(remotePeerID string) (net.Conn, error) {
 	return NewQUICStreamConn(stream, quicConn), nil
 }
 
+// ConnectQUIC connects to a remote peer and returns the raw QUIC connection
+// This allows the caller to manage streams themselves
+func (p *P2PQUICPeer) ConnectQUIC(ctx context.Context, remotePeerID string) (*quic.Conn, error) {
+	return p.peer.Connect(remotePeerID)
+}
+
+// ConnectWithPeerInfo establishes a QUIC connection using pre-fetched peer info
+// This bypasses the HTTP signaling server lookup
+func (p *P2PQUICPeer) ConnectWithPeerInfo(ctx context.Context, remotePeerID string, candidateAddrs []string) (*quic.Conn, error) {
+	return p.peer.ConnectWithCandidates(remotePeerID, candidateAddrs)
+}
+
 // ContinuousHolePunch starts continuous hole-punching to discovered peers
 func (p *P2PQUICPeer) ContinuousHolePunch(ctx context.Context) {
 	p.peer.ContinuousHolePunch(ctx)
@@ -112,10 +124,7 @@ func (p *P2PQUICPeer) Close() error {
 
 // GetUDPConn returns the underlying UDP connection for manual hole-punching if needed
 func (p *P2PQUICPeer) GetUDPConn() *net.UDPConn {
-	// p2pquic.Peer doesn't expose UDP conn directly, but we can access it via reflection if needed
-	// For now, return nil as p2pquic handles hole-punching internally
-	log.Println("Warning: GetUDPConn() not supported with p2pquic adapter")
-	return nil
+	return p.peer.GetUDPConn()
 }
 
 // GetPort returns the local port the peer is listening on

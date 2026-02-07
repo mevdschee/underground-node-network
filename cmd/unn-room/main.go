@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -84,37 +83,8 @@ func main() {
 	// Get actual port (important when port 0 is used for random port)
 	actualPort := server.GetPort()
 
-	// Configure p2pquic peer with signaling URL if entrypoint is specified
-	if *entryPointAddr != "" {
-		// Extract host from entrypoint address for signaling URL
-		epHost := strings.Split(*entryPointAddr, ":")[0]
-		signalingURL := fmt.Sprintf("http://%s:8080", epHost)
-
-		// Get the p2pquic peer from server and configure it
-		p2pPeer := server.GetP2PQUICPeer()
-		if p2pPeer != nil {
-			// Update signaling URL
-			p2pPeer.SetSignalingURL(signalingURL)
-
-			// Discover candidates (STUN + local)
-			candidates, err := p2pPeer.DiscoverCandidates()
-			if err != nil {
-				log.Printf("Warning: Failed to discover candidates: %v", err)
-			} else {
-				log.Printf("Discovered %d candidates", len(candidates))
-			}
-
-			// Register with signaling server
-			if err := p2pPeer.Register(); err != nil {
-				log.Printf("Warning: Failed to register with signaling server: %v", err)
-			} else {
-				log.Printf("Registered with p2pquic signaling server at %s", signalingURL)
-			}
-
-			// Start continuous hole-punching
-			go p2pPeer.ContinuousHolePunch(context.Background())
-		}
-	}
+	// Note: p2pquic signaling will happen through the entrypoint SSH connection
+	// via the unn-signaling subsystem instead of HTTP
 
 	log.Printf("UNN Room '%s' is now online", *roomName)
 	log.Printf("Connect with: ssh -p %d %s", actualPort, *bind)
@@ -184,6 +154,35 @@ func main() {
 				}
 
 				log.Printf("Registered with entry point as '%s'", *roomName)
+
+				// Register with p2pquic signaling via SSH subsystem
+				if p2pPeer := server.GetP2PQUICPeer(); p2pPeer != nil {
+					// Discover candidates
+					p2pCandidates, err := p2pPeer.DiscoverCandidates()
+					if err != nil {
+						log.Printf("Warning: Failed to discover p2pquic candidates: %v", err)
+					} else {
+						log.Printf("Discovered %d p2pquic candidates", len(p2pCandidates))
+
+						// Create SSH signaling client
+						signalingClient, err := nat.NewSSHSignalingClient(epClient.Connection())
+						if err != nil {
+							log.Printf("Warning: Failed to create signaling client: %v", err)
+						} else {
+							defer signalingClient.Close()
+
+							// Register room as p2pquic peer
+							roomPeerID := fmt.Sprintf("room-%s", *roomName)
+							signalingCandidates := nat.ConvertCandidates(p2pCandidates)
+							if err := signalingClient.Register(roomPeerID, signalingCandidates); err != nil {
+								log.Printf("Warning: Failed to register with signaling: %v", err)
+							} else {
+								log.Printf("Registered room with p2pquic signaling as peer: %s", roomPeerID)
+								// Note: Using SSH-based signaling, no need for HTTP-based continuous hole-punching
+							}
+						}
+					}
+				}
 
 				// Report people count updates
 				server.OnPeopleChange = func(count int) {

@@ -11,12 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/mevdschee/underground-node-network/internal/protocol"
-	"github.com/mevdschee/underground-node-network/internal/ui"
-	"github.com/mevdschee/underground-node-network/internal/ui/common"
-	"github.com/mevdschee/underground-node-network/internal/ui/form"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -173,111 +169,6 @@ func (s *Server) VerifyIdentity(platform, username string, offeredKey ssh.Public
 	return false, nil
 }
 
-func (s *Server) handleOnboardingForm(p *Person, conn *ssh.ServerConn) bool {
-	eui := p.UI
-	sshUser := conn.User()
-
-	fields := []form.FormField{
-		{Label: "Platform (github, gitlab, sourcehut, codeberg)", Value: "github"},
-		{Label: "Platform Username", Value: ""},
-		{Label: "UNN Username", Value: sshUser, MaxLength: 20, Alphanumeric: true},
-	}
-
-	// Give a moment for any initial automated input to arrive, then flush it.
-	time.Sleep(100 * time.Millisecond)
-	p.Bridge.Flush()
-
-	for {
-		results := eui.PromptForm(fields)
-		if len(results) < 3 {
-			return false
-		}
-		platform := strings.ToLower(strings.TrimSpace(results[0]))
-		platformUser := strings.TrimSpace(results[1])
-		unnUsername := strings.TrimSpace(results[2])
-
-		fields[0].Value = platform
-		fields[1].Value = platformUser
-		fields[2].Value = unnUsername
-
-		// Clear errors
-		for i := range fields {
-			fields[i].Error = ""
-		}
-
-		platforms := []string{"github", "gitlab", "sourcehut", "codeberg"}
-		validPlatform := false
-		for _, v := range platforms {
-			if platform == v {
-				validPlatform = true
-				break
-			}
-		}
-		if !validPlatform {
-			fields[0].Error = "unsupported platform"
-			continue
-		}
-
-		if platformUser == "" {
-			fields[1].Error = "cannot be empty"
-			continue
-		}
-
-		// Length check
-		if len(unnUsername) < 4 {
-			fields[2].Error = "too short"
-			continue
-		}
-
-		if !common.IsAlphanumeric(unnUsername) {
-			fields[2].Error = "must be alphanumeric"
-			continue
-		}
-
-		pubKeyStr := conn.Permissions.Extensions["pubkey"]
-		offeredKey, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(pubKeyStr))
-
-		matched, err := s.VerifyIdentity(platform, platformUser, offeredKey)
-		if err != nil {
-			if strings.Contains(err.Error(), "status 404") {
-				fields[1].Error = "username not found"
-			} else {
-				s.showMessage(p, fmt.Sprintf("\033[1;31mError verifying identity: %v\033[0m", err), ui.MsgServer)
-			}
-			continue
-		}
-
-		if matched {
-			currentPlatform := fmt.Sprintf("%s@%s", platformUser, platform)
-			s.mu.RLock()
-			ownerPlatform, taken := s.usernames[unnUsername]
-			s.mu.RUnlock()
-
-			if taken && ownerPlatform != currentPlatform {
-				fields[2].Error = "not available"
-				continue
-			}
-
-			s.mu.Lock()
-			currentDate := time.Now().Format("2006-01-02")
-			pubKeyHash := s.calculatePubKeyHash(offeredKey)
-			s.usernames[unnUsername] = currentPlatform
-			s.identities[pubKeyHash] = fmt.Sprintf("%s %s %s", unnUsername, currentPlatform, currentDate)
-			s.saveUsers()
-			s.mu.Unlock()
-
-			p.Username = unnUsername
-			p.UI.SetUsername(unnUsername)
-			conn.Permissions.Extensions["verified"] = "true"
-			conn.Permissions.Extensions["platform"] = platform
-			conn.Permissions.Extensions["username"] = unnUsername
-			return true
-		} else {
-			fields[1].Error = "key not found"
-		}
-	}
-}
-
 func (s *Server) calculateSHA256Fingerprint(keyStr string) string {
 	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyStr))
 	if err != nil {
@@ -296,58 +187,4 @@ func (s *Server) getPubKeyHash(keyStr string) string {
 	}
 	hash := sha256.Sum256(pubKey.Marshal())
 	return fmt.Sprintf("%x", hash)
-}
-
-func (s *Server) SendOSC(p *Person, action string, params map[string]interface{}) {
-	if !p.UNNAware {
-		return
-	}
-	common.SendOSC(p.Bus, action, params)
-}
-
-func (s *Server) HandleOSC(p *Person, action string, params map[string]interface{}) {
-	log.Printf("Received OSC from %s: %s %v", p.Username, action, params)
-	if action == "join" {
-		if room, ok := params["room"].(string); ok {
-			p.InitialCommand = room
-		}
-	}
-}
-
-func (s *Server) showTeleportInfo(p *Person) {
-	data := p.TeleportData
-	if data == nil {
-		return
-	}
-
-	// Always clear screen before showing teleport info
-	// First reset colors to avoid the black background from sticking around
-	fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
-
-	// Emit invisible ANSI OSC 31337 sequence with teleport data
-	data.Action = "teleport"
-	s.SendOSC(p, "teleport", map[string]interface{}{
-		"room_name":   data.RoomName,
-		"candidates":  data.Candidates,
-		"ssh_port":    data.SSHPort,
-		"public_keys": data.PublicKeys,
-	})
-
-	fmt.Fprintf(p.Bus, "\033[1;32mUNN TELEPORTATION READY\033[0m\r\n\r\n")
-	fmt.Fprintf(p.Bus, "The client is automatically teleporting you to the room.\r\n")
-	fmt.Fprintf(p.Bus, "If the client fails, you can connect manually using:\r\n\r\n")
-
-	for _, candidate := range data.Candidates {
-		fmt.Fprintf(p.Bus, "\033[1;36mssh -p %d %s\033[0m\r\n", data.SSHPort, candidate)
-	}
-
-	fmt.Fprintf(p.Bus, "\r\n\033[1mHost Verification Fingerprints:\033[0m\r\n\r\n")
-	for _, key := range data.PublicKeys {
-		fingerprint := s.calculateSHA256Fingerprint(key)
-		fmt.Fprintf(p.Bus, "\033[1;36m%s\033[0m\r\n", fingerprint)
-	}
-	fmt.Fprintf(p.Bus, "\r\n")
-
-	// Consume the data so it's not shown again if we disconnect for other reasons
-	p.TeleportData = nil
 }

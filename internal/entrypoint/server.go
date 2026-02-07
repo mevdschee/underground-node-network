@@ -1,7 +1,6 @@
 package entrypoint
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,14 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/mevdschee/p2pquic-go/pkg/signaling"
-	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
-	"github.com/mevdschee/underground-node-network/internal/ui"
-	"github.com/mevdschee/underground-node-network/internal/ui/bridge"
-	"github.com/mevdschee/underground-node-network/internal/ui/common"
-	"github.com/quic-go/quic-go"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -33,48 +26,20 @@ type Room struct {
 	Encoder    *json.Encoder
 }
 
-// PunchSession tracks an active hole-punch negotiation
-type PunchSession struct {
-	PersonID   string
-	RoomName   string
-	PersonChan chan *protocol.Message // Send punch_start to person
-}
-
-type Person struct {
-	SessionID      string
-	Username       string
-	TeleportData   *protocol.PunchStartPayload
-	UI             *ui.EntryUI
-	DisplayName    string
-	Bus            *bridge.SSHBus
-	Bridge         *bridge.InputBridge
-	UNNAware       bool
-	PubKey         ssh.PublicKey
-	PubKeyHash     string
-	Conn           *ssh.ServerConn
-	InitialCommand string
-}
-
 // Server is the entry point SSH server
 type Server struct {
 	address         string
 	usersDir        string
 	config          *ssh.ServerConfig
-	rooms           map[string]*Room
-	people          map[string]*Person
-	punchSessions   map[string]*PunchSession // keyed by person ID
-	banner          []string
-	mu              sync.RWMutex
-	quicListener    *nat.QUICListener
-	p2pPeer         *nat.P2PQUICPeer  // p2pquic peer for this entrypoint
+	tcpListener     net.Listener      // TCP listener for SSH connections
 	signalingServer *signaling.Server // signaling server for p2pquic peers
-	headless        bool
 	httpClient      *http.Client
-	identities      map[string]string       // keyHash -> "unnUsername platform_username@platform"
-	usernames       map[string]string       // unnUsername -> platformOwner (e.g. user@github)
-	registeredRooms map[string]string       // roomName -> "hostKeyHash ownerUsername lastSeenDate"
-	histories       map[string][]ui.Message // keyed by pubkey hash (hex)
-	cmdHistories    map[string][]string     // keyed by pubkey hash (hex)
+
+	mu              sync.RWMutex
+	rooms           map[string]*Room  // room name -> *Room
+	identities      map[string]string // keyHash -> "unnUsername platform_username@platform"
+	usernames       map[string]string // unnUsername -> platformOwner (e.g. user@github)
+	registeredRooms map[string]string // roomName -> "hostKeyHash ownerUsername lastSeenDate"
 }
 
 // NewServer creates a new entry point server
@@ -100,30 +65,19 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		return nil, fmt.Errorf("invalid port in address %s: %w", address, err)
 	}
 
-	// Create p2pquic peer for signaling (use "entrypoint" as peer ID)
-	// Use port+1 to avoid conflict with main QUIC listener
-	p2pPeer, err := nat.NewP2PQUICPeer("entrypoint", port+1, "", false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create p2pquic peer: %w", err)
-	}
+	// Initialize signaling server for p2pquic
+	signalingServer := signaling.NewServer()
 
 	s := &Server{
-		address:       address,
-		usersDir:      usersDir,
-		config:        config,
-		rooms:         make(map[string]*Room),
-		people:        make(map[string]*Person),
-		punchSessions: make(map[string]*PunchSession),
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		signalingServer: signaling.NewServer(),
-		p2pPeer:         p2pPeer, // Assign the created p2pPeer
+		address:         address,
+		usersDir:        usersDir,
+		config:          config,
+		rooms:           make(map[string]*Room),
+		httpClient:      &http.Client{Timeout: 30 * time.Second},
+		signalingServer: signalingServer,
 		identities:      make(map[string]string),
 		usernames:       make(map[string]string),
 		registeredRooms: make(map[string]string),
-		histories:       make(map[string][]ui.Message),
-		cmdHistories:    make(map[string][]string),
 	}
 
 	// Load data from files
@@ -186,33 +140,7 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		return perms, nil
 	}
 
-	// Load banner if it exists
-	bannerPaths := []string{
-		"banner.asc",
-	}
-
-	for _, bp := range bannerPaths {
-		if b, err := os.ReadFile(bp); err == nil {
-			s.banner = strings.Split(string(b), "\n")
-			break
-		}
-	}
-
-	if len(s.banner) == 0 {
-		s.banner = []string{
-			"Welcome to the UndergrouNd Network Entry Point!",
-			"",
-			"Chat is disabled here. Please join a room to interact with others.",
-			"Use /rooms to see available rooms.",
-			"Use /join <room_name> to enter a room.",
-		}
-	}
-
 	return s, nil
-}
-
-func (s *Server) SetHeadless(headless bool) {
-	s.headless = headless
 }
 
 // Start begins listening for QUIC connections
@@ -227,41 +155,14 @@ func (s *Server) Start() error {
 		return fmt.Errorf("invalid port in address %s: %w", s.address, err)
 	}
 
-	// Create QUIC listener
-	quicListener, err := nat.NewQUICListener(port)
+	// Create TCP listener for SSH
+	tcpListener, err := net.Listen("tcp", s.address)
 	if err != nil {
-		return fmt.Errorf("failed to create QUIC listener on %s: %w", s.address, err)
+		return fmt.Errorf("failed to create TCP listener on %s: %w", s.address, err)
 	}
-	s.quicListener = quicListener
-	log.Printf("Entry point listening on %s (QUIC/UDP)", s.address)
-
-	// Start p2pquic peer listening (for p2pquic-based connections)
-	if s.p2pPeer != nil {
-		if err := s.p2pPeer.Listen(); err != nil {
-			log.Printf("Warning: Failed to start p2pquic listener: %v", err)
-		} else {
-			// Discover candidates
-			candidates, err := s.p2pPeer.DiscoverCandidates()
-			if err != nil {
-				log.Printf("Warning: Failed to discover p2pquic candidates: %v", err)
-			}
-
-			// Register directly with our own signaling server (not via HTTP)
-			// Convert nat.Candidate to signaling.Candidate
-			signalingCandidates := make([]signaling.Candidate, len(candidates))
-			for i, c := range candidates {
-				signalingCandidates[i] = signaling.Candidate{
-					IP:   c.IP,
-					Port: c.Port,
-				}
-			}
-			if err := s.signalingServer.Register("entrypoint", signalingCandidates); err != nil {
-				log.Printf("Warning: Failed to register entrypoint with signaling server: %v", err)
-			} else {
-				log.Printf("Entrypoint registered as p2pquic peer 'entrypoint' with %d candidates", len(signalingCandidates))
-			}
-		}
-	}
+	s.tcpListener = tcpListener
+	log.Printf("Entry point listening on %s (SSH/TCP)", s.address)
+	log.Printf("P2PQUIC signaling server ready (entrypoint is signaling-only, not a peer)")
 
 	go s.acceptLoop()
 	return nil
@@ -269,8 +170,8 @@ func (s *Server) Start() error {
 
 // Stop stops the server
 func (s *Server) Stop() error {
-	if s.quicListener != nil {
-		return s.quicListener.Close()
+	if s.tcpListener != nil {
+		return s.tcpListener.Close()
 	}
 	return nil
 }
@@ -289,27 +190,17 @@ func (s *Server) GetRooms() []protocol.RoomInfo {
 
 func (s *Server) acceptLoop() {
 	for {
-		// Accept QUIC connection
-		quicConn, err := s.quicListener.Accept(context.Background())
+		// Accept TCP connection
+		tcpConn, err := s.tcpListener.Accept()
 		if err != nil {
-			if !strings.Contains(err.Error(), "server closed") {
-				log.Printf("Failed to accept QUIC connection: %v", err)
+			if !strings.Contains(err.Error(), "use of closed network connection") {
+				log.Printf("Failed to accept TCP connection: %v", err)
 			}
 			return
 		}
 
-		// Accept a stream for SSH
-		go func(qc *quic.Conn) {
-			stream, err := qc.AcceptStream(context.Background())
-			if err != nil {
-				log.Printf("Failed to accept stream: %v", err)
-				return
-			}
-
-			// Wrap stream as net.Conn for SSH
-			conn := nat.NewQUICStreamConn(stream, qc)
-			s.handleConnection(conn)
-		}(quicConn)
+		// Handle SSH connection directly over TCP
+		go s.handleConnection(tcpConn)
 	}
 }
 
@@ -356,27 +247,21 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 		return
 	}
 
-	var roomName string
-	var isOperator bool
-
-	// Process first request to determine if operator or person
-	pubKey := conn.Permissions.Extensions["pubkey"]
-	pubKeyHash := ""
-	var parsedPubKey ssh.PublicKey
-	if pubKey != "" {
-		parsedPubKey, _, _, _, _ = ssh.ParseAuthorizedKey([]byte(pubKey))
-		if parsedPubKey != nil {
-			pubKeyHash = s.calculatePubKeyHash(parsedPubKey)
-		}
-	}
-
+	// Wait for subsystem request
+	// We no longer support interactive PTY sessions for persons
 	for req := range requests {
 		switch req.Type {
 		case "subsystem":
 			subsystem := string(req.Payload[4:])
-			if subsystem == "unn-control" {
-				req.Reply(true, nil)
+			req.Reply(true, nil)
+
+			switch subsystem {
+			case "unn-control":
+				// Room operator registration
+				log.Printf("Operator %s connected via unn-control subsystem", username)
+
 				// Disconnect old operator with same key
+				pubKey := conn.Permissions.Extensions["pubkey"]
 				s.mu.Lock()
 				for name, room := range s.rooms {
 					if room.Connection != nil && room.Connection.Permissions.Extensions["pubkey"] == pubKey {
@@ -387,249 +272,44 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 				s.mu.Unlock()
 
 				// Handle operator - this will block until disconnect
+				var roomName string
 				s.handleOperator(channel, conn, username, &roomName)
+
 				// Clean up room when operator disconnects
 				if roomName != "" {
 					s.mu.Lock()
 					delete(s.rooms, roomName)
 					s.mu.Unlock()
 					log.Printf("Room unregistered: %s", roomName)
-					s.updateAllPeople()
 				}
 				return
-			} else {
-				req.Reply(false, nil)
-			}
-		case "pty-req":
-			// Captured initial size if any
-			var initialW, initialH uint32 = 80, 24
-			if req.Type == "pty-req" {
-				if w, h, ok := common.ParsePtyRequest(req.Payload); ok {
-					initialW, initialH = w, h
-				}
-			}
-			req.Reply(true, nil)
 
-			// This is a person
-			if !isOperator {
-				log.Printf("Person connected: %s", username)
+			case "unn-api":
+				// Client API queries (room list, user status, registration)
+				log.Printf("Client %s connected via unn-api subsystem", username)
+				s.handleAPI(channel, conn)
+				return
 
-				sessionID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
-				inputBridge := bridge.NewInputBridge(channel)
-				p := &Person{
-					SessionID: sessionID,
-					Username:  username,
-					TeleportData: &protocol.PunchStartPayload{
-						RoomName: "lobby", // Default
-					},
-					Bridge:     inputBridge,
-					Bus:        bridge.NewSSHBus(inputBridge, int(initialW), int(initialH)),
-					UNNAware:   strings.Contains(string(conn.ClientVersion()), "UNN"),
-					PubKey:     parsedPubKey,
-					PubKeyHash: pubKeyHash,
-					Conn:       conn,
-				}
-				p.UI = ui.NewEntryUI(nil, p.Username, s.address)
-				p.UI.Headless = s.headless
-				p.UI.Input = p.Bus
+			case "unn-signaling":
+				// p2pquic signaling (peer registration, candidate exchange)
+				log.Printf("Peer connected via unn-signaling subsystem")
+				s.handleSignaling(channel, conn)
+				return
 
-				s.mu.Lock()
-				// Disconnect old person with same key
-				if pubKeyHash != "" {
-					for xid, old := range s.people {
-						if old.PubKeyHash == pubKeyHash {
-							log.Printf("Disconnecting old person session %s for user %s (new connection)", xid, username)
-							s.SendOSC(old, "popup", map[string]interface{}{
-								"title":   "Duplicate Session",
-								"message": "You have been disconnected because you connected from another session.",
-								"type":    "warning",
-							})
-							// Give it a moment to send
-							go func(c *ssh.ServerConn) {
-								time.Sleep(200 * time.Millisecond)
-								c.Close()
-							}(old.Conn)
-						}
-					}
-				}
-				s.people[sessionID] = p
-				s.mu.Unlock()
-
-				// Handle remaining requests in background to capture resize and ack shell
-				go func() {
-					for r := range requests {
-						switch r.Type {
-						case "pty-req":
-							if w, h, ok := common.ParsePtyRequest(r.Payload); ok {
-								p.Bus.Resize(int(w), int(h))
-							}
-							r.Reply(true, nil)
-						case "window-change":
-							if w, h, ok := common.ParseWindowChange(r.Payload); ok {
-								p.Bus.Resize(int(w), int(h))
-							}
-							r.Reply(true, nil)
-						case "shell":
-							// Ack traditional interactive request for client compatibility
-							r.Reply(true, nil)
-						default:
-							r.Reply(false, nil)
-						}
-					}
-				}()
-
-				// Main interaction session
-				go func() {
-					defer func() {
-						s.mu.Lock()
-						if current, ok := s.people[sessionID]; ok && current == p {
-							delete(s.people, sessionID)
-						}
-						s.mu.Unlock()
-						p.Bus.ForceClose()
-					}()
-					s.handlePerson(p, conn)
-				}()
+			default:
+				log.Printf("Unknown subsystem requested: %s", subsystem)
+				channel.Close()
 				return
 			}
+
+		case "pty-req", "shell":
+			// Reject PTY and shell requests - no interactive sessions
+			req.Reply(false, []byte("Interactive sessions not supported. Use unn-client tool."))
+
 		default:
 			req.Reply(false, nil)
 		}
 	}
-}
-
-func (s *Server) handlePerson(p *Person, conn *ssh.ServerConn) {
-	entryUI := p.UI
-	if !s.headless {
-		screen, err := tcell.NewTerminfoScreenFromTty(p.Bus)
-		if err != nil {
-			log.Printf("Failed to create screen for %s: %v", p.Username, err)
-			return
-		}
-		if err := screen.Init(); err != nil {
-			log.Printf("Failed to init screen for %s: %v", p.Username, err)
-			return
-		}
-		entryUI.SetScreen(screen)
-	}
-
-	// Handle verification and command setup in background so entryUI.Run() can start
-	go func() {
-		verified := conn.Permissions != nil && conn.Permissions.Extensions["verified"] == "true"
-
-		if !verified {
-			if !s.handleOnboardingForm(p, conn) {
-				entryUI.Close(false)
-				// Give the UI a moment to show "exiting" or similar, then force close connection
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					p.Conn.Close()
-				}()
-				return
-			}
-			verified = true
-		} else if conn.Permissions != nil && conn.Permissions.Extensions["username"] != "" {
-			p.Username = conn.Permissions.Extensions["username"]
-			p.UI.SetUsername(p.Username)
-		}
-
-		entryUI.OnCmd(func(cmd string) {
-			s.handlePersonCommand(p, conn, cmd)
-		})
-
-		// Initial room list
-		s.updatePersonRooms(p)
-
-		if p.PubKeyHash != "" {
-			s.mu.RLock()
-			chatHistory := s.histories[p.PubKeyHash]
-			cmdHistory := s.cmdHistories[p.PubKeyHash]
-			s.mu.RUnlock()
-
-			if len(chatHistory) == 0 && len(s.banner) > 0 {
-				for _, line := range s.banner {
-					text := strings.TrimRight(line, "\r\n")
-					s.addMessageToHistory(p.PubKeyHash, ui.Message{Text: text, Type: ui.MsgServer})
-				}
-				// Re-fetch history after adding banner
-				s.mu.RLock()
-				chatHistory = s.histories[p.PubKeyHash]
-				s.mu.RUnlock()
-			}
-
-			if len(chatHistory) > 0 {
-				entryUI.SetChatHistory(chatHistory)
-			}
-			if len(cmdHistory) > 0 {
-				entryUI.SetCommandHistory(cmdHistory)
-			}
-		}
-
-		// Process initial command after onboarding is done
-		if p.InitialCommand != "" {
-			s.handlePersonCommand(p, conn, p.InitialCommand)
-		}
-	}()
-
-	// Add OnClose callback to break terminal deadlock
-	entryUI.OnClose(func() {
-		p.Bus.SignalExit()
-	})
-
-	success := entryUI.Run()
-
-	// Explicitly finalize screen immediately after Run() to restore terminal state
-	s.mu.RLock()
-	if !s.headless && entryUI.GetScreen() != nil {
-		entryUI.GetScreen().Fini()
-		// Send ANSI reset to ensure the terminal background is restored
-		fmt.Fprint(p.Bus, "\033[m")
-	}
-	s.mu.RUnlock()
-
-	// Now that we've exited the TUI and restored terminal state:
-	// Only show teleport info if we actually joined a room (success=true)
-	if success && p.TeleportData != nil {
-		s.showTeleportInfo(p)
-	} else {
-		// Clear screen only on manual exit to clean up the TUI artifacts
-		// First reset colors to avoid black background spill
-		fmt.Fprint(p.Bus, "\033[m\033[2J\033[H")
-	}
-
-	conn.Close() // Ensure immediate disconnect
-}
-
-func (s *Server) addMessageToHistory(pubHash string, msg ui.Message) {
-	if pubHash == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	history := s.histories[pubHash]
-	history = append(history, msg)
-	if len(history) > 200 {
-		history = history[1:]
-	}
-	s.histories[pubHash] = history
-}
-
-func (s *Server) addCommandToHistory(pubHash string, cmd string) {
-	if pubHash == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	history := s.cmdHistories[pubHash]
-	// Avoid duplicate consecutive commands
-	if len(history) > 0 && history[len(history)-1] == cmd {
-		return
-	}
-	history = append(history, cmd)
-	if len(history) > 100 {
-		history = history[1:]
-	}
-	s.cmdHistories[pubHash] = history
 }
 
 func loadOrGenerateHostKey(path string) (ssh.Signer, error) {

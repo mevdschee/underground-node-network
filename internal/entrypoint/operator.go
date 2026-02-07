@@ -112,7 +112,6 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 
 			// Send back room list
 			s.sendRoomList(encoder)
-			s.updateAllPeople()
 
 		case protocol.MsgTypeUnregister:
 			if *roomName != "" {
@@ -125,58 +124,11 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 
 		case protocol.MsgTypePunchAnswer:
 			// Room operator sent back candidates for hole-punching
-			var payload protocol.PunchAnswerPayload
-			if err := msg.ParsePayload(&payload); err != nil {
-				continue
-			}
+			// NOTE: This coordination is now handled via p2pquic signaling
+			// Clients and rooms register their candidates directly with the signaling server
+			// and exchange them without entrypoint involvement
+			log.Printf("Received legacy punch_answer message - ignored (use p2pquic signaling)")
 
-			s.mu.RLock()
-			session, ok := s.punchSessions[payload.PersonID]
-			s.mu.RUnlock()
-
-			if ok {
-				// Look up room info
-				var roomName string
-				var roomSSHPort int
-				var roomPublicKeys []string
-				s.mu.RLock()
-				if room, exists := s.rooms[session.RoomName]; exists {
-					roomName = room.Info.Name
-					roomSSHPort = room.Info.SSHPort
-					roomPublicKeys = room.Info.PublicKeys
-				}
-				s.mu.RUnlock()
-
-				if roomName == "" {
-					log.Printf("Room %s not found for punch answer from person %s", session.RoomName, payload.PersonID)
-					continue
-				}
-
-				// Convert candidates to include room peer ID
-				// payload.Candidates are already strings in format "ip:port"
-				candidateStrs := make([]string, len(payload.Candidates))
-				for i, c := range payload.Candidates {
-					// Format: "roomname:ip:port" so client can extract room peer ID
-					candidateStrs[i] = fmt.Sprintf("%s:%s", roomName, c)
-				}
-
-				startPayload := protocol.PunchStartPayload{
-					Action:     "teleport",
-					RoomName:   roomName,
-					Candidates: candidateStrs,
-					SSHPort:    roomSSHPort,
-					PublicKeys: roomPublicKeys,
-				}
-				startMsg, _ := protocol.NewMessage(protocol.MsgTypePunchStart, startPayload)
-
-				// Send to person
-				select {
-				case session.PersonChan <- startMsg:
-					log.Printf("Sent PunchStart to person %s", payload.PersonID)
-				default:
-					log.Printf("Person channel full for %s", payload.PersonID)
-				}
-			}
 		}
 	}
 }
