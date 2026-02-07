@@ -43,19 +43,25 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 				registeredHostHash := parts[0]
 				registeredOwner := parts[1]
 
-				if registeredHostHash != connPubKeyHash {
-					// Check if this is the owner rotating the key
+				// Get the host key hash from the payload
+				var payloadHostHash string
+				if len(payload.PublicKeys) > 0 {
+					hPubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(payload.PublicKeys[0]))
+					if err == nil {
+						payloadHostHash = protocol.CalculatePubKeyHash(hPubKey)
+					}
+				}
+
+				// Check if the host key from the payload matches the registered one
+				if payloadHostHash != "" && payloadHostHash != registeredHostHash {
+					// Host key is different - check if this is the owner rotating the key
 					isOwner := conn.Permissions.Extensions["verified"] == "true" && conn.Permissions.Extensions["username"] == registeredOwner
-					if isOwner && len(payload.PublicKeys) > 0 {
-						hPubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(payload.PublicKeys[0]))
-						if err == nil {
-							newHash := protocol.CalculatePubKeyHash(hPubKey)
-							log.Printf("Room %s host key rotated by owner %s (new hash: %s)", payload.RoomName, registeredOwner, newHash)
-							registeredHostHash = newHash
-						}
+					if isOwner {
+						log.Printf("Room %s host key rotated by owner %s (new hash: %s)", payload.RoomName, registeredOwner, payloadHostHash)
+						registeredHostHash = payloadHostHash
 					} else {
 						s.mu.Unlock()
-						log.Printf("Rejected room registration: %s host key mismatch (connection: %s, registered: %s)", payload.RoomName, connPubKeyHash, registeredHostHash)
+						log.Printf("Rejected room registration: %s host key mismatch (payload: %s, registered: %s)", payload.RoomName, payloadHostHash, registeredHostHash)
 						s.sendError(encoder, fmt.Sprintf("Room name '%s' is already taken by another user.", payload.RoomName))
 						continue
 					}
