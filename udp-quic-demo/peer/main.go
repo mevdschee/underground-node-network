@@ -149,6 +149,68 @@ func getPeerInfo(signalingURL, peerID string) (*PeerInfo, error) {
 	return &peer, nil
 }
 
+// getAllPeers retrieves all registered peers from signaling server
+func getAllPeers(signalingURL string) ([]PeerInfo, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/peers", signalingURL))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get peers")
+	}
+
+	var peers []PeerInfo
+	if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
+		return nil, err
+	}
+
+	return peers, nil
+}
+
+// continuousHolePunch continuously polls for peers and sends punch packets
+func continuousHolePunch(conn *net.UDPConn, signalingURL, myPeerID string) {
+	knownPeers := make(map[string]bool)
+
+	for {
+		// Poll for all peers
+		peers, err := getAllPeers(signalingURL)
+		if err != nil {
+			log.Printf("Failed to get peers: %v", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		// Send punch packets to new peers
+		for _, peer := range peers {
+			// Skip ourselves
+			if peer.ID == myPeerID {
+				continue
+			}
+
+			// Check if this is a new peer
+			if !knownPeers[peer.ID] {
+				log.Printf("Discovered new peer: %s with %d candidates", peer.ID, len(peer.Candidates))
+				knownPeers[peer.ID] = true
+			}
+
+			// Send punch packets to all candidates of this peer
+			for _, candidate := range peer.Candidates {
+				addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", candidate.IP, candidate.Port))
+				if err != nil {
+					continue
+				}
+
+				conn.WriteToUDP([]byte("PUNCH"), addr)
+			}
+		}
+
+		// Poll every 5 seconds
+		time.Sleep(5 * time.Second)
+	}
+}
+
 // generateTLSConfig creates a self-signed certificate for QUIC
 func generateTLSConfig() *tls.Config {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -182,15 +244,10 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
-// udpHolePunch performs UDP hole-punching to remote candidates
-func udpHolePunch(localPort int, remoteCandidates []Candidate) error {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: localPort})
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	log.Printf("Starting UDP hole-punch from port %d", localPort)
+// udpHolePunch performs UDP hole-punching to remote candidates using an existing connection
+func udpHolePunch(conn *net.UDPConn, remoteCandidates []Candidate) error {
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	log.Printf("Starting UDP hole-punch from port %d", localAddr.Port)
 
 	// Send packets to all remote candidates to punch holes
 	for _, candidate := range remoteCandidates {
@@ -215,26 +272,22 @@ func udpHolePunch(localPort int, remoteCandidates []Candidate) error {
 	return nil
 }
 
-// startQUICListener starts a QUIC listener
-func startQUICListener(port int) (*quic.Listener, error) {
+// startQUICListener starts a QUIC listener on an existing UDP connection
+func startQUICListener(conn *net.UDPConn) (*quic.Listener, error) {
 	tlsConfig := generateTLSConfig()
 
-	udpAddr := &net.UDPAddr{
-		IP:   net.IPv4zero,
-		Port: port,
-	}
-
-	listener, err := quic.ListenAddr(udpAddr.String(), tlsConfig, nil)
+	listener, err := quic.Listen(conn, tlsConfig, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	log.Printf("QUIC listener started on port %d", port)
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	log.Printf("QUIC listener started on port %d", localAddr.Port)
 	return listener, nil
 }
 
-// connectQUIC attempts to connect to remote candidates via QUIC
-func connectQUIC(localPort int, remoteCandidates []Candidate) (quic.Connection, error) {
+// connectQUIC attempts to connect to remote candidates via QUIC using an existing UDP connection
+func connectQUIC(conn *net.UDPConn, remoteCandidates []Candidate) (quic.Connection, error) {
 	tlsConfig := generateTLSConfig()
 
 	// Try each candidate
@@ -242,17 +295,23 @@ func connectQUIC(localPort int, remoteCandidates []Candidate) (quic.Connection, 
 		addr := fmt.Sprintf("%s:%d", candidate.IP, candidate.Port)
 		log.Printf("Attempting QUIC connection to %s", addr)
 
+		remoteAddr, err := net.ResolveUDPAddr("udp4", addr)
+		if err != nil {
+			log.Printf("Failed to resolve %s: %v", addr, err)
+			continue
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		conn, err := quic.DialAddr(ctx, addr, tlsConfig, nil)
+		quicConn, err := quic.Dial(ctx, conn, remoteAddr, tlsConfig, nil)
 		if err != nil {
 			log.Printf("Failed to connect to %s: %v", addr, err)
 			continue
 		}
 
 		log.Printf("Successfully connected to %s", addr)
-		return conn, nil
+		return quicConn, nil
 	}
 
 	return nil, fmt.Errorf("failed to connect to any candidate")
@@ -298,12 +357,25 @@ func main() {
 	log.Println("Registration successful")
 
 	if *mode == "server" {
-		// Server mode: listen for incoming QUIC connections
-		listener, err := startQUICListener(*port)
+		// Server mode: create UDP socket and listen for incoming QUIC connections
+		udpAddr := &net.UDPAddr{
+			IP:   net.IPv4zero,
+			Port: *port,
+		}
+		udpConn, err := net.ListenUDP("udp4", udpAddr)
+		if err != nil {
+			log.Fatalf("Failed to create UDP socket: %v", err)
+		}
+		defer udpConn.Close()
+
+		listener, err := startQUICListener(udpConn)
 		if err != nil {
 			log.Fatalf("Failed to start QUIC listener: %v", err)
 		}
 		defer listener.Close()
+
+		// Start background hole-punching to discovered peers
+		go continuousHolePunch(udpConn, *signalingURL, *peerID)
 
 		log.Println("Waiting for incoming connections...")
 
@@ -334,10 +406,29 @@ func main() {
 				}
 
 				message := string(buf[:n])
-				log.Printf("Received: %s", message)
+				log.Printf("Received from %s: %s", c.RemoteAddr(), message)
 
-				response := fmt.Sprintf("Echo: %s", message)
-				stream.Write([]byte(response))
+				// Continuously exchange messages
+				for {
+					// Send response
+					response := fmt.Sprintf("Hello from server!")
+					_, err := stream.Write([]byte(response))
+					if err != nil {
+						log.Printf("Failed to write: %v", err)
+						return
+					}
+					log.Printf("Sent to %s: %s", c.RemoteAddr(), response)
+
+					// Wait for next message
+					time.Sleep(5 * time.Second)
+
+					n, err := stream.Read(buf)
+					if err != nil {
+						log.Printf("Connection closed: %v", err)
+						return
+					}
+					log.Printf("Received from %s: %s", c.RemoteAddr(), string(buf[:n]))
+				}
 			}(conn)
 		}
 	} else {
@@ -367,9 +458,20 @@ func main() {
 			log.Printf("  - %s:%d", c.IP, c.Port)
 		}
 
+		// Create UDP socket for hole-punching and QUIC
+		udpAddr := &net.UDPAddr{
+			IP:   net.IPv4zero,
+			Port: *port,
+		}
+		udpConn, err := net.ListenUDP("udp4", udpAddr)
+		if err != nil {
+			log.Fatalf("Failed to create UDP socket: %v", err)
+		}
+		defer udpConn.Close()
+
 		// Perform UDP hole-punching
 		log.Println("Performing UDP hole-punch...")
-		if err := udpHolePunch(*port, remotePeer.Candidates); err != nil {
+		if err := udpHolePunch(udpConn, remotePeer.Candidates); err != nil {
 			log.Printf("Hole-punch error: %v", err)
 		}
 
@@ -378,7 +480,7 @@ func main() {
 
 		// Attempt QUIC connection
 		log.Println("Attempting QUIC connection...")
-		conn, err := connectQUIC(*port, remotePeer.Candidates)
+		conn, err := connectQUIC(udpConn, remotePeer.Candidates)
 		if err != nil {
 			log.Fatalf("Failed to establish QUIC connection: %v", err)
 		}
