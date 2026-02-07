@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mevdschee/p2pquic-go/pkg/p2pquic"
 	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
@@ -104,7 +106,13 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 			log.Printf("Room peer ID: %s", roomPeerID)
 		}
 
-		p2pPeer, err := nat.NewP2PQUICPeer(clientID, 0, signalingURL, true)
+		p2pConfig := p2pquic.Config{
+			PeerID:       clientID,
+			LocalPort:    0,
+			SignalingURL: signalingURL,
+			EnableSTUN:   true,
+		}
+		p2pPeer, err := p2pquic.NewPeer(p2pConfig)
 		if err != nil {
 			lastErr = err
 			if verbose {
@@ -133,7 +141,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 		}
 
 		// Connect to room via p2pquic
-		conn, err := p2pPeer.Connect(roomPeerID)
+		quicConn, err := p2pPeer.Connect(roomPeerID)
 		if err != nil {
 			p2pPeer.Close()
 			lastErr = err
@@ -142,6 +150,18 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 			}
 			continue
 		}
+
+		// Open a stream for SSH
+		ctx := context.Background()
+		stream, err := quicConn.OpenStreamSync(ctx)
+		if err != nil {
+			quicConn.CloseWithError(0, "failed to open stream")
+			p2pPeer.Close()
+			lastErr = err
+			continue
+		}
+
+		conn := nat.NewQUICStreamConn(stream, quicConn)
 		defer p2pPeer.Close()
 
 		sshConn, chans, reqs, err := ssh.NewClientConn(conn, target, config)

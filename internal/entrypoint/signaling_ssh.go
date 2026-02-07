@@ -6,7 +6,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/mevdschee/p2pquic-go/pkg/signaling"
+	"github.com/mevdschee/p2pquic-go/pkg/p2pquic"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -26,8 +26,8 @@ type SignalingMessage struct {
 
 // RegisterPeerRequest registers a p2pquic peer with candidates
 type RegisterPeerRequest struct {
-	PeerID     string                `json:"peer_id"`
-	Candidates []signaling.Candidate `json:"candidates"`
+	PeerID     string              `json:"peer_id"`
+	Candidates []p2pquic.Candidate `json:"candidates"`
 }
 
 // GetPeerRequest queries for a peer's candidates
@@ -87,7 +87,7 @@ func (s *Server) handleSignalingRegister(encoder *json.Encoder, conn *ssh.Server
 		ip := net.ParseIP(host)
 		if ip != nil && ip.To4() != nil {
 			// Use the same port as the first candidate (should be the QUIC port)
-			publicCandidate := signaling.Candidate{
+			publicCandidate := p2pquic.Candidate{
 				IP:   host,
 				Port: req.Candidates[0].Port,
 			}
@@ -103,7 +103,7 @@ func (s *Server) handleSignalingRegister(encoder *json.Encoder, conn *ssh.Server
 
 			// Add public IP as first candidate if not already present
 			if !hasPublic {
-				req.Candidates = append([]signaling.Candidate{publicCandidate}, req.Candidates...)
+				req.Candidates = append([]p2pquic.Candidate{publicCandidate}, req.Candidates...)
 				log.Printf("Added server-reflexive IPv4 candidate: %s:%d", host, publicCandidate.Port)
 			}
 		} else {

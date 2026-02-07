@@ -156,7 +156,7 @@ func main() {
 				log.Printf("Registered with entry point as '%s'", *roomName)
 
 				// Register with p2pquic signaling via SSH subsystem
-				if p2pPeer := server.GetP2PQUICPeer(); p2pPeer != nil {
+				if p2pPeer := server.GetP2PPeer(); p2pPeer != nil {
 					// Discover candidates
 					p2pCandidates, err := p2pPeer.DiscoverCandidates()
 					if err != nil {
@@ -173,8 +173,7 @@ func main() {
 
 							// Register room as p2pquic peer
 							roomPeerID := fmt.Sprintf("room-%s", *roomName)
-							signalingCandidates := nat.ConvertCandidates(p2pCandidates)
-							if err := signalingClient.Register(roomPeerID, signalingCandidates); err != nil {
+							if err := signalingClient.Register(roomPeerID, p2pCandidates); err != nil {
 								log.Printf("Warning: Failed to register with signaling: %v", err)
 							} else {
 								log.Printf("Registered room with p2pquic signaling as peer: %s", roomPeerID)

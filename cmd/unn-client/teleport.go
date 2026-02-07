@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mevdschee/p2pquic-go/pkg/p2pquic"
 	"github.com/mevdschee/underground-node-network/internal/nat"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
@@ -274,7 +275,13 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 
 	// Create p2pquic peer for client
 	clientID := fmt.Sprintf("client-%d", time.Now().UnixNano())
-	p2pPeer, err := nat.NewP2PQUICPeer(clientID, 0, "", false)
+	p2pConfig := p2pquic.Config{
+		PeerID:       clientID,
+		LocalPort:    0,
+		SignalingURL: "", // Using SSH-based signaling
+		EnableSTUN:   false,
+	}
+	p2pPeer, err := p2pquic.NewPeer(p2pConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create p2pquic peer: %w", err)
 	}
@@ -297,8 +304,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	}
 	defer signalingClient.Close()
 
-	signalingCandidates := nat.ConvertCandidates(clientCandidates)
-	if err := signalingClient.Register(clientID, signalingCandidates); err != nil {
+	if err := signalingClient.Register(clientID, clientCandidates); err != nil {
 		return fmt.Errorf("failed to register with signaling:  %w", err)
 	}
 
@@ -317,7 +323,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		log.Printf("Got room peer info with %d candidates", len(roomPeerInfo.Candidates))
 	}
 
-	// Convert signaling.Candidate to string addresses for connection
+	// Convert p2pquic.Candidate to string addresses for connection
 	roomCandidates := make([]string, len(roomPeerInfo.Candidates))
 	for i, cand := range roomPeerInfo.Candidates {
 		roomCandidates[i] = fmt.Sprintf("%s:%d", cand.IP, cand.Port)
@@ -345,9 +351,18 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		log.Printf("Attempting p2pquic connection to room peer: %s with %d candidates", roomPeerID, len(roomCandidates))
 	}
 
+	// Convert room candidates to p2pquic.Candidate
+	p2pRoomCandidates := make([]p2pquic.Candidate, len(roomPeerInfo.Candidates))
+	for i, c := range roomPeerInfo.Candidates {
+		p2pRoomCandidates[i] = p2pquic.Candidate{
+			IP:   c.IP,
+			Port: c.Port,
+		}
+	}
+
 	// Connect and get the underlying QUIC connection using peer info
 	ctx := context.Background()
-	quicConn, err := p2pPeer.ConnectWithPeerInfo(ctx, roomPeerID, roomCandidates)
+	quicConn, err := p2pPeer.Connect(roomPeerID, p2pquic.WithCandidates(p2pRoomCandidates...))
 
 	if err != nil {
 		return fmt.Errorf("failed to connect via p2pquic: %w", err)

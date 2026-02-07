@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/mevdschee/p2pquic-go/pkg/signaling"
+	"github.com/mevdschee/p2pquic-go/pkg/p2pquic"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -33,8 +33,8 @@ type signalingMessage struct {
 }
 
 type registerPeerRequest struct {
-	PeerID     string                `json:"peer_id"`
-	Candidates []signaling.Candidate `json:"candidates"`
+	PeerID     string              `json:"peer_id"`
+	Candidates []p2pquic.Candidate `json:"candidates"`
 }
 
 type getPeerRequest struct {
@@ -78,7 +78,7 @@ func NewSSHSignalingClient(sshClient *ssh.Client) (*SSHSignalingClient, error) {
 }
 
 // Register registers a peer with the signaling server
-func (c *SSHSignalingClient) Register(peerID string, candidates []signaling.Candidate) error {
+func (c *SSHSignalingClient) Register(peerID string, candidates []p2pquic.Candidate) error {
 	req := registerPeerRequest{
 		PeerID:     peerID,
 		Candidates: candidates,
@@ -109,7 +109,7 @@ func (c *SSHSignalingClient) Register(peerID string, candidates []signaling.Cand
 }
 
 // GetPeer retrieves peer information
-func (c *SSHSignalingClient) GetPeer(peerID string) (*signaling.PeerInfo, error) {
+func (c *SSHSignalingClient) GetPeer(peerID string) (*p2pquic.PeerInfo, error) {
 	req := getPeerRequest{PeerID: peerID}
 	payload, _ := json.Marshal(req)
 
@@ -133,7 +133,7 @@ func (c *SSHSignalingClient) GetPeer(peerID string) (*signaling.PeerInfo, error)
 		return nil, fmt.Errorf("signaling error: %s", errMsg["message"])
 	}
 
-	var peer signaling.PeerInfo
+	var peer p2pquic.PeerInfo
 	if err := json.Unmarshal(response.Payload, &peer); err != nil {
 		return nil, fmt.Errorf("failed to parse peer info: %w", err)
 	}
@@ -147,16 +147,4 @@ func (c *SSHSignalingClient) Close() error {
 		return c.session.Close()
 	}
 	return nil
-}
-
-// ConvertCandidates converts nat.Candidate slice to signaling.Candidate slice
-func ConvertCandidates(natCands []Candidate) []signaling.Candidate {
-	sigCands := make([]signaling.Candidate, len(natCands))
-	for i, nc := range natCands {
-		sigCands[i] = signaling.Candidate{
-			IP:   nc.IP,
-			Port: nc.Port,
-		}
-	}
-	return sigCands
 }

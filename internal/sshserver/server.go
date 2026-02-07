@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mevdschee/p2pquic-go/pkg/p2pquic"
 	"github.com/mevdschee/underground-node-network/internal/doors"
 	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/ui"
@@ -46,7 +47,7 @@ type Server struct {
 	authorizedKeys map[string]string // Marshaled pubkey -> verified username
 	hostKey        ssh.Signer
 	mu             sync.RWMutex
-	p2pPeer        *nat.P2PQUICPeer // p2pquic peer for connections
+	p2pPeer        *p2pquic.Peer // p2pquic peer for connections
 	headless       bool
 	histories      map[string][]ui.Message // keyed by pubkey hash (hex)
 	cmdHistories   map[string][]string     // keyed by pubkey hash (hex)
@@ -115,8 +116,8 @@ func (s *Server) AuthorizeKey(pubKey ssh.PublicKey, username string) {
 	log.Printf("Authorized key for person: %s", username)
 }
 
-// GetP2PQUICPeer returns the p2pquic peer for configuration
-func (s *Server) GetP2PQUICPeer() *nat.P2PQUICPeer {
+// GetP2PPeer returns the p2pquic peer for configuration
+func (s *Server) GetP2PPeer() *p2pquic.Peer {
 	return s.p2pPeer
 }
 
@@ -133,9 +134,14 @@ func (s *Server) Start() error {
 	}
 
 	// Create p2pquic peer with requested port (may be 0 for random)
-	// We'll update it with actual port after Listen() if needed
-	// Enable STUN to discover public IP address
-	p2pPeer, err := nat.NewP2PQUICPeer(s.roomName, port, "", true)
+	config := p2pquic.Config{
+		PeerID:       s.roomName,
+		LocalPort:    port,
+		SignalingURL: "",    // Using SSH-based signaling
+		EnableSTUN:   false, // Disabled - using server-reflexive IPv4 from entrypoint
+	}
+
+	p2pPeer, err := p2pquic.NewPeer(config)
 	if err != nil {
 		return fmt.Errorf("failed to create p2pquic peer: %w", err)
 	}
@@ -149,8 +155,6 @@ func (s *Server) Start() error {
 	// Get actual port from the peer's listener
 	actualPort := p2pPeer.GetActualPort()
 	if actualPort != port {
-		// Port was 0 or changed, update the peer's config
-		p2pPeer.UpdatePort(actualPort)
 		log.Printf("Updated p2pquic peer port from %d to %d", port, actualPort)
 	}
 
@@ -165,9 +169,7 @@ func (s *Server) GetPort() int {
 	if s.p2pPeer == nil {
 		return 0
 	}
-	// p2pquic peer doesn't expose port directly, return from config
-	// This is a limitation - we'll need to track it separately
-	return s.p2pPeer.GetPort()
+	return s.p2pPeer.GetActualPort()
 }
 
 // GetUDPConn returns the underlying UDP connection for hole-punching
@@ -233,7 +235,7 @@ func (s *Server) updatePeopleList(p *Person) {
 func (s *Server) acceptLoop() {
 	for {
 		// Accept QUIC connection via p2pquic
-		conn, err := s.p2pPeer.Accept(context.Background())
+		quicConn, err := s.p2pPeer.Accept(context.Background())
 		if err != nil {
 			if !strings.Contains(err.Error(), "server closed") && !strings.Contains(err.Error(), "closed") {
 				log.Printf("Failed to accept connection: %v", err)
@@ -241,7 +243,15 @@ func (s *Server) acceptLoop() {
 			return
 		}
 
-		// Connection is already a net.Conn (stream wrapped), handle directly
+		// Accept a stream from the QUIC connection
+		stream, err := quicConn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("Failed to accept stream: %v", err)
+			continue
+		}
+
+		// Wrap stream as net.Conn for SSH
+		conn := nat.NewQUICStreamConn(stream, quicConn)
 		go s.handleConnection(conn)
 	}
 }
