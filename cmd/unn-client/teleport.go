@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
@@ -126,10 +127,17 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		)
 
 		// Connect to entry point
-		client, err := ssh.Dial("tcp", entrypoint, config)
+		conn, err := nat.DialQUIC(entrypoint)
 		if err != nil {
 			return fmt.Errorf("failed to connect to entry point: %w", err)
 		}
+
+		sshConn, chans, reqs, err := ssh.NewClientConn(conn, entrypoint, config)
+		if err != nil {
+			conn.Close()
+			return fmt.Errorf("SSH handshake failed: %w", err)
+		}
+		client := ssh.NewClient(sshConn, chans, reqs)
 
 		if verbose {
 			log.Printf("Connected to entry point")

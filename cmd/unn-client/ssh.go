@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mevdschee/underground-node-network/internal/nat"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
@@ -66,11 +67,19 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 			target = net.JoinHostPort(candidate, strconv.Itoa(sshPort))
 		}
 
-		client, err := ssh.Dial("tcp", target, config)
+		conn, err := nat.DialQUIC(target)
 		if err != nil {
 			lastErr = err
 			continue
 		}
+
+		sshConn, chans, reqs, err := ssh.NewClientConn(conn, target, config)
+		if err != nil {
+			conn.Close()
+			lastErr = err
+			continue
+		}
+		client := ssh.NewClient(sshConn, chans, reqs)
 		defer client.Close()
 
 		if verbose {
