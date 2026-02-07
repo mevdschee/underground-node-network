@@ -108,7 +108,7 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 
 		p2pConfig := p2pquic.Config{
 			PeerID:       clientID,
-			LocalPort:    0,
+			LocalPort:    0, // OS will assign an available port
 			SignalingURL: signalingURL,
 			EnableSTUN:   true,
 		}
@@ -121,7 +121,18 @@ func runRoomSSH(candidates []string, sshPort int, hostKeys []string, entrypointC
 			continue
 		}
 
-		// Discover candidates and register
+		// Bind the UDP socket first to get the actual port assigned by the OS
+		// Use Bind() instead of Listen() since clients only dial out
+		if err := p2pPeer.Bind(); err != nil {
+			p2pPeer.Close()
+			lastErr = err
+			if verbose {
+				log.Printf("Failed to bind p2pquic socket: %v", err)
+			}
+			continue
+		}
+
+		// Discover candidates and register (now with actual port)
 		if _, err := p2pPeer.DiscoverCandidates(); err != nil {
 			p2pPeer.Close()
 			if verbose {

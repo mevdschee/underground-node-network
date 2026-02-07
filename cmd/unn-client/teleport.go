@@ -277,7 +277,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	clientID := fmt.Sprintf("client-%d", time.Now().UnixNano())
 	p2pConfig := p2pquic.Config{
 		PeerID:       clientID,
-		LocalPort:    0,
+		LocalPort:    0,  // OS will assign an available port
 		SignalingURL: "", // Using SSH-based signaling
 		EnableSTUN:   false,
 	}
@@ -287,7 +287,17 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	}
 	defer p2pPeer.Close()
 
-	// Discover client candidates
+	// Bind the UDP socket first to get the actual port assigned by the OS
+	// Use Bind() instead of Listen() since clients only dial out, not accept connections
+	if err := p2pPeer.Bind(); err != nil {
+		return fmt.Errorf("failed to bind p2pquic socket: %w", err)
+	}
+
+	if verbose {
+		log.Printf("Client bound to UDP port %d", p2pPeer.GetActualPort())
+	}
+
+	// Discover client candidates (now with actual port)
 	clientCandidates, err := p2pPeer.DiscoverCandidates()
 	if err != nil {
 		return fmt.Errorf("failed to discover candidates: %w", err)

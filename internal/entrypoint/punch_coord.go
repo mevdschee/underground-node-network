@@ -32,28 +32,39 @@ func (s *Server) SendPunchPrepare(roomName string, clientPeerID string, clientCa
 
 	// Add server-reflexive candidate (client's public IP as seen by entrypoint)
 	candidates := clientCandidates
-	if conn != nil {
+	if conn != nil && len(candidates) > 0 {
 		remoteAddr := conn.RemoteAddr().String()
 		host, _, err := net.SplitHostPort(remoteAddr)
 		if err == nil {
 			ip := net.ParseIP(host)
 			if ip != nil && ip.To4() != nil {
-				// Use port 9000 (default QUIC port) for the public candidate
-				publicCandidate := fmt.Sprintf("%s:9000", host)
-
-				// Check if we already have this candidate
-				hasPublic := false
+				// Extract port from first candidate (should be the client's QUIC port)
+				var clientPort string
 				for _, c := range candidates {
-					if c == publicCandidate || c == fmt.Sprintf("%s:9000", host) {
-						hasPublic = true
+					_, port, err := net.SplitHostPort(c)
+					if err == nil && port != "" && port != "0" {
+						clientPort = port
 						break
 					}
 				}
 
-				// Add public IP as first candidate if not already present
-				if !hasPublic {
-					candidates = append([]string{publicCandidate}, candidates...)
-					log.Printf("Added server-reflexive candidate: %s", publicCandidate)
+				if clientPort != "" {
+					publicCandidate := fmt.Sprintf("%s:%s", host, clientPort)
+
+					// Check if we already have this candidate
+					hasPublic := false
+					for _, c := range candidates {
+						if c == publicCandidate {
+							hasPublic = true
+							break
+						}
+					}
+
+					// Add public IP as first candidate if not already present
+					if !hasPublic {
+						candidates = append([]string{publicCandidate}, candidates...)
+						log.Printf("Added server-reflexive candidate: %s", publicCandidate)
+					}
 				}
 			}
 		}

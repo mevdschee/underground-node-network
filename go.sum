@@ -8,8 +8,8 @@ github.com/gdamore/tcell/v2 v2.13.7 h1:yfHdeC7ODIYCc6dgRos8L1VujQtXHmUpU6UZotzD6
 github.com/gdamore/tcell/v2 v2.13.7/go.mod h1:+Wfe208WDdB7INEtCsNrAN6O2m+wsTPk1RAovjaILlo=
 github.com/lucasb-eyer/go-colorful v1.3.0 h1:2/yBRLdWBZKrf7gB40FoiKfAWYQ0lqNcbuQwVHXptag=
 github.com/lucasb-eyer/go-colorful v1.3.0/go.mod h1:R4dSotOR9KMtayYi1e77YzuveK+i7ruzyGqttikkLy0=
-github.com/mevdschee/p2pquic-go v0.0.3 h1:qlIESVyvapJIeaTT2fY+p0aduHiOs+5/WzSHye0MQXc=
-github.com/mevdschee/p2pquic-go v0.0.3/go.mod h1:G82pmB4WDa9jW7ZJD0nheBrCMyrW6LzYHC+fWMfA8K8=
+github.com/mevdschee/p2pquic-go v0.0.6 h1:EeD13vEPRaGaGIsUb/G0TXxVyFg0TzbmZc3Y3eNZh+4=
+github.com/mevdschee/p2pquic-go v0.0.6/go.mod h1:G82pmB4WDa9jW7ZJD0nheBrCMyrW6LzYHC+fWMfA8K8=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/quic-go/quic-go v0.59.0 h1:OLJkp1Mlm/aS7dpKgTc6cnpynnD2Xg7C1pwL6vy/SAw=
