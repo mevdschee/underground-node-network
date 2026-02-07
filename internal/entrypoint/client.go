@@ -89,6 +89,7 @@ func (c *Client) Connect() error {
 	}
 
 	c.channel = channel
+
 	return nil
 }
 

@@ -417,7 +417,11 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	// Wait for session to end
 	if err := session.Wait(); err != nil {
 		// Exit status errors are normal when user disconnects
-		if _, ok := err.(*ssh.ExitError); !ok {
+		if _, ok := err.(*ssh.ExitError); ok {
+			// Normal exit
+		} else if err.Error() == "wait: remote command exited without exit status or exit signal" {
+			// Connection closed without clean exit - still normal
+		} else {
 			return fmt.Errorf("session error: %w", err)
 		}
 	}
