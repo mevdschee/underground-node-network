@@ -42,8 +42,16 @@ func NewQUICListener(port int) (*QUICListener, error) {
 	// Generate TLS config
 	tlsConfig := generateTLSConfig()
 
+	// QUIC config with keep-alive
+	quicConfig := &quic.Config{
+		KeepAlivePeriod:         15 * time.Second, // Send keep-alive every 15s
+		MaxIdleTimeout:          60 * time.Second, // Timeout after 60s of inactivity
+		EnableDatagrams:         false,
+		DisablePathMTUDiscovery: false,
+	}
+
 	// Create QUIC listener
-	listener, err := quic.Listen(udpConn, tlsConfig, nil)
+	listener, err := quic.Listen(udpConn, tlsConfig, quicConfig)
 	if err != nil {
 		udpConn.Close()
 		return nil, fmt.Errorf("failed to create QUIC listener: %w", err)

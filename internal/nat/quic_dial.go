@@ -41,11 +41,19 @@ func DialQUIC(address string) (net.Conn, error) {
 		NextProtos:         []string{"unn-quic"},
 	}
 
+	// QUIC config with keep-alive
+	quicConfig := &quic.Config{
+		KeepAlivePeriod:         15 * time.Second, // Send keep-alive every 15s
+		MaxIdleTimeout:          60 * time.Second, // Timeout after 60s of inactivity
+		EnableDatagrams:         false,
+		DisablePathMTUDiscovery: false,
+	}
+
 	// Dial QUIC connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	quicConn, err := quic.Dial(ctx, udpConn, udpAddr, tlsConfig, nil)
+	quicConn, err := quic.Dial(ctx, udpConn, udpAddr, tlsConfig, quicConfig)
 	if err != nil {
 		udpConn.Close()
 		return nil, fmt.Errorf("failed to dial QUIC: %w", err)
