@@ -150,116 +150,152 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	}
 
 	ipv4Address := net.JoinHostPort(ipv4Addr, port)
-	entrypointSSH, err := ssh.Dial("tcp", ipv4Address, config)
-	if err != nil {
-		return fmt.Errorf("failed to connect to entrypoint: %w", err)
-	}
-	defer entrypointSSH.Close()
 
-	if verbose {
-		log.Printf("Connected to entrypoint")
-	}
-
-	// Create a new session for the interactive TUI
-	session, err := entrypointSSH.NewSession()
-	if err != nil {
-		return fmt.Errorf("failed to create session: %w", err)
-	}
-	defer session.Close()
-
-	// Get terminal size
-	width, height := 80, 24
-	if !batch {
-		var w, h int
-		w, h, err = term.GetSize(fd)
-		if err == nil {
-			width, height = w, h
+	// Main loop - reconnect to entrypoint after disconnecting from room
+	for {
+		entrypointSSH, err := ssh.Dial("tcp", ipv4Address, config)
+		if err != nil {
+			return fmt.Errorf("failed to connect to entrypoint: %w", err)
 		}
-	}
-
-	// Request PTY
-	if err := session.RequestPty("xterm-256color", height, width, ssh.TerminalModes{
-		ssh.ECHO:          1,
-		ssh.TTY_OP_ISPEED: 14400,
-		ssh.TTY_OP_OSPEED: 14400,
-	}); err != nil {
-		return fmt.Errorf("failed to request PTY: %w", err)
-	}
-
-	// Set up pipes for I/O with OSC parsing
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdin pipe: %w", err)
-	}
-
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdout pipe: %w", err)
-	}
-
-	// Channel to receive teleport data
-	teleportChan := make(chan *TeleportData, 1)
-	var teleportOnce sync.Once
-
-	// Start shell
-	if err := session.Shell(); err != nil {
-		return fmt.Errorf("failed to start shell: %w", err)
-	}
-
-	// If user specified a room, send join command after registration completes
-	// We'll do this by sending it as initial input after a brief delay
-	if roomName != "" {
-		go func() {
-			time.Sleep(500 * time.Millisecond) // Wait for TUI to initialize
-			stdin.Write([]byte("/join " + roomName + "\n"))
-		}()
-	}
-
-	// Copy stdin to session
-	go func() {
-		io.Copy(stdin, os.Stdin)
-	}()
-
-	// Copy session output to stdout, parsing OSC sequences
-	go func() {
-		parseOSCOutput(stdout, os.Stdout, func(data *TeleportData) {
-			teleportOnce.Do(func() {
-				teleportChan <- data
-			})
-		})
-	}()
-
-	// Wait for session to end or teleport data
-	sessionDone := make(chan error, 1)
-	go func() {
-		sessionDone <- session.Wait()
-	}()
-
-	select {
-	case teleportData := <-teleportChan:
-		// We received teleport data - connect to room via p2pquic
-		session.Close()
 
 		if verbose {
-			log.Printf("Received teleport data for room: %s", teleportData.RoomName)
-			log.Printf("Candidates: %v", teleportData.Candidates)
+			log.Printf("Connected to entrypoint")
 		}
 
-		return connectToRoom(entrypointSSH, config, teleportData, verbose, batch)
-
-	case err := <-sessionDone:
+		// Create a new session for the interactive TUI
+		session, err := entrypointSSH.NewSession()
 		if err != nil {
-			if _, ok := err.(*ssh.ExitError); ok {
-				// Normal exit
-				return nil
-			}
-			if err.Error() == "wait: remote command exited without exit status or exit signal" {
-				return nil
-			}
-			return fmt.Errorf("session error: %w", err)
+			entrypointSSH.Close()
+			return fmt.Errorf("failed to create session: %w", err)
 		}
-		return nil
+
+		// Get terminal size
+		width, height := 80, 24
+		if !batch {
+			var w, h int
+			w, h, err = term.GetSize(fd)
+			if err == nil {
+				width, height = w, h
+			}
+		}
+
+		// Request PTY
+		if err := session.RequestPty("xterm-256color", height, width, ssh.TerminalModes{
+			ssh.ECHO:          1,
+			ssh.TTY_OP_ISPEED: 14400,
+			ssh.TTY_OP_OSPEED: 14400,
+		}); err != nil {
+			session.Close()
+			entrypointSSH.Close()
+			return fmt.Errorf("failed to request PTY: %w", err)
+		}
+
+		// Set up pipes for I/O with OSC parsing
+		stdin, err := session.StdinPipe()
+		if err != nil {
+			session.Close()
+			entrypointSSH.Close()
+			return fmt.Errorf("failed to get stdin pipe: %w", err)
+		}
+
+		stdout, err := session.StdoutPipe()
+		if err != nil {
+			session.Close()
+			entrypointSSH.Close()
+			return fmt.Errorf("failed to get stdout pipe: %w", err)
+		}
+
+		// Channel to receive teleport data
+		teleportChan := make(chan *TeleportData, 1)
+		var teleportOnce sync.Once
+
+		// Start shell
+		if err := session.Shell(); err != nil {
+			session.Close()
+			entrypointSSH.Close()
+			return fmt.Errorf("failed to start shell: %w", err)
+		}
+
+		// If user specified a room on first connection, send join command
+		if roomName != "" {
+			go func() {
+				time.Sleep(500 * time.Millisecond) // Wait for TUI to initialize
+				stdin.Write([]byte("/join " + roomName + "\n"))
+			}()
+			roomName = "" // Only auto-join on first connection
+		}
+
+		// Copy stdin to session
+		go func() {
+			io.Copy(stdin, os.Stdin)
+		}()
+
+		// Copy session output to stdout, parsing OSC sequences
+		go func() {
+			parseOSCOutput(stdout, os.Stdout, func(data *TeleportData) {
+				teleportOnce.Do(func() {
+					teleportChan <- data
+				})
+			})
+		}()
+
+		// Wait for session to end or teleport data
+		sessionDone := make(chan error, 1)
+		go func() {
+			sessionDone <- session.Wait()
+		}()
+
+		var teleportData *TeleportData
+		shouldReconnect := false
+
+		select {
+		case teleportData = <-teleportChan:
+			// We received teleport data - connect to room via p2pquic
+			session.Close()
+
+			if verbose {
+				log.Printf("Received teleport data for room: %s", teleportData.RoomName)
+				log.Printf("Candidates: %v", teleportData.Candidates)
+			}
+
+			err := connectToRoom(entrypointSSH, config, teleportData, verbose, batch)
+			entrypointSSH.Close()
+
+			if err != nil {
+				log.Printf("Room connection error: %v", err)
+			}
+
+			// After room disconnect, reconnect to entrypoint
+			shouldReconnect = true
+
+		case err := <-sessionDone:
+			session.Close()
+			entrypointSSH.Close()
+
+			if err != nil {
+				if _, ok := err.(*ssh.ExitError); ok {
+					// Normal exit - user quit
+					return nil
+				}
+				if err.Error() == "wait: remote command exited without exit status or exit signal" {
+					return nil
+				}
+				return fmt.Errorf("session error: %w", err)
+			}
+			// Clean exit from entrypoint UI
+			return nil
+		}
+
+		if !shouldReconnect {
+			break
+		}
+
+		if verbose {
+			log.Printf("Reconnecting to entrypoint...")
+		}
 	}
+
+	return nil
 }
 
 // parseOSCOutput reads from r, writes to w, and calls onTeleport when OSC 31337 teleport data is found
