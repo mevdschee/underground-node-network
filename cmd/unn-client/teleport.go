@@ -151,6 +151,22 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 
 	ipv4Address := net.JoinHostPort(ipv4Addr, port)
 
+	// Shared stdin channel - only one goroutine reads from os.Stdin
+	stdinChan := make(chan byte, 4096)
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := os.Stdin.Read(buf)
+			for i := 0; i < n; i++ {
+				stdinChan <- buf[i]
+			}
+			if err != nil {
+				close(stdinChan)
+				return
+			}
+		}
+	}()
+
 	// Main loop - reconnect to entrypoint after disconnecting from room
 	for {
 		entrypointSSH, err := ssh.Dial("tcp", ipv4Address, config)
@@ -225,9 +241,22 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 			roomName = "" // Only auto-join on first connection
 		}
 
-		// Copy stdin to session
+		// Use done channel to stop stdin forwarding when session ends
+		stdinDone := make(chan struct{})
+
+		// Forward stdin channel to session stdin
 		go func() {
-			io.Copy(stdin, os.Stdin)
+			for {
+				select {
+				case b, ok := <-stdinChan:
+					if !ok {
+						return
+					}
+					stdin.Write([]byte{b})
+				case <-stdinDone:
+					return
+				}
+			}
 		}()
 
 		// Copy session output to stdout, parsing OSC sequences
@@ -252,11 +281,10 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		case teleportData = <-teleportChan:
 			// We received teleport data - connect to room via p2pquic
 			session.Close()
+			close(stdinDone)
 
-			if verbose {
-				log.Printf("Received teleport data for room: %s", teleportData.RoomName)
-				log.Printf("Candidates: %v", teleportData.Candidates)
-			}
+			// Show teleporting UI
+			showTeleportingUI(teleportData.RoomName, verbose)
 
 			err := connectToRoom(entrypointSSH, config, teleportData, verbose, batch)
 			entrypointSSH.Close()
@@ -270,6 +298,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 
 		case err := <-sessionDone:
 			session.Close()
+			close(stdinDone)
 			entrypointSSH.Close()
 
 			if err != nil {
@@ -396,6 +425,12 @@ func handleOSC(data []byte, onTeleport func(*TeleportData)) {
 }
 
 func connectToRoom(entrypointSSH *ssh.Client, config *ssh.ClientConfig, teleportData *TeleportData, verbose, batch bool) error {
+	// Suppress log output during connection unless verbose
+	if !verbose {
+		log.SetOutput(io.Discard)
+		defer log.SetOutput(os.Stderr)
+	}
+
 	// Create p2pquic peer for client
 	clientID := fmt.Sprintf("client-%d", time.Now().UnixNano())
 	p2pConfig := p2pquic.Config{
@@ -575,4 +610,19 @@ func connectToRoom(entrypointSSH *ssh.Client, config *ssh.ClientConfig, teleport
 	fmt.Printf("\n\033[1;33m>>> Disconnected from room: %s <<<\033[0m\n\n", teleportData.RoomName)
 
 	return nil
+}
+
+// showTeleportingUI displays a teleporting screen while connecting to a room
+func showTeleportingUI(roomName string, verbose bool) {
+	// Clear screen and show teleporting message
+	fmt.Print("\033[2J\033[H")
+	fmt.Printf("\n\n")
+	fmt.Printf("  \033[1;36m╔════════════════════════════════════════╗\033[0m\n")
+	fmt.Printf("  \033[1;36m║\033[0m                                        \033[1;36m║\033[0m\n")
+	fmt.Printf("  \033[1;36m║\033[0m   \033[1;33m⚡ TELEPORTING TO: %-17s\033[0m  \033[1;36m║\033[0m\n", roomName)
+	fmt.Printf("  \033[1;36m║\033[0m                                        \033[1;36m║\033[0m\n")
+	fmt.Printf("  \033[1;36m║\033[0m     \033[2mEstablishing P2P connection...\033[0m     \033[1;36m║\033[0m\n")
+	fmt.Printf("  \033[1;36m║\033[0m                                        \033[1;36m║\033[0m\n")
+	fmt.Printf("  \033[1;36m╚════════════════════════════════════════╝\033[0m\n")
+	fmt.Printf("\n")
 }

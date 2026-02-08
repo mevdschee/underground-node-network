@@ -114,6 +114,8 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 
 			if !alreadyOnline {
 				log.Printf("Room online: %s by %s", payload.RoomName, username)
+				// Broadcast updated room list to all connected people
+				s.updateAllPeople()
 			}
 
 			// Send back room list
