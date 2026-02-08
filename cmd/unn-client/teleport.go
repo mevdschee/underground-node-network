@@ -16,6 +16,7 @@ import (
 
 	"github.com/mevdschee/p2pquic-go/pkg/p2pquic"
 	"github.com/mevdschee/underground-node-network/internal/nat"
+	"github.com/mevdschee/underground-node-network/internal/protocol"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
@@ -420,6 +421,12 @@ func handleOSC(data []byte, onTeleport func(*TeleportData)) {
 			}
 		}
 		onTeleport(teleportData)
+	} else if action == "transfer_block" {
+		// Handle file download blocks
+		var blockPayload protocol.FileBlockPayload
+		if err := json.Unmarshal([]byte(jsonData), &blockPayload); err == nil {
+			handleOSCBlockTransfer(blockPayload, false)
+		}
 	}
 }
 
@@ -569,8 +576,15 @@ func connectToRoom(entrypointSSH *ssh.Client, config *ssh.ClientConfig, teleport
 		return fmt.Errorf("failed to get room stdin pipe: %w", err)
 	}
 
-	session.Stdout = os.Stdout
+	roomStdout, err := session.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get room stdout pipe: %w", err)
+	}
+
 	session.Stderr = os.Stderr
+
+	// Parse OSC output from room for file transfers (no teleport handler for rooms)
+	go parseOSCOutput(roomStdout, os.Stdout, func(data *TeleportData) {})
 
 	// Request PTY
 	fd := int(os.Stdin.Fd())
@@ -600,8 +614,6 @@ func connectToRoom(entrypointSSH *ssh.Client, config *ssh.ClientConfig, teleport
 	*currentStdin = roomStdin
 	stdinMu.Unlock()
 
-	fmt.Printf("\n\033[1;32m>>> Connected to room: %s <<<\033[0m\n\n", teleportData.RoomName)
-
 	// Wait for session to end
 	if err := session.Wait(); err != nil {
 		// Exit status errors are normal when user disconnects
@@ -613,8 +625,6 @@ func connectToRoom(entrypointSSH *ssh.Client, config *ssh.ClientConfig, teleport
 			return fmt.Errorf("session error: %w", err)
 		}
 	}
-
-	fmt.Printf("\n\033[1;33m>>> Disconnected from room: %s <<<\033[0m\n\n", teleportData.RoomName)
 
 	return nil
 }
