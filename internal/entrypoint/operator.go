@@ -130,10 +130,35 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 
 		case protocol.MsgTypePunchAnswer:
 			// Room operator sent back candidates for hole-punching
-			// NOTE: This coordination is now handled via p2pquic signaling
-			// Clients and rooms register their candidates directly with the signaling server
-			// and exchange them without entrypoint involvement
-			log.Printf("Received legacy punch_answer message - ignored (use p2pquic signaling)")
+			var payload protocol.PunchAnswerPayload
+			if err := msg.ParsePayload(&payload); err != nil {
+				log.Printf("Invalid punch_answer payload: %v", err)
+				continue
+			}
+
+			// Route to waiting person session
+			s.mu.RLock()
+			session, ok := s.punchSessions[payload.PersonID]
+			s.mu.RUnlock()
+
+			if ok && session.PersonChan != nil {
+				// Convert PunchAnswer to PunchStart for the client
+				startPayload := protocol.PunchStartPayload{
+					RoomName:   session.RoomName,
+					Candidates: payload.Candidates,
+					SSHPort:    payload.SSHPort,
+					PublicKeys: []string{}, // Room will provide via direct connection
+				}
+				startMsg, _ := protocol.NewMessage(protocol.MsgTypePunchStart, startPayload)
+				select {
+				case session.PersonChan <- startMsg:
+					log.Printf("Routed punch_answer to person %s", payload.PersonID)
+				default:
+					log.Printf("Person channel full for %s", payload.PersonID)
+				}
+			} else {
+				log.Printf("No punch session found for person %s", payload.PersonID)
+			}
 
 		}
 	}

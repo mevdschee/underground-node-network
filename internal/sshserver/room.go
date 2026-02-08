@@ -97,9 +97,6 @@ func (s *Server) handleRoomSubsystem(channel ssh.Channel, sessionID string) {
 }
 
 func (s *Server) SendOSC(p *Person, action string, params map[string]interface{}) {
-	if !p.UNNAware {
-		return
-	}
 	common.SendOSC(p.Bus, action, params)
 }
 

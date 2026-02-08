@@ -34,7 +34,6 @@ type Person struct {
 	Bus        *bridge.SSHBus
 	Bridge     *bridge.InputBridge
 	PubKey     ssh.PublicKey // The specific key used for auth
-	UNNAware   bool
 	QuitReason string
 }
 
@@ -341,7 +340,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 		Username:  username,
 		Conn:      sshConn,
 		PubKey:    pubKey,
-		UNNAware:  strings.Contains(string(sshConn.ClientVersion()), "UNN"),
 	}
 	s.people[sessionID] = p
 	s.mu.Unlock()

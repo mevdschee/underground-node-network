@@ -163,7 +163,7 @@ func (c *Client) ListenForMessages(onRoomList func([]protocol.RoomInfo), onPunch
 			var payload protocol.ErrorPayload
 			if err := msg.ParsePayload(&payload); err == nil {
 				if onError != nil {
-					onError(fmt.Errorf(payload.Message))
+					onError(fmt.Errorf("%s", payload.Message))
 				}
 			}
 

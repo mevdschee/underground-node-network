@@ -71,7 +71,6 @@ func (s *Server) handleCommand(channel ssh.Channel, sessionID string, input stri
 					channel, func(action string, params map[string]interface{}) {
 						s.HandleOSC(p, action, params)
 					})
-				output.UNNAware = p.UNNAware
 
 				if err := s.doorManager.Execute(doorName, input, output, output); err != nil {
 					fmt.Fprintf(channel, "\r[Door error: %v]\r\n", err)

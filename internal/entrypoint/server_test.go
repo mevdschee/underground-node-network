@@ -114,16 +114,16 @@ func TestStorage(t *testing.T) {
 	sshPubKey, _ := ssh.NewPublicKey(pub)
 	hash := s.calculatePubKeyHash(sshPubKey)
 
-	// Save unified user info
+	// Save unified user info - usernames maps unnUsername -> platformId
 	s.mu.Lock()
 	s.identities[hash] = "maurits testuser@github"
-	s.usernames["maurits"] = hash
+	s.usernames["maurits"] = "testuser@github" // platformId, not hash
 	s.saveUsers()
 	s.mu.Unlock()
 
-	// Verify file
+	// Verify file - format: hash unn_username platform_username@platform [lastSeenDate]
 	userData, _ := os.ReadFile(filepath.Join(tmpDir, "users"))
-	expected := fmt.Sprintf("%s maurits testuser@github\n", hash)
+	expected := fmt.Sprintf("%s maurits testuser@github", hash)
 	if !strings.Contains(string(userData), expected) {
 		t.Errorf("Users file missing data. Got: %s", string(userData))
 	}
@@ -136,10 +136,10 @@ func TestStorage(t *testing.T) {
 	}
 	s2.loadUsers()
 
-	if s2.identities[hash] != "maurits testuser@github" {
+	if !strings.HasPrefix(s2.identities[hash], "maurits testuser@github") {
 		t.Errorf("Failed to load identity. Got: %s", s2.identities[hash])
 	}
-	if s2.usernames["maurits"] != hash {
+	if s2.usernames["maurits"] != "testuser@github" {
 		t.Errorf("Failed to load username. Got: %s", s2.usernames["maurits"])
 	}
 }

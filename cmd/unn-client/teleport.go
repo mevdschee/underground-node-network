@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mevdschee/p2pquic-go/pkg/p2pquic"
@@ -17,10 +20,15 @@ import (
 	"golang.org/x/term"
 )
 
-// RoomInfo is an alias for the entrypoint client's roomInfo type
-type RoomInfo = roomInfo
-
 var globalDownloadsDir string
+
+// TeleportData received via OSC from server
+type TeleportData struct {
+	RoomName   string   `json:"room_name"`
+	Candidates []string `json:"candidates"`
+	SSHPort    int      `json:"ssh_port"`
+	PublicKeys []string `json:"public_keys,omitempty"`
+}
 
 func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloadsDir string) error {
 	globalDownloadsDir = downloadsDir
@@ -118,14 +126,6 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		}
 	}
 
-	// Loop for persistent entry point session
-	currentRoom := roomName
-
-	// First, connect to entrypoint to handle registration
-	if verbose {
-		log.Printf("Connecting to entrypoint for registration check...")
-	}
-
 	// Resolve to IPv4 only
 	host, port, err := net.SplitHostPort(entrypoint)
 	if err != nil {
@@ -150,129 +150,216 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	}
 
 	ipv4Address := net.JoinHostPort(ipv4Addr, port)
-	entrypointClient, err := ssh.Dial("tcp", ipv4Address, config)
+	entrypointSSH, err := ssh.Dial("tcp", ipv4Address, config)
 	if err != nil {
 		return fmt.Errorf("failed to connect to entrypoint: %w", err)
 	}
-	defer entrypointClient.Close()
-
-	// Handle registration/verification
-	verifiedUsername, err := handleRegistration(entrypointClient, username)
-	if err != nil {
-		return fmt.Errorf("registration failed: %w", err)
-	}
+	defer entrypointSSH.Close()
 
 	if verbose {
-		log.Printf("Verified as: %s", verifiedUsername)
+		log.Printf("Connected to entrypoint")
 	}
 
-	// Now we can proceed with room teleportation
-
-	// Create an EntrypointClient to query for room info
-	epClient, err := NewEntrypointClient(entrypointClient)
+	// Create a new session for the interactive TUI
+	session, err := entrypointSSH.NewSession()
 	if err != nil {
-		return fmt.Errorf("failed to create entrypoint client: %w", err)
+		return fmt.Errorf("failed to create session: %w", err)
 	}
-	defer epClient.Close()
+	defer session.Close()
 
-	// Get list of rooms
-	rooms, err := epClient.GetRooms()
+	// Get terminal size
+	width, height := 80, 24
+	if !batch {
+		var w, h int
+		w, h, err = term.GetSize(fd)
+		if err == nil {
+			width, height = w, h
+		}
+	}
+
+	// Request PTY
+	if err := session.RequestPty("xterm-256color", height, width, ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}); err != nil {
+		return fmt.Errorf("failed to request PTY: %w", err)
+	}
+
+	// Set up pipes for I/O with OSC parsing
+	stdin, err := session.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("failed to get room list: %w", err)
+		return fmt.Errorf("failed to get stdin pipe: %w", err)
 	}
 
-	// If no room specified, show interactive browser
-	if currentRoom == "" {
-		if len(rooms) == 0 {
-			fmt.Printf("\nNo rooms currently online.\n")
-			return nil
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+
+	// Channel to receive teleport data
+	teleportChan := make(chan *TeleportData, 1)
+	var teleportOnce sync.Once
+
+	// Start shell
+	if err := session.Shell(); err != nil {
+		return fmt.Errorf("failed to start shell: %w", err)
+	}
+
+	// If user specified a room, send join command after registration completes
+	// We'll do this by sending it as initial input after a brief delay
+	if roomName != "" {
+		go func() {
+			time.Sleep(500 * time.Millisecond) // Wait for TUI to initialize
+			stdin.Write([]byte("/join " + roomName + "\n"))
+		}()
+	}
+
+	// Copy stdin to session
+	go func() {
+		io.Copy(stdin, os.Stdin)
+	}()
+
+	// Copy session output to stdout, parsing OSC sequences
+	go func() {
+		parseOSCOutput(stdout, os.Stdout, func(data *TeleportData) {
+			teleportOnce.Do(func() {
+				teleportChan <- data
+			})
+		})
+	}()
+
+	// Wait for session to end or teleport data
+	sessionDone := make(chan error, 1)
+	go func() {
+		sessionDone <- session.Wait()
+	}()
+
+	select {
+	case teleportData := <-teleportChan:
+		// We received teleport data - connect to room via p2pquic
+		session.Close()
+
+		if verbose {
+			log.Printf("Received teleport data for room: %s", teleportData.RoomName)
+			log.Printf("Candidates: %v", teleportData.Candidates)
 		}
 
-		fmt.Printf("\n\033[1mAvailable Rooms:\033[0m\n\n")
-		for i, room := range rooms {
-			peopleText := "person"
-			if room.PeopleCount != 1 {
-				peopleText = "people"
+		return connectToRoom(entrypointSSH, config, teleportData, verbose, batch)
+
+	case err := <-sessionDone:
+		if err != nil {
+			if _, ok := err.(*ssh.ExitError); ok {
+				// Normal exit
+				return nil
 			}
-			fmt.Printf("  \033[1;36m%d.\033[0m \033[1m%s\033[0m (%d %s)\n",
-				i+1, room.Name, room.PeopleCount, peopleText)
-			if len(room.Doors) > 0 {
-				fmt.Printf("     Doors: %s\n", strings.Join(room.Doors, ", "))
+			if err.Error() == "wait: remote command exited without exit status or exit signal" {
+				return nil
 			}
+			return fmt.Errorf("session error: %w", err)
 		}
+		return nil
+	}
+}
 
-		fmt.Printf("\n\033[1mEnter room number or name (or 'q' to quit):\033[0m ")
+// parseOSCOutput reads from r, writes to w, and calls onTeleport when OSC 31337 teleport data is found
+func parseOSCOutput(r io.Reader, w io.Writer, onTeleport func(*TeleportData)) {
+	buf := make([]byte, 4096)
+	oscBuffer := make([]byte, 0, 8192)
+	inOSC := false
 
-		var input string
-		fmt.Scanln(&input)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			data := buf[:n]
+			writeStart := 0
 
-		if input == "q" || input == "quit" || input == "" {
-			return nil
-		}
-
-		// Try to parse as number first
-		var selectedRoom *roomInfo
-		num := 0
-		if _, err := fmt.Sscanf(input, "%d", &num); err == nil && num > 0 && num <= len(rooms) {
-			selectedRoom = &rooms[num-1]
-		} else {
-			// Try to match by name
-			for i := range rooms {
-				if rooms[i].Name == input {
-					selectedRoom = &rooms[i]
-					break
+			for i := 0; i < len(data); i++ {
+				if inOSC {
+					if data[i] == 0x07 { // BEL - end of OSC
+						oscBuffer = append(oscBuffer, data[writeStart:i]...)
+						handleOSC(oscBuffer, onTeleport)
+						oscBuffer = oscBuffer[:0]
+						inOSC = false
+						writeStart = i + 1
+					} else if data[i] == 0x1b && i+1 < len(data) && data[i+1] == '\\' {
+						// ST (\x1b\\) - alternative end of OSC
+						oscBuffer = append(oscBuffer, data[writeStart:i]...)
+						handleOSC(oscBuffer, onTeleport)
+						oscBuffer = oscBuffer[:0]
+						inOSC = false
+						writeStart = i + 2
+						i++ // Skip the backslash
+					}
+				} else {
+					// Check for OSC start: ESC ]
+					if data[i] == 0x1b && i+1 < len(data) && data[i+1] == ']' {
+						// Write everything before this OSC
+						w.Write(data[writeStart:i])
+						inOSC = true
+						oscBuffer = oscBuffer[:0]
+						writeStart = i + 2 // Skip ESC ]
+						i++                // Skip the ]
+					}
 				}
 			}
+
+			if inOSC {
+				// Still in OSC, buffer the rest
+				oscBuffer = append(oscBuffer, data[writeStart:]...)
+			} else {
+				// Write the rest normally
+				w.Write(data[writeStart:])
+			}
 		}
-
-		if selectedRoom == nil {
-			return fmt.Errorf("invalid selection: %s", input)
-		}
-
-		currentRoom = selectedRoom.Name
-		if verbose {
-			log.Printf("Selected room: %s", currentRoom)
-		}
-	}
-
-	// User has selected or requested a specific room
-	if verbose {
-		log.Printf("Connecting to room: %s", currentRoom)
-	}
-
-	// Find the requested room in the list
-	var targetRoom *RoomInfo
-	for i := range rooms {
-		if rooms[i].Name == currentRoom {
-			targetRoom = &rooms[i]
+		if err != nil {
 			break
 		}
 	}
+}
 
-	if targetRoom == nil {
-		fmt.Printf("Room '%s' not found.\n", currentRoom)
-		fmt.Printf("\nAvailable rooms:\n")
-		if len(rooms) == 0 {
-			fmt.Printf("  (no rooms currently online)\n")
-		} else {
-			for _, room := range rooms {
-				fmt.Printf("  - %s (%d people)\n", room.Name, room.PeopleCount)
+func handleOSC(data []byte, onTeleport func(*TeleportData)) {
+	// OSC format: 31337;{"action":"teleport",...}
+	content := string(data)
+	if !strings.HasPrefix(content, "31337;") {
+		return
+	}
+
+	jsonData := content[6:] // Skip "31337;"
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &payload); err != nil {
+		return
+	}
+
+	action, _ := payload["action"].(string)
+	if action == "teleport" {
+		teleportData := &TeleportData{}
+		if roomName, ok := payload["room_name"].(string); ok {
+			teleportData.RoomName = roomName
+		}
+		if candidates, ok := payload["candidates"].([]interface{}); ok {
+			for _, c := range candidates {
+				if s, ok := c.(string); ok {
+					teleportData.Candidates = append(teleportData.Candidates, s)
+				}
 			}
 		}
-		return fmt.Errorf("room not found")
+		if sshPort, ok := payload["ssh_port"].(float64); ok {
+			teleportData.SSHPort = int(sshPort)
+		}
+		if keys, ok := payload["public_keys"].([]interface{}); ok {
+			for _, k := range keys {
+				if s, ok := k.(string); ok {
+					teleportData.PublicKeys = append(teleportData.PublicKeys, s)
+				}
+			}
+		}
+		onTeleport(teleportData)
 	}
+}
 
-	if verbose {
-		log.Printf("Found room: %s with %d people", targetRoom.Name, targetRoom.PeopleCount)
-		log.Printf("Room SSH port: %d", targetRoom.SSHPort)
-		log.Printf("Room candidates: %v", targetRoom.Candidates)
-	}
-
-	// Connect to room via p2pquic using SSH signaling
-	if verbose {
-		log.Printf("Connecting to room via p2pquic")
-	}
-
+func connectToRoom(entrypointSSH *ssh.Client, config *ssh.ClientConfig, teleportData *TeleportData, verbose, batch bool) error {
 	// Create p2pquic peer for client
 	clientID := fmt.Sprintf("client-%d", time.Now().UnixNano())
 	p2pConfig := p2pquic.Config{
@@ -288,7 +375,6 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	defer p2pPeer.Close()
 
 	// Bind the UDP socket first to get the actual port assigned by the OS
-	// Use Bind() instead of Listen() since clients only dial out, not accept connections
 	if err := p2pPeer.Bind(); err != nil {
 		return fmt.Errorf("failed to bind p2pquic socket: %w", err)
 	}
@@ -308,14 +394,14 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	}
 
 	// Register client with signaling via SSH
-	signalingClient, err := nat.NewSSHSignalingClient(entrypointClient)
+	signalingClient, err := nat.NewSSHSignalingClient(entrypointSSH)
 	if err != nil {
 		return fmt.Errorf("failed to create signaling client: %w", err)
 	}
 	defer signalingClient.Close()
 
 	if err := signalingClient.Register(clientID, clientCandidates); err != nil {
-		return fmt.Errorf("failed to register with signaling:  %w", err)
+		return fmt.Errorf("failed to register with signaling: %w", err)
 	}
 
 	if verbose {
@@ -323,7 +409,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	}
 
 	// Get room's peer info from signaling
-	roomPeerID := fmt.Sprintf("room-%s", currentRoom)
+	roomPeerID := fmt.Sprintf("room-%s", teleportData.RoomName)
 	roomPeerInfo, err := signalingClient.GetPeer(roomPeerID)
 	if err != nil {
 		return fmt.Errorf("failed to get room peer info: %w", err)
@@ -333,35 +419,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		log.Printf("Got room peer info with %d candidates", len(roomPeerInfo.Candidates))
 	}
 
-	// Convert p2pquic.Candidate to string addresses for connection
-	roomCandidates := make([]string, len(roomPeerInfo.Candidates))
-	for i, cand := range roomPeerInfo.Candidates {
-		roomCandidates[i] = fmt.Sprintf("%s:%d", cand.IP, cand.Port)
-	}
-
-	// Request coordinated hole-punching via entrypoint
-	// This tells the room to start punching to us while we punch to it
-	clientCandidateStrs := make([]string, len(clientCandidates))
-	for i, c := range clientCandidates {
-		clientCandidateStrs[i] = fmt.Sprintf("%s:%d", c.IP, c.Port)
-	}
-
-	if verbose {
-		log.Printf("Requesting coordinated punch to room %s", currentRoom)
-	}
-
-	if err := epClient.RequestPreparePunch(currentRoom, clientID, clientCandidateStrs); err != nil {
-		log.Printf("Warning: Coordinated punch request failed: %v (continuing anyway)", err)
-	} else if verbose {
-		log.Printf("Room notified to start punching, waiting briefly...")
-	}
-
-	// Connect via p2pquic using the peer info we got from SSH signaling
-	if verbose {
-		log.Printf("Attempting p2pquic connection to room peer: %s with %d candidates", roomPeerID, len(roomCandidates))
-	}
-
-	// Convert room candidates to p2pquic.Candidate
+	// Convert p2pquic.Candidate to p2pquic.Candidate for connection
 	p2pRoomCandidates := make([]p2pquic.Candidate, len(roomPeerInfo.Candidates))
 	for i, c := range roomPeerInfo.Candidates {
 		p2pRoomCandidates[i] = p2pquic.Candidate{
@@ -370,10 +428,37 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		}
 	}
 
+	// Request coordinated hole-punching via entrypoint
+	clientCandidateStrs := make([]string, len(clientCandidates))
+	for i, c := range clientCandidates {
+		clientCandidateStrs[i] = fmt.Sprintf("%s:%d", c.IP, c.Port)
+	}
+
+	if verbose {
+		log.Printf("Requesting coordinated punch to room %s", teleportData.RoomName)
+	}
+
+	// Create entrypoint API client for punch request
+	epClient, err := NewEntrypointClient(entrypointSSH)
+	if err != nil {
+		log.Printf("Warning: Could not create entrypoint client for punch coordination: %v", err)
+	} else {
+		defer epClient.Close()
+		if err := epClient.RequestPreparePunch(teleportData.RoomName, clientID, clientCandidateStrs); err != nil {
+			log.Printf("Warning: Coordinated punch request failed: %v (continuing anyway)", err)
+		} else if verbose {
+			log.Printf("Room notified to start punching, waiting briefly...")
+		}
+	}
+
+	// Connect via p2pquic using the peer info we got from SSH signaling
+	if verbose {
+		log.Printf("Attempting p2pquic connection to room peer: %s with %d candidates", roomPeerID, len(p2pRoomCandidates))
+	}
+
 	// Connect and get the underlying QUIC connection using peer info
 	ctx := context.Background()
 	quicConn, err := p2pPeer.Connect(roomPeerID, p2pquic.WithCandidates(p2pRoomCandidates...))
-
 	if err != nil {
 		return fmt.Errorf("failed to connect via p2pquic: %w", err)
 	}
@@ -393,7 +478,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	sshConn := nat.NewQUICStreamConn(stream, quicConn)
 
 	// Connect SSH client over the QUIC stream
-	sshConnWrapper, chans, reqs, err := ssh.NewClientConn(sshConn, targetRoom.Name, config)
+	sshConnWrapper, chans, reqs, err := ssh.NewClientConn(sshConn, teleportData.RoomName, config)
 	if err != nil {
 		return fmt.Errorf("failed to establish SSH over p2pquic: %w", err)
 	}
@@ -414,8 +499,8 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 	session.Stderr = os.Stderr
 
 	// Request PTY
-	fd = int(os.Stdin.Fd())
-	var width, height = 80, 24
+	fd := int(os.Stdin.Fd())
+	width, height := 80, 24
 	if !batch {
 		var w, h int
 		w, h, err = term.GetSize(fd)
@@ -437,7 +522,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		return fmt.Errorf("failed to start shell: %w", err)
 	}
 
-	fmt.Printf("\n\033[1;32m>>> Connected to room: %s <<<\033[0m\n\n", currentRoom)
+	fmt.Printf("\n\033[1;32m>>> Connected to room: %s <<<\033[0m\n\n", teleportData.RoomName)
 
 	// Wait for session to end
 	if err := session.Wait(); err != nil {
@@ -451,7 +536,7 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 		}
 	}
 
-	fmt.Printf("\n\033[1;33m>>> Disconnected from room: %s <<<\033[0m\n\n", currentRoom)
+	fmt.Printf("\n\033[1;33m>>> Disconnected from room: %s <<<\033[0m\n\n", teleportData.RoomName)
 
 	return nil
 }

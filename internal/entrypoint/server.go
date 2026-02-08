@@ -15,6 +15,9 @@ import (
 
 	"github.com/mevdschee/p2pquic-go/pkg/signaling"
 	"github.com/mevdschee/underground-node-network/internal/protocol"
+	"github.com/mevdschee/underground-node-network/internal/ui"
+	"github.com/mevdschee/underground-node-network/internal/ui/bridge"
+	"github.com/mevdschee/underground-node-network/internal/ui/common"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -24,6 +27,28 @@ type Room struct {
 	Connection *ssh.ServerConn
 	Channel    ssh.Channel // For sending messages to operator
 	Encoder    *json.Encoder
+}
+
+// PunchSession tracks an active hole-punch negotiation
+type PunchSession struct {
+	PersonID   string
+	RoomName   string
+	PersonChan chan *protocol.Message // Send punch_start to person
+}
+
+// Person represents a connected user with a TUI session
+type Person struct {
+	SessionID      string
+	Username       string
+	TeleportData   *protocol.PunchStartPayload
+	UI             *ui.EntryUI
+	DisplayName    string
+	Bus            *bridge.SSHBus
+	Bridge         *bridge.InputBridge
+	PubKey         ssh.PublicKey
+	PubKeyHash     string
+	Conn           *ssh.ServerConn
+	InitialCommand string
 }
 
 // Server is the entry point SSH server
@@ -36,10 +61,16 @@ type Server struct {
 	httpClient      *http.Client
 
 	mu              sync.RWMutex
-	rooms           map[string]*Room  // room name -> *Room
-	identities      map[string]string // keyHash -> "unnUsername platform_username@platform"
-	usernames       map[string]string // unnUsername -> platformOwner (e.g. user@github)
-	registeredRooms map[string]string // roomName -> "hostKeyHash ownerUsername lastSeenDate"
+	rooms           map[string]*Room         // room name -> *Room
+	people          map[string]*Person       // session ID -> *Person
+	punchSessions   map[string]*PunchSession // keyed by person ID
+	identities      map[string]string        // keyHash -> "unnUsername platform_username@platform"
+	usernames       map[string]string        // unnUsername -> platformOwner (e.g. user@github)
+	registeredRooms map[string]string        // roomName -> "hostKeyHash ownerUsername lastSeenDate"
+	histories       map[string][]ui.Message  // keyed by pubkey hash (hex)
+	cmdHistories    map[string][]string      // keyed by pubkey hash (hex)
+	banner          []string
+	headless        bool
 }
 
 // NewServer creates a new entry point server
@@ -73,11 +104,15 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 		usersDir:        usersDir,
 		config:          config,
 		rooms:           make(map[string]*Room),
+		people:          make(map[string]*Person),
+		punchSessions:   make(map[string]*PunchSession),
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		signalingServer: signalingServer,
 		identities:      make(map[string]string),
 		usernames:       make(map[string]string),
 		registeredRooms: make(map[string]string),
+		histories:       make(map[string][]ui.Message),
+		cmdHistories:    make(map[string][]string),
 	}
 
 	// Load data from files
@@ -247,8 +282,17 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 		return
 	}
 
-	// Wait for subsystem request
-	// We no longer support interactive PTY sessions for persons
+	// Parse public key for session tracking
+	pubKey := conn.Permissions.Extensions["pubkey"]
+	pubKeyHash := ""
+	var parsedPubKey ssh.PublicKey
+	if pubKey != "" {
+		parsedPubKey, _, _, _, _ = ssh.ParseAuthorizedKey([]byte(pubKey))
+		if parsedPubKey != nil {
+			pubKeyHash = s.calculatePubKeyHash(parsedPubKey)
+		}
+	}
+
 	for req := range requests {
 		switch req.Type {
 		case "subsystem":
@@ -261,7 +305,6 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 				log.Printf("Operator %s connected via unn-control subsystem", username)
 
 				// Disconnect old operator with same key
-				pubKey := conn.Permissions.Extensions["pubkey"]
 				s.mu.Lock()
 				for name, room := range s.rooms {
 					if room.Connection != nil && room.Connection.Permissions.Extensions["pubkey"] == pubKey {
@@ -281,6 +324,7 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 					delete(s.rooms, roomName)
 					s.mu.Unlock()
 					log.Printf("Room unregistered: %s", roomName)
+					s.updateAllPeople()
 				}
 				return
 
@@ -302,9 +346,92 @@ func (s *Server) handleSession(newChannel ssh.NewChannel, conn *ssh.ServerConn, 
 				return
 			}
 
-		case "pty-req", "shell":
-			// Reject PTY and shell requests - no interactive sessions
-			req.Reply(false, []byte("Interactive sessions not supported. Use unn-client tool."))
+		case "pty-req":
+			// Interactive person session with TUI
+			var initialW, initialH uint32 = 80, 24
+			if w, h, ok := common.ParsePtyRequest(req.Payload); ok {
+				initialW, initialH = w, h
+			}
+			req.Reply(true, nil)
+
+			log.Printf("Person connected: %s", username)
+
+			sessionID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
+			inputBridge := bridge.NewInputBridge(channel)
+			p := &Person{
+				SessionID: sessionID,
+				Username:  username,
+				TeleportData: &protocol.PunchStartPayload{
+					RoomName: "lobby", // Default
+				},
+				Bridge:     inputBridge,
+				Bus:        bridge.NewSSHBus(inputBridge, int(initialW), int(initialH)),
+				PubKey:     parsedPubKey,
+				PubKeyHash: pubKeyHash,
+				Conn:       conn,
+			}
+			p.UI = ui.NewEntryUI(nil, p.Username, s.address)
+			p.UI.Headless = s.headless
+			p.UI.Input = p.Bus
+
+			s.mu.Lock()
+			// Disconnect old person with same key
+			if pubKeyHash != "" {
+				for xid, old := range s.people {
+					if old.PubKeyHash == pubKeyHash {
+						log.Printf("Disconnecting old person session %s for user %s (new connection)", xid, username)
+						common.SendOSC(old.Bus, "popup", map[string]interface{}{
+							"title":   "Duplicate Session",
+							"message": "You have been disconnected because you connected from another session.",
+							"type":    "warning",
+						})
+						// Give it a moment to send
+						go func(c *ssh.ServerConn) {
+							time.Sleep(200 * time.Millisecond)
+							c.Close()
+						}(old.Conn)
+					}
+				}
+			}
+			s.people[sessionID] = p
+			s.mu.Unlock()
+
+			// Handle remaining requests in background to capture resize and ack shell
+			go func() {
+				for r := range requests {
+					switch r.Type {
+					case "pty-req":
+						if w, h, ok := common.ParsePtyRequest(r.Payload); ok {
+							p.Bus.Resize(int(w), int(h))
+						}
+						r.Reply(true, nil)
+					case "window-change":
+						if w, h, ok := common.ParseWindowChange(r.Payload); ok {
+							p.Bus.Resize(int(w), int(h))
+						}
+						r.Reply(true, nil)
+					case "shell":
+						// Ack traditional interactive request for client compatibility
+						r.Reply(true, nil)
+					default:
+						r.Reply(false, nil)
+					}
+				}
+			}()
+
+			// Main interaction session
+			go func() {
+				defer func() {
+					s.mu.Lock()
+					if current, ok := s.people[sessionID]; ok && current == p {
+						delete(s.people, sessionID)
+					}
+					s.mu.Unlock()
+					p.Bus.ForceClose()
+				}()
+				s.handlePerson(p, conn)
+			}()
+			return
 
 		default:
 			req.Reply(false, nil)
