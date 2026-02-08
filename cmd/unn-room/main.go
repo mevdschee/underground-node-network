@@ -153,36 +153,6 @@ func main() {
 					continue
 				}
 
-				log.Printf("Registered with entry point as '%s'", *roomName)
-
-				// Register with p2pquic signaling via SSH subsystem
-				if p2pPeer := server.GetP2PPeer(); p2pPeer != nil {
-					// Discover candidates
-					p2pCandidates, err := p2pPeer.DiscoverCandidates()
-					if err != nil {
-						log.Printf("Warning: Failed to discover p2pquic candidates: %v", err)
-					} else {
-						log.Printf("Discovered %d p2pquic candidates", len(p2pCandidates))
-
-						// Create SSH signaling client
-						signalingClient, err := nat.NewSSHSignalingClient(epClient.Connection())
-						if err != nil {
-							log.Printf("Warning: Failed to create signaling client: %v", err)
-						} else {
-							defer signalingClient.Close()
-
-							// Register room as p2pquic peer
-							roomPeerID := fmt.Sprintf("room-%s", *roomName)
-							if err := signalingClient.Register(roomPeerID, p2pCandidates); err != nil {
-								log.Printf("Warning: Failed to register with signaling: %v", err)
-							} else {
-								log.Printf("Registered room with p2pquic signaling as peer: %s", roomPeerID)
-								// Note: Using SSH-based signaling, no need for HTTP-based continuous hole-punching
-							}
-						}
-					}
-				}
-
 				// Report people count updates
 				server.OnPeopleChange = func(count int) {
 					if epClient != nil {
@@ -205,6 +175,27 @@ func main() {
 					// Send UDP punch packets to client's candidates
 					if len(offer.Candidates) > 0 {
 						log.Printf("Sending UDP punch packets to client %s at %v", offer.Username, offer.Candidates)
+
+						// Register room with signaling just-in-time (30s TTL)
+						if p2pPeer := server.GetP2PPeer(); p2pPeer != nil {
+							p2pCandidates, err := p2pPeer.DiscoverCandidates()
+							if err != nil {
+								log.Printf("Warning: Failed to discover p2pquic candidates: %v", err)
+							} else {
+								signalingClient, err := nat.NewSSHSignalingClient(epClient.Connection())
+								if err != nil {
+									log.Printf("Warning: Failed to create signaling client: %v", err)
+								} else {
+									roomPeerID := fmt.Sprintf("room-%s", *roomName)
+									if err := signalingClient.Register(roomPeerID, p2pCandidates); err != nil {
+										log.Printf("Warning: Failed to register with signaling: %v", err)
+									} else {
+										log.Printf("Registered room with signaling as %s (30s TTL)", roomPeerID)
+									}
+									signalingClient.Close()
+								}
+							}
+						}
 
 						// Get the room's UDP connection from the server
 						udpConn := server.GetUDPConn()

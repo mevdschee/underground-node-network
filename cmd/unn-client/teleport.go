@@ -482,7 +482,7 @@ func connectToRoom(entrypointSSH *ssh.Client, config *ssh.ClientConfig, teleport
 	}
 
 	if verbose {
-		log.Printf("Registered with signaling server")
+		log.Printf("Registered client with signaling (30s TTL)")
 	}
 
 	// Get room's peer info from signaling

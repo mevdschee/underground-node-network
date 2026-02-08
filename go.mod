@@ -7,7 +7,7 @@ toolchain go1.24.12
 require (
 	github.com/creack/pty v1.1.24
 	github.com/gdamore/tcell/v2 v2.13.7
-	github.com/mevdschee/p2pquic-go v0.0.6
+	github.com/mevdschee/p2pquic-go v0.1.0
 	github.com/quic-go/quic-go v0.59.0
 	github.com/rivo/uniseg v0.4.7
 	golang.org/x/crypto v0.47.0

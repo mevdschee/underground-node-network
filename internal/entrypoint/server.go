@@ -206,6 +206,10 @@ func (s *Server) Start() error {
 
 // Stop stops the server
 func (s *Server) Stop() error {
+	// Stop the signaling server cleanup goroutine
+	if s.signalingServer != nil {
+		s.signalingServer.Close()
+	}
 	if s.tcpListener != nil {
 		return s.tcpListener.Close()
 	}
