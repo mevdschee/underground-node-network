@@ -240,10 +240,10 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 
 		// If user specified a room on first connection, send join command
 		if roomName != "" {
-			go func() {
+			go func(room string) {
 				time.Sleep(500 * time.Millisecond) // Wait for TUI to initialize
-				stdin.Write([]byte("/join " + roomName + "\n"))
-			}()
+				stdin.Write([]byte("/join " + room + "\r"))
+			}(roomName)
 			roomName = "" // Only auto-join on first connection
 		}
 
