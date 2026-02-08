@@ -111,6 +111,11 @@ func (c *Client) Connection() *ssh.Client {
 
 // Register registers this room with the entry point
 func (c *Client) Register(roomName string, doors []string, sshPort int, publicKeys []string, peopleCount int) error {
+	// Check if channel is still valid
+	if c.channel == nil {
+		return fmt.Errorf("entrypoint channel is closed")
+	}
+
 	// Discover candidates
 	candidates := discoverCandidates()
 
