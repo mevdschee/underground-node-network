@@ -79,6 +79,10 @@ func (s *Server) addMessageToHistory(pubHash string, msg ui.Message) {
 }
 
 func (s *Server) addCommandToHistory(pubHash string, cmd string) {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return // Ignore empty/whitespace-only commands
+	}
 	history := s.cmdHistories[pubHash]
 	// Avoid duplicate consecutive commands
 	if len(history) > 0 && history[len(history)-1] == cmd {
