@@ -6,6 +6,7 @@ import (
 	"io"
 	stdlog "log"
 	"sync"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mevdschee/underground-node-network/internal/ui/common"
@@ -51,13 +52,14 @@ type EntryUI struct {
 	physicalLogs []log.Message // Wrapped lines
 
 	// FORM MODE
-	InFormMode    bool
-	FormFields    []form.FormField
-	FormActiveIdx int
-	FormResult    chan []string
-	cursorIdx     int
-	inputOffset   int
-	draft         string
+	InFormMode      bool
+	FormFields      []form.FormField
+	FormActiveIdx   int
+	FormResult      chan []string
+	cursorIdx       int
+	inputOffset     int
+	draft           string
+	FlushInputUntil time.Time // Ignore input until this time (to flush buffered /join commands)
 }
 
 func NewEntryUI(screen tcell.Screen, username, addr string) *EntryUI {
@@ -222,6 +224,7 @@ func (ui *EntryUI) Prompt(q string) string {
 func (ui *EntryUI) PromptForm(fields []form.FormField) []string {
 	ui.mu.Lock()
 	ui.InFormMode = true
+	ui.FlushInputUntil = time.Now().Add(600 * time.Millisecond) // Ignore buffered input for 600ms
 	ui.registration = form.NewForm("IDENTITY VERIFICATION", fields)
 	ui.mu.Unlock()
 
@@ -465,6 +468,12 @@ func (ui *EntryUI) HandleKeyResult(ev *tcell.EventKey) (done bool, success bool)
 	ui.mu.Lock()
 
 	if ui.InFormMode && ui.registration != nil {
+		// Ignore buffered input for a short period after form is shown
+		// This prevents /join commands from being typed into the form
+		if time.Now().Before(ui.FlushInputUntil) {
+			ui.mu.Unlock()
+			return false, false
+		}
 		submitted, vals := ui.registration.HandleKey(ev)
 		if submitted {
 			ch := ui.FormResult
