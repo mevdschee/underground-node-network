@@ -281,6 +281,11 @@ func teleport(unnUrl string, identPath string, verbose bool, batch bool, downloa
 			err := connectToRoom(entrypointSSH, config, teleportData, verbose, batch, &stdinMu, &currentStdin)
 			entrypointSSH.Close()
 
+			// Clear stdin destination and allow buffered input to be discarded
+			stdinMu.Lock()
+			currentStdin = nil
+			stdinMu.Unlock()
+
 			if err != nil {
 				log.Printf("Room connection error: %v", err)
 			}
