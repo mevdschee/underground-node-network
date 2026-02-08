@@ -559,6 +559,9 @@ func (s *Server) handleInteraction(channel ssh.Channel, sessionID string) {
 	pubHash := s.getPubKeyHash(p.PubKey)
 
 	chatUI.OnSend(func(msg string) {
+		if strings.TrimSpace(msg) == "" {
+			return // Ignore empty messages
+		}
 		s.addCommandToHistory(pubHash, msg)
 		s.Broadcast(username, msg)
 	})

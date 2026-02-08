@@ -79,8 +79,7 @@ func (s *Server) addMessageToHistory(pubHash string, msg ui.Message) {
 }
 
 func (s *Server) addCommandToHistory(pubHash string, cmd string) {
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
+	if strings.TrimSpace(cmd) == "" {
 		return // Ignore empty/whitespace-only commands
 	}
 	history := s.cmdHistories[pubHash]
