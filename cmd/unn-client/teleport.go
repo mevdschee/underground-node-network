@@ -485,7 +485,35 @@ func connectToRoom(entrypointSSH *ssh.Client, config *ssh.ClientConfig, teleport
 		log.Printf("Registered client with signaling (30s TTL)")
 	}
 
-	// Get room's peer info from signaling
+	// Request coordinated hole-punching via entrypoint (triggers room registration)
+	clientCandidateStrs := make([]string, len(clientCandidates))
+	for i, c := range clientCandidates {
+		clientCandidateStrs[i] = fmt.Sprintf("%s:%d", c.IP, c.Port)
+	}
+
+	if verbose {
+		log.Printf("Requesting coordinated punch to room %s", teleportData.RoomName)
+	}
+
+	// Create entrypoint API client for punch request
+	epClient, err := NewEntrypointClient(entrypointSSH)
+	if err != nil {
+		return fmt.Errorf("failed to create entrypoint client for punch coordination: %w", err)
+	}
+	defer epClient.Close()
+
+	if err := epClient.RequestPreparePunch(teleportData.RoomName, clientID, clientCandidateStrs); err != nil {
+		return fmt.Errorf("coordinated punch request failed: %w", err)
+	}
+
+	if verbose {
+		log.Printf("Room notified to start punching, waiting for registration...")
+	}
+
+	// Wait briefly for room to register with signaling (room registers in punch_offer handler)
+	time.Sleep(500 * time.Millisecond)
+
+	// Get room's peer info from signaling (room should have registered by now)
 	roomPeerID := fmt.Sprintf("room-%s", teleportData.RoomName)
 	roomPeerInfo, err := signalingClient.GetPeer(roomPeerID)
 	if err != nil {
@@ -502,29 +530,6 @@ func connectToRoom(entrypointSSH *ssh.Client, config *ssh.ClientConfig, teleport
 		p2pRoomCandidates[i] = p2pquic.Candidate{
 			IP:   c.IP,
 			Port: c.Port,
-		}
-	}
-
-	// Request coordinated hole-punching via entrypoint
-	clientCandidateStrs := make([]string, len(clientCandidates))
-	for i, c := range clientCandidates {
-		clientCandidateStrs[i] = fmt.Sprintf("%s:%d", c.IP, c.Port)
-	}
-
-	if verbose {
-		log.Printf("Requesting coordinated punch to room %s", teleportData.RoomName)
-	}
-
-	// Create entrypoint API client for punch request
-	epClient, err := NewEntrypointClient(entrypointSSH)
-	if err != nil {
-		log.Printf("Warning: Could not create entrypoint client for punch coordination: %v", err)
-	} else {
-		defer epClient.Close()
-		if err := epClient.RequestPreparePunch(teleportData.RoomName, clientID, clientCandidateStrs); err != nil {
-			log.Printf("Warning: Coordinated punch request failed: %v (continuing anyway)", err)
-		} else if verbose {
-			log.Printf("Room notified to start punching, waiting briefly...")
 		}
 	}
 
