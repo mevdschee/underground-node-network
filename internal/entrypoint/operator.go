@@ -157,7 +157,10 @@ func (s *Server) handleOperator(channel ssh.Channel, conn *ssh.ServerConn, usern
 					log.Printf("Person channel full for %s", payload.PersonID)
 				}
 			} else {
-				log.Printf("No punch session found for person %s", payload.PersonID)
+				// client-* IDs are handled via p2pquic signaling, not punchSessions
+				if !strings.HasPrefix(payload.PersonID, "client-") {
+					log.Printf("No punch session found for person %s", payload.PersonID)
+				}
 			}
 
 		}
