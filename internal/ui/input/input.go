@@ -1,6 +1,8 @@
 package input
 
 import (
+	"strings"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/mevdschee/underground-node-network/internal/ui/common"
 	"github.com/rivo/uniseg"
@@ -42,7 +44,7 @@ func (i *CommandInput) HandleKey(ev *tcell.EventKey) (bool, string) {
 	switch ev.Key() {
 	case tcell.KeyEnter:
 		val := i.Value
-		if val != "" {
+		if strings.TrimSpace(val) != "" {
 			i.History = append(i.History, val)
 			i.HIndex = len(i.History)
 		}
