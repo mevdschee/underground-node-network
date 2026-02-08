@@ -203,9 +203,6 @@ func (ui *ChatUI) Run() string {
 							return
 						}
 					} else if ui.onSend != nil {
-						if strings.TrimSpace(msg) == "" {
-							continue
-						}
 						ui.onSend(msg)
 					}
 				}
