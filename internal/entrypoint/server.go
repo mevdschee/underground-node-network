@@ -118,6 +118,7 @@ func NewServer(address, hostKeyPath, usersDir string) (*Server, error) {
 	// Load data from files
 	s.loadUsers()
 	s.loadRooms()
+	s.loadBanner()
 
 	config.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
 		pubKeyHash := s.calculatePubKeyHash(pubKey)
@@ -457,4 +458,13 @@ func loadOrGenerateHostKey(path string) (ssh.Signer, error) {
 	}
 
 	return ssh.ParsePrivateKey(keyBytes)
+}
+
+func (s *Server) loadBanner() {
+	data, err := os.ReadFile("banner.asc")
+	if err != nil {
+		log.Printf("No banner.asc file found")
+		return
+	}
+	s.banner = strings.Split(string(data), "\n")
 }
